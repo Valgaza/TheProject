@@ -1,0 +1,9 @@
+[project]
+name = "theproject"
+version = "0.1.0"
+dependencies = [
+    "neo4j>=6.1.0",
+    "pydantic>=2.12.5",
+    "python-dotenv>=1.2.2",
+    "groq>=0.9.0",
+]
