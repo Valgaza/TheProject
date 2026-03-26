@@ -8,6 +8,8 @@ from .models import (
     ExtractedRelationship,
     EntityType,
 )
+from .api import app
+from .websocket import manager, ConnectionManager
 
 __all__ = [
     "Neo4jClient",
@@ -18,4 +20,7 @@ __all__ = [
     "ExtractedEntity",
     "ExtractedRelationship",
     "EntityType",
+    "app",
+    "manager",
+    "ConnectionManager",
 ]

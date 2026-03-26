@@ -128,3 +128,54 @@ class MemoryRepository:
             "entities_created": len(result.entities),
             "relationships_created": len(result.relationships)
         }
+
+    def get_user_graph(self, user_id: str) -> dict:
+        """Get all nodes and edges for a user's graph."""
+        # Get all entities belonging to user
+        nodes_query = """
+        MATCH (e:Entity)-[:BELONGS_TO_USER]->(u:User {id: $user_id})
+        RETURN e.id AS id, e.name AS name, e.type AS type, e.created_at AS created_at
+        """
+        nodes = self.db.execute(nodes_query, {"user_id": user_id})
+
+        # Get all relationships between user's entities
+        edges_query = """
+        MATCH (a:Entity)-[:BELONGS_TO_USER]->(u:User {id: $user_id})
+        MATCH (b:Entity)-[:BELONGS_TO_USER]->(u)
+        MATCH (a)-[r]->(b)
+        WHERE type(r) <> 'BELONGS_TO_USER' AND type(r) <> 'BELONGS_TO_PROJECT'
+        RETURN a.id AS source, b.id AS target, type(r) AS type, r.label AS label
+        """
+        edges = self.db.execute(edges_query, {"user_id": user_id})
+
+        return {"nodes": nodes, "edges": edges}
+
+    def get_project_graph(self, user_id: str, project_id: str) -> dict:
+        """Get all nodes and edges for a specific project's graph."""
+        # Get all entities belonging to project
+        nodes_query = """
+        MATCH (e:Entity)-[:BELONGS_TO_PROJECT]->(p:Project {id: $project_id})
+        MATCH (e)-[:BELONGS_TO_USER]->(u:User {id: $user_id})
+        RETURN e.id AS id, e.name AS name, e.type AS type, e.created_at AS created_at
+        """
+        nodes = self.db.execute(nodes_query, {
+            "user_id": user_id,
+            "project_id": project_id
+        })
+
+        # Get all relationships between project's entities
+        edges_query = """
+        MATCH (a:Entity)-[:BELONGS_TO_PROJECT]->(p:Project {id: $project_id})
+        MATCH (b:Entity)-[:BELONGS_TO_PROJECT]->(p)
+        MATCH (a)-[:BELONGS_TO_USER]->(u:User {id: $user_id})
+        MATCH (b)-[:BELONGS_TO_USER]->(u)
+        MATCH (a)-[r]->(b)
+        WHERE type(r) <> 'BELONGS_TO_USER' AND type(r) <> 'BELONGS_TO_PROJECT'
+        RETURN a.id AS source, b.id AS target, type(r) AS type, r.label AS label
+        """
+        edges = self.db.execute(edges_query, {
+            "user_id": user_id,
+            "project_id": project_id
+        })
+
+        return {"nodes": nodes, "edges": edges}
