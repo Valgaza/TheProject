@@ -1,11 +1,16 @@
+import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { getProject, getDomain, CHATS } from "@/lib/data";
-import { Plus, MessageSquare } from "lucide-react";
+import { Plus, MessageSquare, Network } from "lucide-react";
+import GraphView from "@/components/GraphView";
+
+const DEFAULT_USER_ID = "user_1";
 
 const ProjectDetailPage = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const project = getProject(id || "");
+  const [activeTab, setActiveTab] = useState<"chats" | "graph">("chats");
 
   if (!project) {
     return <div className="flex-1 flex items-center justify-center text-nexus-muted text-sm">Project not found.</div>;
@@ -16,7 +21,7 @@ const ProjectDetailPage = () => {
 
   return (
     <div className="flex-1 overflow-y-auto scrollbar-thin p-6">
-      <div className="max-w-3xl mx-auto">
+      <div className="max-w-4xl mx-auto">
         <p className="text-2xs text-nexus-muted mb-1">Nexus / Projects / {project.title}</p>
         <div className="flex items-center gap-3 mb-2">
           <h1 className="text-xl font-semibold text-nexus-text">{project.title}</h1>
@@ -26,26 +31,65 @@ const ProjectDetailPage = () => {
         </div>
         <p className="text-sm text-nexus-muted mb-6">{project.description}</p>
 
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-sm font-medium text-nexus-text">Chats</h2>
-          <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border border-nexus-border text-nexus-text hover:bg-nexus-surface transition-colors duration-150">
-            <Plus size={12} />
-            New Chat in Project
+        <div className="flex items-center gap-2 mb-4 border-b border-nexus-border">
+          <button
+            onClick={() => setActiveTab("chats")}
+            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors duration-150 border-b-2 -mb-px ${
+              activeTab === "chats"
+                ? "border-nexus-indigo text-nexus-text"
+                : "border-transparent text-nexus-muted hover:text-nexus-text"
+            }`}
+          >
+            <MessageSquare size={14} />
+            Chats
+          </button>
+          <button
+            onClick={() => setActiveTab("graph")}
+            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors duration-150 border-b-2 -mb-px ${
+              activeTab === "graph"
+                ? "border-nexus-indigo text-nexus-text"
+                : "border-transparent text-nexus-muted hover:text-nexus-text"
+            }`}
+          >
+            <Network size={14} />
+            Knowledge Graph
           </button>
         </div>
 
-        <div className="space-y-2">
-          {projectChats.map((chat) => (
-            <button
-              key={chat.id}
-              onClick={() => navigate(`/chat/${chat.id}`)}
-              className="w-full flex items-center gap-3 px-4 py-3 rounded-lg border border-nexus-border bg-nexus-surface hover:border-nexus-indigo/40 transition-all duration-150 text-left"
-            >
-              <MessageSquare size={14} className="text-nexus-muted flex-shrink-0" />
-              <span className="text-sm text-nexus-text">{chat.title}</span>
-            </button>
-          ))}
-        </div>
+        {activeTab === "chats" && (
+          <>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-medium text-nexus-text">Chats</h2>
+              <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border border-nexus-border text-nexus-text hover:bg-nexus-surface transition-colors duration-150">
+                <Plus size={12} />
+                New Chat in Project
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              {projectChats.map((chat) => (
+                <button
+                  key={chat.id}
+                  onClick={() => navigate(`/chat/${chat.id}`)}
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-lg border border-nexus-border bg-nexus-surface hover:border-nexus-indigo/40 transition-all duration-150 text-left"
+                >
+                  <MessageSquare size={14} className="text-nexus-muted flex-shrink-0" />
+                  <span className="text-sm text-nexus-text">{chat.title}</span>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+
+        {activeTab === "graph" && (
+          <div className="rounded-lg border border-nexus-border bg-nexus-surface overflow-hidden" style={{ height: 550 }}>
+            <GraphView
+              userId={DEFAULT_USER_ID}
+              projectId={id}
+              title={`${project.title} Knowledge Graph`}
+            />
+          </div>
+        )}
       </div>
     </div>
   );

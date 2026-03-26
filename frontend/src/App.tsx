@@ -8,6 +8,7 @@ import ChatPage from "./pages/ChatPage";
 import ChatDetailPage from "./pages/ChatDetailPage";
 import ProjectsPage from "./pages/ProjectsPage";
 import ProjectDetailPage from "./pages/ProjectDetailPage";
+import KnowledgeGraphPage from "./pages/KnowledgeGraphPage";
 import SettingsPage from "./pages/SettingsPage";
 import NotFound from "./pages/NotFound";
 
@@ -31,6 +32,7 @@ const AppLayout = () => {
           <Route path="/chat/:id" element={<ChatDetailPage />} />
           <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/projects/:id" element={<ProjectDetailPage />} />
+          <Route path="/graph" element={<KnowledgeGraphPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<NotFound />} />
         </Routes>

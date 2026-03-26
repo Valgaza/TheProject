@@ -5,12 +5,14 @@ import ChatWindow from "@/components/ChatWindow";
 import ChatInput from "@/components/ChatInput";
 import PipelineTracePanel from "@/components/PipelineTracePanel";
 import { useChat } from "@/contexts/ChatContext";
+import { useMemoryIngest } from "@/hooks/use-memory-ingest";
 import { GitBranch } from "lucide-react";
 
 const ChatDetailPage = () => {
   const { id } = useParams<{ id: string }>();
   const { traceOpen, setTraceOpen } = useChat();
   const chat = getChat(id || "");
+  const ingestToMemory = useMemoryIngest({ projectId: chat?.projectId });
 
   if (!chat) {
     return (
@@ -41,7 +43,7 @@ const ChatDetailPage = () => {
         </div>
 
         <ChatWindow messages={chat.messages} />
-        <ChatInput />
+        <ChatInput onSend={ingestToMemory} />
       </div>
 
       {traceOpen && id && PIPELINE_TRACES[id] && (

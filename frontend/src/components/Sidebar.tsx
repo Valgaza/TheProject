@@ -1,5 +1,5 @@
 import { useNavigate, useLocation } from "react-router-dom";
-import { Plus, MessageSquare, FolderOpen, Settings, Stethoscope, Scale, BarChart3, BookOpen, GitBranch } from "lucide-react";
+import { Plus, MessageSquare, FolderOpen, Settings, Stethoscope, Scale, BarChart3, BookOpen, GitBranch, Network } from "lucide-react";
 import ThemeToggle from "./ThemeToggle";
 import { CHATS, PROJECTS, getDomain } from "@/lib/data";
 
@@ -23,6 +23,7 @@ const Sidebar = ({ collapsed }: { collapsed: boolean }) => {
         <button onClick={() => navigate("/chat")} className="p-2 rounded-lg hover:bg-nexus-surface text-nexus-muted hover:text-nexus-text transition-colors duration-150"><Plus size={16} /></button>
         <button onClick={() => navigate("/chat")} className={`p-2 rounded-lg transition-colors duration-150 ${location.pathname.startsWith("/chat") ? "bg-nexus-surface text-nexus-text" : "text-nexus-muted hover:text-nexus-text hover:bg-nexus-surface"}`}><MessageSquare size={16} /></button>
         <button onClick={() => navigate("/projects")} className={`p-2 rounded-lg transition-colors duration-150 ${location.pathname.startsWith("/projects") ? "bg-nexus-surface text-nexus-text" : "text-nexus-muted hover:text-nexus-text hover:bg-nexus-surface"}`}><FolderOpen size={16} /></button>
+        <button onClick={() => navigate("/graph")} className={`p-2 rounded-lg transition-colors duration-150 ${location.pathname === "/graph" ? "bg-nexus-surface text-nexus-text" : "text-nexus-muted hover:text-nexus-text hover:bg-nexus-surface"}`}><Network size={16} /></button>
         <button onClick={() => navigate("/settings")} className={`p-2 rounded-lg transition-colors duration-150 ${location.pathname === "/settings" ? "bg-nexus-surface text-nexus-text" : "text-nexus-muted hover:text-nexus-text hover:bg-nexus-surface"}`}><Settings size={16} /></button>
       </div>
     );
@@ -57,6 +58,7 @@ const Sidebar = ({ collapsed }: { collapsed: boolean }) => {
         {[
           { path: "/chat", icon: <MessageSquare size={14} />, label: "Chat" },
           { path: "/projects", icon: <FolderOpen size={14} />, label: "Projects" },
+          { path: "/graph", icon: <Network size={14} />, label: "Knowledge Graph" },
           { path: "/settings", icon: <Settings size={14} />, label: "Settings" },
         ].map((item) => (
           <button
