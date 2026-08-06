@@ -6,12 +6,16 @@ import { Icon } from "@/components/icons";
 import { DOMAINS } from "@/app/chat/page";
 
 const PROJECTS = [
-  { id: 1, name: "Atlas Forecast", desc: "Rolling 18-month financial model, EU pipeline cost reconciliation.", domain: "finance",     conv: 47, members: 4, updated: "2h",   spark: [3,4,2,5,6,4,7,8,6,9,8,11] },
-  { id: 2, name: "Helios Migration", desc: "Cutover of legacy auth-svc to columnar storage. Postmortems, RFCs.", domain: "engineering", conv: 124, members: 9, updated: "1d", spark: [2,3,3,5,7,6,8,7,9,11,10,12] },
-  { id: 3, name: "Vendor Compliance", desc: "Quarterly redline cycle against the master playbook.", domain: "legal", conv: 33, members: 3, updated: "3d", spark: [1,2,3,2,3,4,3,5,4,4,5,6] },
-  { id: 4, name: "Field Ops 2026", desc: "Onboarding, dispatch, and incident playbooks for the regional teams.", domain: "operations", conv: 58, members: 6, updated: "Mon", spark: [4,5,3,6,5,7,6,8,7,9,8,10] },
-  { id: 5, name: "Outbound Atlas", desc: "Persona-based outbound and discovery scoring across EMEA + NA.", domain: "sales", conv: 76, members: 5, updated: "Apr 18", spark: [2,2,3,4,3,5,4,6,5,7,6,8] },
-  { id: 6, name: "Patent Landscape", desc: "Lit review of fuel-cell IP since 2022, weekly digest.", domain: "research", conv: 19, members: 2, updated: "Apr 15", spark: [1,1,2,2,3,2,4,3,4,5,4,5] },
+  {
+    id: 1,
+    name: "Knowledge Base Q&A",
+    desc: "Technical documentation retrieval and cited Q&A across the engineering knowledge base.",
+    domain: "rag",
+    conv: 34,
+    members: 3,
+    updated: "1h",
+    spark: [2, 3, 4, 3, 5, 6, 7, 8, 9, 11, 12, 14],
+  },
 ];
 
 const Sparkline = ({ data, color }: { data: number[], color: string }) => {
@@ -31,7 +35,7 @@ export default function Projects() {
   const router = useRouter();
   const [filter, setFilter] = useState("all");
   const [modal, setModal] = useState(false);
-  const [newDom, setNewDom] = useState("research");
+  const [newDom, setNewDom] = useState("rag");
 
   const filtered = filter === "all" ? PROJECTS : PROJECTS.filter(p => p.domain === filter);
 
@@ -49,13 +53,11 @@ export default function Projects() {
 
       <div className="projects__filters">
         {[
-          { id: "all", l: "All", c: PROJECTS.length },
-          { id: "research", l: "Research", c: PROJECTS.filter(p=>p.domain==="research").length },
-          { id: "engineering", l: "Engineering", c: PROJECTS.filter(p=>p.domain==="engineering").length },
-          { id: "legal", l: "Legal", c: PROJECTS.filter(p=>p.domain==="legal").length },
-          { id: "finance", l: "Finance", c: PROJECTS.filter(p=>p.domain==="finance").length },
-          { id: "operations", l: "Operations", c: PROJECTS.filter(p=>p.domain==="operations").length },
-          { id: "sales", l: "Sales", c: PROJECTS.filter(p=>p.domain==="sales").length },
+          { id: "all",     l: "All",           c: PROJECTS.length },
+          { id: "rag",     l: "RAG Q&A",       c: PROJECTS.filter(p=>p.domain==="rag").length },
+          { id: "general", l: "Conversational", c: PROJECTS.filter(p=>p.domain==="general").length },
+          { id: "speech",  l: "Speech",         c: PROJECTS.filter(p=>p.domain==="speech").length },
+          { id: "vision",  l: "Vision",         c: PROJECTS.filter(p=>p.domain==="vision").length },
         ].map(f => (
           <button key={f.id}
                   className={`pf ${filter === f.id ? "is-active" : ""}`}
@@ -76,7 +78,7 @@ export default function Projects() {
                 <span className="dot"/>
                 {p.domain}
               </div>
-              <span className="mono" style={{fontSize:11, color: "var(--ink-3)"}}>↗ open</span>
+              <span className="mono" style={{fontSize:11, color:"var(--ink-3)"}}>↗ open</span>
             </div>
             <h3 className="pcard__name">{p.name}</h3>
             <p className="pcard__desc">{p.desc}</p>
@@ -114,7 +116,7 @@ export default function Projects() {
             <p className="modal__s">A project bundles conversations, attached sources, and a slice of the knowledge graph.</p>
             <div className="field">
               <label className="field__l">Project name</label>
-              <input className="input" placeholder="e.g. Q4 Fundraising Narrative" autoFocus/>
+              <input className="input" placeholder="e.g. Technical Knowledge Base" autoFocus/>
             </div>
             <div className="field">
               <label className="field__l">Default pipeline</label>

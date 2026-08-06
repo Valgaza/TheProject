@@ -35,13 +35,13 @@ export default function Settings() {
         <nav className="set-side">
           <div className="eyebrow" style={{marginBottom:12}}>§ Sections</div>
           {[
-            { id: "general",   l: "General" },
-            { id: "model",     l: "Pipelines & models" },
-            { id: "privacy",   l: "Privacy & local data" },
-            { id: "appearance",l: "Appearance" },
-            { id: "shortcuts", l: "Shortcuts" },
-            { id: "team",      l: "Team & roles" },
-            { id: "danger",    l: "Danger zone" },
+            { id: "general",    l: "General" },
+            { id: "model",      l: "Pipelines & models" },
+            { id: "privacy",    l: "Privacy & local data" },
+            { id: "appearance", l: "Appearance" },
+            { id: "shortcuts",  l: "Shortcuts" },
+            { id: "team",       l: "Team & roles" },
+            { id: "danger",     l: "Danger zone" },
           ].map(s => (
             <a key={s.id}
                className={active === s.id ? "is-on" : ""}
@@ -64,7 +64,7 @@ export default function Settings() {
               <Seg value="auto" set={()=>{}} options={[
                 { v: "auto", l: "Auto-route" },
                 { v: "ask",  l: "Ask me" },
-                { v: "research", l: "Research" },
+                { v: "rag",  l: "RAG Q&A" },
               ]}/>
             </div>
 
@@ -92,6 +92,25 @@ export default function Settings() {
               <Seg value={lang} set={setLang} options={[
                 { v: "en", l: "English" }, { v: "de", l: "Deutsch" }, { v: "ja", l: "日本語" }
               ]}/>
+            </div>
+          </section>
+
+          <section className="sgroup">
+            <h2 className="sgroup__t">Pipelines & models</h2>
+            <p className="sgroup__s">Model routing is handled automatically. Local model configuration is not yet available in this build.</p>
+
+            <div className="srow" style={{ gridTemplateColumns: "1fr" }}>
+              <div style={{
+                padding: "20px 24px",
+                background: "var(--bg-veil)",
+                border: "1px solid var(--line)",
+                borderRadius: "var(--r-3)",
+                fontSize: 13.5,
+                color: "var(--ink-3)",
+                lineHeight: 1.55,
+              }}>
+                Four pipelines are available: <strong style={{color:"var(--ink)"}}>RAG Q&A</strong>, <strong style={{color:"var(--ink)"}}>Conversational</strong>, <strong style={{color:"var(--ink)"}}>Speech</strong>, and <strong style={{color:"var(--ink)"}}>Vision</strong>. The router selects the best pipeline for each prompt automatically. Per-pipeline model overrides will be configurable in a future release.
+              </div>
             </div>
           </section>
 
@@ -129,10 +148,10 @@ export default function Settings() {
             <div className="srow">
               <div>
                 <div className="srow__l">Theme</div>
-                <div className="srow__d">Nexus is light-only by design. Dark mode is on the roadmap for late 2026.</div>
+                <div className="srow__d">Nexus is light-only by design. Dark mode is on the roadmap.</div>
               </div>
               <Seg value={theme} set={setTheme} options={[
-                { v: "light", l: "Light" }, { v: "auto", l: "Auto", }, { v: "dark", l: "Dark · soon" }
+                { v: "light", l: "Light" }, { v: "auto", l: "Auto" }, { v: "dark", l: "Dark · soon" }
               ]}/>
             </div>
 
@@ -156,52 +175,12 @@ export default function Settings() {
           </section>
 
           <section className="sgroup">
-            <h2 className="sgroup__t">Pipelines & models</h2>
-            <p className="sgroup__s">Inspect what's installed locally and how it's allocated.</p>
-
-            <div className="surface" style={{padding: 0, marginTop: 8}}>
-              {[
-                { p: "Research",    m: "llama-3.1-70b-q4", v: "8.4 GB", state: "ready" },
-                { p: "Engineering", m: "qwen-2.5-coder-32b", v: "6.1 GB", state: "ready" },
-                { p: "Legal",       m: "llama-3.1-70b-q4", v: "8.4 GB", state: "ready" },
-                { p: "Finance",     m: "llama-3.1-70b-q4", v: "8.4 GB", state: "ready" },
-                { p: "Operations",  m: "phi-4-14b",        v: "3.2 GB", state: "warming" },
-                { p: "Sales",       m: "llama-3.1-8b",     v: "2.1 GB", state: "ready" },
-              ].map((row, i) => (
-                <div key={i} style={{
-                  display:"grid",
-                  gridTemplateColumns:"160px 1fr 90px 110px 80px",
-                  alignItems:"center",
-                  padding: "14px 18px",
-                  borderTop: i ? "1px solid var(--line)" : 0,
-                  fontSize: 13.5
-                }}>
-                  <span style={{fontWeight:500}}>{row.p}</span>
-                  <span className="mono" style={{color:"var(--ink-2)", fontSize:12.5}}>{row.m}</span>
-                  <span className="mono" style={{color:"var(--ink-3)", fontSize:12}}>{row.v}</span>
-                  <span style={{
-                    fontSize:11, fontFamily:"var(--font-mono)", letterSpacing:"0.08em", textTransform:"uppercase",
-                    color: row.state === "ready" ? "oklch(0.5 0.06 145)" : "oklch(0.55 0.06 75)"
-                  }}>
-                    <span style={{
-                      display:"inline-block", width:6, height:6, borderRadius:999, marginRight:6,
-                      background: row.state === "ready" ? "oklch(0.5 0.06 145)" : "oklch(0.55 0.06 75)"
-                    }}/>
-                    {row.state}
-                  </span>
-                  <span className="mono" style={{fontSize:11, color:"var(--ink-3)", textAlign:"right", cursor:"pointer"}}>configure ↗</span>
-                </div>
-              ))}
-            </div>
-          </section>
-
-          <section className="sgroup">
             <h2 className="sgroup__t">Danger zone</h2>
             <p className="sgroup__s">Operations that cannot be undone. Take a snapshot first.</p>
             <div className="srow">
               <div>
                 <div className="srow__l">Rebuild knowledge graph</div>
-                <div className="srow__d">Re-extract entities and relationships from every conversation. Takes ~6 hours on this hardware.</div>
+                <div className="srow__d">Re-extract entities and relationships from every conversation. Takes several minutes depending on history size.</div>
               </div>
               <button className="btn">Rebuild graph</button>
             </div>

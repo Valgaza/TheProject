@@ -683,3 +683,62 @@
   color: var(--ink);
   box-shadow: var(--shadow-1);
 }
+
+/* — Demo — */
+.demo {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  height: calc(100vh - var(--topbar-h));
+  overflow: hidden;
+}
+.demo__chat {
+  display: flex;
+  flex-direction: column;
+  padding: 28px 32px 20px;
+  border-right: 1px solid var(--line);
+  overflow: hidden;
+}
+.demo__chat-head {
+  flex-shrink: 0;
+  margin-bottom: 20px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.demo__chat-title {
+  font: 360 26px/1.1 var(--font-display);
+  letter-spacing: -0.016em;
+  margin: 6px 0 8px;
+}
+.demo__chat-sub {
+  font-size: 13.5px;
+  color: var(--ink-3);
+  line-height: 1.5;
+  margin: 0;
+}
+.demo__messages {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 4px 0;
+}
+.demo__empty {
+  padding: 36px 0;
+}
+.demo__empty em {
+  font-style: italic;
+  color: var(--accent);
+}
+.demo__composer {
+  flex-shrink: 0;
+  padding-top: 16px;
+}
+.demo__graph-wrapper {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 20px;
+}
+.demo__graph-wrapper .graph__stage {
+  flex: 1;
+  min-height: 0;
+}

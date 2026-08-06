@@ -5,21 +5,17 @@ import { useRouter } from "next/navigation";
 import { Icon } from "@/components/icons";
 
 export const DOMAINS = [
-  { id: "research",    name: "Research",    icon: "flask",  blurb: "Lit review, synthesis, cited briefs" },
-  { id: "engineering", name: "Engineering", icon: "code",   blurb: "Code review, postmortems, design docs" },
-  { id: "legal",       name: "Legal",       icon: "scale",  blurb: "Redlines, clause search, risk maps" },
-  { id: "finance",     name: "Finance",     icon: "coin",   blurb: "Models, variance, board narrative" },
-  { id: "operations",  name: "Operations",  icon: "truck",  blurb: "Playbooks, SOPs, incident response" },
-  { id: "sales",       name: "Sales",       icon: "spark",  blurb: "Outbound, discovery, forecasting" },
+  { id: "rag",     name: "RAG Q&A",       icon: "book",  blurb: "Document retrieval, cited answers, knowledge search" },
+  { id: "general", name: "Conversational", icon: "chat",  blurb: "Open-ended dialogue, summaries, and drafting" },
+  { id: "speech",  name: "Speech",         icon: "speak", blurb: "STT transcription, TTS narration, voice workflows" },
+  { id: "vision",  name: "Vision",         icon: "spark", blurb: "Image analysis, video understanding, captioning" },
 ];
 
 export const SUGGESTED: Record<string, string[]> = {
-  research:    ["Summarise the last 12 months of fuel-cell patents", "Build a literature map of small-language-model papers", "Compare three positions on the EU AI Act"],
-  engineering: ["Diagnose the auth-svc latency spike since Tuesday", "Draft an RFC for migrating to columnar storage", "Review this PR for race conditions"],
-  legal:       ["Redline the MSA against our standard playbook", "Find every clause referencing data residency", "Draft a one-pager on the new privacy regulation"],
-  finance:     ["Reconcile Q3 pipeline cost variance for the EU region", "Build the board narrative for the April update", "Stress-test next-year ARR under three churn scenarios"],
-  operations:  ["Write the runbook for a Tier-1 outage", "Audit the new-hire onboarding playbook", "Schedule the field-ops rotation for May"],
-  sales:       ["Draft a 3-touch outbound for the Helios persona", "Score this call for MEDDPICC coverage", "Forecast EMEA close-rate by quarter"],
+  rag:     ["Search the knowledge base for transformer architecture details", "Find and summarise all sources on vector databases", "What does the documentation say about embedding models?"],
+  general: ["Explain the concept of knowledge graphs in simple terms", "Help me draft a status update for this project", "Summarise the key points from our last three conversations"],
+  speech:  ["Transcribe this recording and extract the action items", "Convert this report into a narrated audio brief", "Summarise the spoken content from today's standup"],
+  vision:  ["Describe the layout and key elements in this screenshot", "Extract all text visible in this image", "Summarise the content across these video frames"],
 };
 
 const DomainCard = ({ d, active, onSelect, tilt }: any) => {
@@ -69,7 +65,7 @@ const DomainCard = ({ d, active, onSelect, tilt }: any) => {
 
 export default function ChatHome() {
   const router = useRouter();
-  const [domain, setDomain] = useState("research");
+  const [domain, setDomain] = useState("rag");
   const [val, setVal] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -80,7 +76,7 @@ export default function ChatHome() {
       <div className="chathome__hero">
         <div className="eyebrow">§ Command</div>
         <h1 className="display chathome__title">
-          Good afternoon, Aditya.<br/>
+          Good afternoon.<br/>
           <em>What</em> are we making?
         </h1>
         <p className="chathome__sub">
@@ -94,7 +90,7 @@ export default function ChatHome() {
           <span className="hr-line"/>
           <span className="mono" style={{fontSize:11, color:"var(--ink-3)", letterSpacing:"0.1em"}}>auto-route by default</span>
         </div>
-        <div className="domains">
+        <div className="domains" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
           {DOMAINS.map(d => (
             <DomainCard key={d.id} d={d}
                         active={domain === d.id}
@@ -143,8 +139,6 @@ export default function ChatHome() {
               <button className="ctool" title="Attach"><Icon name="paper" size={16}/></button>
               <button className="ctool" title="Voice"><Icon name="mic" size={16}/></button>
               <button className="ctool" title="Knowledge"><Icon name="book" size={16}/></button>
-              <span className="composer__sep"/>
-              <span className="mono" style={{fontSize: 11, color:"var(--ink-3)"}}>3 sources · 1.4M docs indexed</span>
             </div>
             <button className="btn btn--primary" onClick={submit}>
               Send <Icon name="arrow" size={14}/>

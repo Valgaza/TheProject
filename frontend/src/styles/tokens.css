@@ -25,13 +25,11 @@
   --accent-veil: oklch(0.94 0.020 195);    /* wash */
   --accent-ink:  oklch(0.16 0.030 215);    /* deepest */
 
-  /* — Domain accents (kept whisper-quiet, all share same chroma) — */
-  --d-research:    oklch(0.55 0.06 240);
-  --d-engineering: oklch(0.50 0.06 145);
-  --d-legal:       oklch(0.50 0.07 30);
-  --d-finance:     oklch(0.55 0.06 75);
-  --d-operations:  oklch(0.50 0.06 300);
-  --d-sales:       oklch(0.55 0.07 15);
+  /* — Pipeline accents — */
+  --d-rag:     oklch(0.52 0.07 240);   /* blue   — retrieval / search    */
+  --d-general: oklch(0.50 0.06 155);   /* green  — conversational        */
+  --d-speech:  oklch(0.50 0.07 290);   /* purple — audio / voice         */
+  --d-vision:  oklch(0.58 0.07 55);    /* amber  — image / video         */
 
   /* — TYPE — */
   --font-display: "Fraunces", "GT Sectra", "Iowan Old Style", "Apple Garamond", Georgia, serif;

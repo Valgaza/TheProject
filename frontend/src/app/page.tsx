@@ -222,23 +222,22 @@ export const Reveal = ({ children, delay = 0, as: Tag = "div", ...props }: any) 
 export default function Landing() {
   const router = useRouter();
   const context = useContext(TweaksContext);
-  
+
   const hero = context?.tweaks?.heroBackground || "particles";
   const intensityLevel = context?.tweaks?.animationIntensity || "restrained";
   const intensity = intensityLevel === "showcase" ? 1.4 : intensityLevel === "restrained" ? 0.5 : 1;
 
   const features = [
     { tag: "01 / Local-first", title: "Your data never leaves the building.", body: "All inference, indexing, and retrieval runs on hardware you own. No tokens billed, no payloads logged, no vendor compliance reviews." },
-    { tag: "02 / Six pipelines", title: "One interface, the right specialist.", body: "Nexus auto-routes prompts to the pipeline most fluent in the task — Research, Engineering, Legal, Finance, Operations, Sales — so the model behind every answer is the right one." },
+    { tag: "02 / Four pipelines", title: "One interface, the right specialist.", body: "Nexus auto-routes prompts to the pipeline most fluent in the task — RAG Q&A, Conversational, Speech, or Vision — so the model behind every answer is the right one." },
     { tag: "03 / Living graph", title: "Every conversation deepens the system.", body: "Entities, sources, and relationships extracted from each session are stitched into a knowledge graph the entire org can interrogate." },
   ];
+
   const pipelines = [
-    { name: "Research", line: "Lit review · synthesis · citations", domain: "research"},
-    { name: "Engineering", line: "Code · review · postmortems", domain: "engineering"},
-    { name: "Legal", line: "Redlines · clause search · risk", domain: "legal"},
-    { name: "Finance", line: "Modelling · variance · narrative", domain: "finance"},
-    { name: "Operations", line: "Playbooks · SOPs · incident", domain: "operations"},
-    { name: "Sales", line: "Outbound · discovery · forecast", domain: "sales"},
+    { name: "RAG Q&A",       line: "Document retrieval · cited answers · search", domain: "rag" },
+    { name: "Conversational", line: "Dialogue · summaries · drafting",             domain: "general" },
+    { name: "Speech",         line: "Transcription · narration · voice workflows", domain: "speech" },
+    { name: "Vision",         line: "Image analysis · video · captioning",         domain: "vision" },
   ];
 
   return (
@@ -252,7 +251,6 @@ export default function Landing() {
           <a href="#pipelines">Pipelines</a>
           <a href="#how">How it works</a>
           <a href="#system">System</a>
-          <a href="#docs">Docs</a>
         </nav>
         <div style={{ display: "flex", gap: 10 }}>
           <button className="btn btn--ghost" onClick={() => router.push("/chat")}>Sign in</button>
@@ -271,47 +269,25 @@ export default function Landing() {
               background: "var(--accent)", display: "inline-block", marginRight: 8,
               boxShadow: "0 0 0 3px oklch(0.42 0.06 195 / 0.18)"
             }}/>
-            Local-first AI · v2.4 · April 2026
+            Local-first AI orchestration
           </div>
           <h1 className="hero__title display">
             The orchestration layer<br/>
             for <em>private</em> enterprise AI.
           </h1>
           <p className="hero__sub">
-            Six purpose-tuned pipelines, one chat surface, and a living knowledge graph —
+            Four purpose-tuned pipelines, one chat surface, and a living knowledge graph —
             running entirely on your own infrastructure. No outbound traffic, no tokens billed,
             no compromise on the answer.
           </p>
           <div className="hero__cta">
-            <button className="btn btn--primary btn--xl" onClick={() => router.push("/chat")}>
-              Enter Nexus <Icon name="arrow" size={16}/>
+            <button className="btn btn--primary btn--xl" onClick={() => router.push("/demo")}>
+              See the demo <Icon name="arrow" size={16}/>
             </button>
             <button className="btn btn--xl" onClick={() => router.push("/graph")}>
-              See the graph
+              View the graph
             </button>
           </div>
-          <div className="hero__meta">
-            <span><strong>237</strong> orgs running on-prem</span>
-            <span className="dot-sep"/>
-            <span><strong>1.4M</strong> documents indexed locally</span>
-            <span className="dot-sep"/>
-            <span><strong>0</strong> bytes egressed</span>
-          </div>
-        </div>
-
-        <div className="hero__corner hero__corner--tl">
-          <span className="mono">N · 037</span>
-          <span className="mono">52.5200° N</span>
-        </div>
-        <div className="hero__corner hero__corner--tr">
-          <span className="mono">REV 2.4.1</span>
-          <span className="mono">13.4050° E</span>
-        </div>
-        <div className="hero__corner hero__corner--bl">
-          <span className="mono">↳ scroll</span>
-        </div>
-        <div className="hero__corner hero__corner--br">
-          <span className="mono">on-device · 47ms</span>
         </div>
       </section>
 
@@ -329,7 +305,6 @@ export default function Landing() {
               <h3 className="feature__title display">{f.title}</h3>
               <p className="feature__body">{f.body}</p>
               <div className="feature__rule"/>
-              <div className="feature__foot mono">↳ Read paper</div>
             </Reveal>
           ))}
         </div>
@@ -339,7 +314,7 @@ export default function Landing() {
         <Reveal className="section__head section__head--split">
           <div>
             <div className="eyebrow">§ Pipelines</div>
-            <h2 className="display section__title">Six specialists. <em>One</em> surface.</h2>
+            <h2 className="display section__title">Four specialists. <em>One</em> surface.</h2>
           </div>
           <p className="section__lede">
             Every prompt is auto-routed to the pipeline that scores highest on
@@ -372,8 +347,8 @@ export default function Landing() {
         <div className="how">
           {[
             { n: "01", k: "Capture", body: "Your prompt is parsed locally. Sensitive entities are tagged and never leave the air-gap." },
-            { n: "02", k: "Route", body: "A small router model picks the best of six pipelines based on intent, vocabulary, and provenance signals." },
-            { n: "03", k: "Retrieve", body: "Each pipeline pulls from its own embedding index and tool set — code search, contract corpus, ledgers, etc." },
+            { n: "02", k: "Route", body: "A small router model picks the best of four pipelines based on intent, vocabulary, and provenance signals." },
+            { n: "03", k: "Retrieve", body: "Each pipeline pulls from its own embedding index and tool set — documents, transcripts, images, etc." },
             { n: "04", k: "Compose", body: "The selected model drafts an answer, cites every claim back to the graph, and streams it to your screen." },
             { n: "05", k: "Stitch", body: "New entities and relationships extracted from the answer are merged into the knowledge graph." },
           ].map((s, i) => (
@@ -390,14 +365,16 @@ export default function Landing() {
       <section className="section section--close">
         <Reveal>
           <h2 className="display close__title">
-            Premium enterprise AI<br/>
+            Enterprise AI<br/>
             without the <em>egress</em>.
           </h2>
           <div className="hero__cta" style={{justifyContent:"center"}}>
-            <button className="btn btn--primary btn--xl" onClick={() => router.push("/chat")}>
-              Open Nexus <Icon name="arrow" size={16}/>
+            <button className="btn btn--primary btn--xl" onClick={() => router.push("/demo")}>
+              Open demo <Icon name="arrow" size={16}/>
             </button>
-            <button className="btn btn--xl">Talk to a deploy engineer</button>
+            <button className="btn btn--xl" onClick={() => router.push("/chat")}>
+              Start a conversation
+            </button>
           </div>
         </Reveal>
       </section>
@@ -418,19 +395,17 @@ export default function Landing() {
             </div>
             <div>
               <div className="eyebrow">Resources</div>
-              <a>Documentation</a><a>Architecture paper</a><a>Security</a><a>Status</a>
+              <a>Documentation</a><a>Architecture</a><a>Security</a>
             </div>
             <div>
-              <div className="eyebrow">Company</div>
-              <a>About</a><a>Customers</a><a>Careers</a><a>Press</a>
+              <div className="eyebrow">Project</div>
+              <a>About</a><a>Research</a><a>Contact</a>
             </div>
           </div>
         </div>
         <div className="foot__rule"/>
         <div className="foot__bot">
-          <span className="mono">© 2026 Nexus Systems · Berlin · Bengaluru</span>
-          <span className="mono">SOC 2 Type II · ISO 27001 · GDPR · HIPAA</span>
-          <span className="mono">v2.4.1 · build 037</span>
+          <span className="mono">© 2026 Nexus · Local-first AI</span>
         </div>
       </footer>
     </div>

@@ -9,7 +9,6 @@ export const RailNav = () => {
   const pathname = usePathname();
   const router = useRouter();
 
-  // Convert Next.js pathnames back to page IDs for active state
   const getPageId = (path: string) => {
     if (path === "/") return "landing";
     return path.replace("/", "");
@@ -17,28 +16,24 @@ export const RailNav = () => {
   const page = getPageId(pathname);
 
   const main = [
-    { id: "chat", label: "New chat", icon: "chat", path: "/chat" },
-    { id: "projects", label: "Projects", icon: "folder", count: 4, path: "/projects" },
-    { id: "graph", label: "Knowledge graph", icon: "graph", path: "/graph" },
-    { id: "settings", label: "Settings", icon: "cog", path: "/settings" },
+    { id: "demo",     label: "Live demo",       icon: "bolt",   path: "/demo" },
+    { id: "chat",     label: "New chat",         icon: "chat",   path: "/chat" },
+    { id: "projects", label: "Projects",         icon: "folder", count: 1, path: "/projects" },
+    { id: "graph",    label: "Knowledge graph",  icon: "graph",  path: "/graph" },
+    { id: "settings", label: "Settings",         icon: "cog",    path: "/settings" },
   ];
 
   const recent = [
-    { id: "r1", title: "Q3 board narrative draft", domain: "research", time: "2h" },
-    { id: "r2", title: "Migration risk matrix", domain: "engineering", time: "yesterday" },
-    { id: "r3", title: "MSA — vendor liability redlines", domain: "legal", time: "yesterday" },
-    { id: "r4", title: "Pipeline cost variance, EU", domain: "finance", time: "Mon" },
-    { id: "r5", title: "Onboarding playbook v3", domain: "operations", time: "Mon" },
-    { id: "r6", title: "Outbound sequence A/B", domain: "sales", time: "Apr 18" },
-    { id: "r7", title: "Patent landscape — fuel cells", domain: "research", time: "Apr 17" },
-    { id: "r8", title: "Incident review · auth-svc", domain: "engineering", time: "Apr 14" },
+    { id: "r1", title: "Vector similarity metrics",    domain: "rag",     time: "2h" },
+    { id: "r2", title: "Embedding model comparison",   domain: "rag",     time: "yesterday" },
+    { id: "r3", title: "Project status draft",         domain: "general", time: "yesterday" },
+    { id: "r4", title: "Team standup transcript",      domain: "speech",  time: "Mon" },
+    { id: "r5", title: "Dashboard screenshot review",  domain: "vision",  time: "Mon" },
+    { id: "r6", title: "API documentation Q&A",        domain: "rag",     time: "Apr 18" },
   ];
 
   const projects = [
-    { id: "p1", name: "Atlas Forecast", domain: "finance" },
-    { id: "p2", name: "Helios Migration", domain: "engineering" },
-    { id: "p3", name: "Vendor Compliance", domain: "legal" },
-    { id: "p4", name: "Field Ops 2026", domain: "operations" },
+    { id: "p1", name: "Knowledge Base Q&A", domain: "rag" },
   ];
 
   return (
@@ -46,7 +41,6 @@ export const RailNav = () => {
       <Link href="/" className="rail__brand" style={{ textDecoration: "none", color: "inherit" }}>
         <div className="rail__mark">N</div>
         <div className="rail__name">Nex<em>u</em>s</div>
-        <div className="rail__pro">v2.4</div>
       </Link>
 
       <button className="btn" style={{ width: "100%", justifyContent: "flex-start" }}
@@ -101,9 +95,9 @@ export const RailNav = () => {
       </div>
 
       <div className="rail__user">
-        <div className="rail__avatar">AK</div>
+        <div className="rail__avatar">N</div>
         <div className="rail__user-meta">
-          <strong>Aditya Kapoor</strong>
+          <strong>Nexus Local</strong>
           <span>nexus.local · admin</span>
         </div>
       </div>
@@ -122,11 +116,12 @@ export const TopBar = () => {
   const page = getPageId(pathname);
 
   const labels: Record<string, string[]> = {
-    chat: ["Chat", "New conversation"],
-    conversation: ["Chat", "Q3 board narrative draft"],
-    projects: ["Projects"],
-    graph: ["Knowledge graph"],
-    settings: ["Settings"],
+    demo:         ["Demo"],
+    chat:         ["Chat", "New conversation"],
+    conversation: ["Chat", "Vector similarity metrics"],
+    projects:     ["Projects"],
+    graph:        ["Knowledge graph"],
+    settings:     ["Settings"],
   };
   const trail = labels[page] || [page];
 
