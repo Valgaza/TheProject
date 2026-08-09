@@ -4,11 +4,22 @@ import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/icons";
 
+const MEMORY_URL = process.env.NEXT_PUBLIC_MEMORY_URL ?? "http://localhost:8000";
+const USER_ID = "user_001";
+
 export default function Conversation() {
   const router = useRouter();
   const [messages, setMessages] = useState<any[]>([
-    { role: "user", id: 1, text: "Draft the opening section of our Q3 board narrative — the one we'll send Friday. Lean on the EU pipeline-cost variance work from last week and keep the tone confident, not defensive." },
-    { role: "ai", id: 2, pipeline: "finance", finished: true, hops: ["router","retrieve","compose","cite"] },
+    {
+      role: "user", id: 1,
+      text: "Compare the three most common vector similarity metrics used in embedding search — include their formulas, use cases, and performance trade-offs.",
+    },
+    { role: "ai", id: 2, type: "table", finished: true },
+    {
+      role: "user", id: 3,
+      text: "Show me the cosine similarity formula with a worked numeric example using two short vectors.",
+    },
+    { role: "ai", id: 4, type: "formula", finished: true },
   ]);
   const [streaming, setStreaming] = useState("");
   const [val, setVal] = useState("");
@@ -20,10 +31,18 @@ export default function Conversation() {
   const send = () => {
     if (!val.trim()) return;
     const id = Date.now();
-    setMessages(m => [...m, { role: "user", id, text: val.trim() }]);
+    const text = val.trim();
+    setMessages(m => [...m, { role: "user", id, text }]);
     setVal("");
+
+    fetch(`${MEMORY_URL}/ingest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, user_id: USER_ID }),
+    }).catch(err => console.error("[memory] ingest failed:", err));
+
     setTimeout(() => {
-      setMessages(m => [...m, { role: "ai", id: id + 1, pipeline: "finance", finished: true, followup: true }]);
+      setMessages(m => [...m, { role: "ai", id: id + 1, type: "followup", finished: true }]);
     }, 600);
   };
 
@@ -32,28 +51,26 @@ export default function Conversation() {
       <div className="convo__head">
         <div className="convo__meta">
           <span className="tag tag--accent">
-            <span className="dot" style={{background: "var(--d-finance)"}}/>
-            FINANCE PIPELINE
+            <span className="dot" style={{background: "var(--d-rag)"}}/>
+            RAG Q&A
           </span>
-          <span>3 messages</span>
+          <span>4 messages</span>
           <span>·</span>
-          <span>started 2h ago</span>
-          <span>·</span>
-          <span>llama-3.1-70b-q4 · local</span>
+          <span>rag pipeline · local</span>
         </div>
-        <h1 className="convo__title">Q3 board narrative draft</h1>
+        <h1 className="convo__title">Vector similarity metrics</h1>
       </div>
 
       {messages.map(m => m.role === "user"
         ? <UserMsg key={m.id} text={m.text}/>
-        : <AIMsg key={m.id} m={m} streaming={streaming} />)}
+        : <AIMsg key={m.id} m={m} streaming={streaming} router={router}/>)}
 
       <div className="composer-wrap" style={{ marginTop: 32 }}>
         <div className="composer">
           <div className="composer__top">
             <div className="tag tag--accent">
-              <span className="dot" style={{background: "var(--d-finance)"}}/>
-              Finance pipeline
+              <span className="dot" style={{background: "var(--d-rag)"}}/>
+              RAG Q&A
             </div>
             <span className="composer__hint mono">↑ to edit last · ⌘K to switch</span>
           </div>
@@ -82,87 +99,146 @@ export default function Conversation() {
 const UserMsg = ({ text }: { text: string }) => (
   <div className="msg msg--user msg-enter">
     <div className="msg__hd">
-      <div className="msg__avatar">AK</div>
-      <strong>Aditya</strong>
-      <span>14:32</span>
+      <div className="msg__avatar">U</div>
+      <strong>You</strong>
     </div>
     <div className="msg__body"><p>{text}</p></div>
   </div>
 );
 
-const AIMsg = ({ m, streaming }: any) => {
-  const router = useRouter();
-  return (
-    <div className="msg msg--ai msg-enter" style={{ animationDelay: m.followup ? "0ms" : "200ms"}}>
-      <div className="msg__hd">
-        <div className="msg__avatar">N</div>
-        <strong>Nexus · Finance</strong>
-        <span>14:32</span>
-        <span style={{flex:1}}/>
-        <span style={{color: "var(--ink-3)"}}>· 2.4s · 1,247 tokens</span>
-      </div>
-      {m.followup ? (
+const AIMsg = ({ m, streaming, router }: any) => {
+  if (m.type === "followup") {
+    return (
+      <div className="msg msg--ai msg-enter">
+        <div className="msg__hd">
+          <div className="msg__avatar">N</div>
+          <strong>Nexus · RAG</strong>
+        </div>
         <div className="msg__body">
-          <p>Working on that section now — pulling the EU variance numbers and last-quarter context. Three paragraphs incoming.</p>
-          <div style={{display:"flex", gap:8, marginTop: 12}}>
-            <div className="skeleton" style={{height: 14, width: "92%"}}/>
+          <p>Working on that — retrieving relevant context and composing a response.</p>
+          <div style={{display:"flex", gap:8, marginTop:12}}>
+            <div className="skeleton" style={{height:14, width:"90%"}}/>
           </div>
-          <div style={{display:"flex", gap:8, marginTop: 8}}>
-            <div className="skeleton" style={{height: 14, width: "78%"}}/>
+          <div style={{display:"flex", gap:8, marginTop:8}}>
+            <div className="skeleton" style={{height:14, width:"75%"}}/>
           </div>
         </div>
-      ) : (
+      </div>
+    );
+  }
+
+  if (m.type === "table") {
+    return (
+      <div className="msg msg--ai msg-enter" style={{animationDelay:"200ms"}}>
+        <div className="msg__hd">
+          <div className="msg__avatar">N</div>
+          <strong>Nexus · RAG</strong>
+          <span>14:04</span>
+          <span style={{flex:1}}/>
+          <span style={{color:"var(--ink-3)"}}>· 1.8s · 842 tokens</span>
+        </div>
         <div className="msg__body">
-          <h4>Q3 — A quarter of disciplined ambition.</h4>
+          <h4>Three metrics, three trade-offs.</h4>
           <p>
-            The third quarter delivered <strong>$48.2M in net revenue</strong>, a 31% lift over Q2 and the strongest sequential growth since the platform launched
-            <span className="cite">1</span>. Beneath that headline, the texture is cleaner than the number alone suggests: gross margin expanded 280 basis points to 71.4% as our local-inference deployments matured past the early operational tax<span className="cite">2</span>, and the EU pipeline-cost variance flagged in Q2 has been substantially absorbed.
+            Vector search performance hinges on the right similarity metric for your data distribution.
+            Cosine similarity is the standard for normalised text embeddings; dot product is faster but
+            magnitude-sensitive; Euclidean distance generalises better to dense numerical spaces.
           </p>
-
-          <p>
-            The EU correction is worth dwelling on. We over-provisioned compute against a forecast that assumed a heavier mix of long-context inference; in practice, the workload skewed toward retrieval-augmented patterns that the smaller pipelines handle natively. We reclaimed
-            <strong> €1.4M in run-rate spend</strong> by re-routing 38% of EU traffic to the Finance and Operations pipelines and decommissioning two over-sized clusters in Frankfurt-2.
-          </p>
-
           <table className="tbl">
             <thead>
-              <tr><th>Region</th><th>Forecast Q3</th><th>Actual Q3</th><th>Variance</th></tr>
+              <tr><th>Metric</th><th>Formula</th><th>Best For</th><th>Notes</th></tr>
             </thead>
             <tbody>
-              <tr><td>NA</td><td className="num">$18.4M</td><td className="num">$19.1M</td><td className="num" style={{color: "oklch(0.5 0.06 145)"}}>+3.8%</td></tr>
-              <tr><td>EU</td><td className="num">$15.8M</td><td className="num">$14.3M</td><td className="num" style={{color: "oklch(0.5 0.07 30)"}}>−9.5%</td></tr>
-              <tr><td>APAC</td><td className="num">$11.2M</td><td className="num">$12.8M</td><td className="num" style={{color: "oklch(0.5 0.06 145)"}}>+14.3%</td></tr>
-              <tr><td>LATAM</td><td className="num">$1.8M</td><td className="num">$2.0M</td><td className="num" style={{color: "oklch(0.5 0.06 145)"}}>+11.1%</td></tr>
+              <tr>
+                <td>Cosine Similarity</td>
+                <td className="mono" style={{fontSize:12}}>(A·B) / (‖A‖·‖B‖)</td>
+                <td>Semantic NLP, RAG</td>
+                <td style={{color:"var(--ink-2)", fontSize:12.5}}>Normalised; ignores magnitude</td>
+              </tr>
+              <tr>
+                <td>Dot Product</td>
+                <td className="mono" style={{fontSize:12}}>Σ aᵢ·bᵢ</td>
+                <td>Recommendation, ANN</td>
+                <td style={{color:"var(--ink-2)", fontSize:12.5}}>Fastest; magnitude-sensitive</td>
+              </tr>
+              <tr>
+                <td>Euclidean Distance</td>
+                <td className="mono" style={{fontSize:12}}>√Σ (aᵢ−bᵢ)²</td>
+                <td>Computer vision, clustering</td>
+                <td style={{color:"var(--ink-2)", fontSize:12.5}}>Sensitive to vector scale</td>
+              </tr>
             </tbody>
           </table>
-
           <p>
-            Looking forward, the question for Q4 is not whether we can grow — the pipeline supports it — but whether we can grow without re-introducing the operational drag of 2025. The answer, candidly, depends on three calls the board should weigh in on this quarter.
+            For most RAG pipelines operating on unit-normalised embeddings, cosine similarity and dot
+            product are numerically equivalent — dot product is preferred for throughput.
           </p>
-
-          <pre className="code"><span className="c">// suggested closing — needs review</span>{"\n"}<span className="k">summary</span>: {"{"}{"\n"}  <span className="k">posture</span>: <span className="s">"confident_not_defensive"</span>,{"\n"}  <span className="k">runway</span>: <span className="n">14.2</span>, <span className="c">// quarters</span>{"\n"}  <span className="k">asks</span>: [<span className="s">"EU_recommit"</span>, <span className="s">"APAC_expand"</span>, <span className="s">"hire_freeze_lift"</span>]{"\n"}{"}"}</pre>
-
           <div className="trace">
             <span>PIPELINE TRACE</span>
             <span className="trace__line"/>
             <span className="trace__dots">
-              <span className="trace__dot is-on" title="Router"/>
-              <span style={{color:"var(--ink-3)"}}>router</span>
-              <span className="trace__line" style={{width: 24, flex: "0 0 24px"}}/>
-              <span className="trace__dot is-on"/>
-              <span style={{color:"var(--ink-3)"}}>retrieve · 14 docs</span>
-              <span className="trace__line" style={{width: 24, flex: "0 0 24px"}}/>
-              <span className="trace__dot is-on"/>
-              <span style={{color:"var(--ink-3)"}}>finance · q4-70b</span>
-              <span className="trace__line" style={{width: 24, flex: "0 0 24px"}}/>
-              <span className="trace__dot is-on"/>
-              <span style={{color:"var(--ink-3)"}}>cite · 2 sources</span>
+              <span className="trace__dot is-on"/><span style={{color:"var(--ink-3)"}}>router</span>
+              <span className="trace__line" style={{width:24, flex:"0 0 24px"}}/>
+              <span className="trace__dot is-on"/><span style={{color:"var(--ink-3)"}}>retrieve · 8 docs</span>
+              <span className="trace__line" style={{width:24, flex:"0 0 24px"}}/>
+              <span className="trace__dot is-on"/><span style={{color:"var(--ink-3)"}}>rag · compose</span>
+              <span className="trace__line" style={{width:24, flex:"0 0 24px"}}/>
+              <span className="trace__dot is-on"/><span style={{color:"var(--ink-3)"}}>cite · 3 sources</span>
             </span>
             <span className="trace__line"/>
-            <span style={{cursor: "pointer", color: "var(--accent)"}} onClick={() => router.push("/graph")}>view in graph ↗</span>
+            <span style={{cursor:"pointer", color:"var(--accent)"}} onClick={() => router.push("/graph")}>view in graph ↗</span>
           </div>
         </div>
-      )}
-    </div>
-  );
+      </div>
+    );
+  }
+
+  if (m.type === "formula") {
+    return (
+      <div className="msg msg--ai msg-enter" style={{animationDelay:"200ms"}}>
+        <div className="msg__hd">
+          <div className="msg__avatar">N</div>
+          <strong>Nexus · RAG</strong>
+          <span>14:05</span>
+          <span style={{flex:1}}/>
+          <span style={{color:"var(--ink-3)"}}>· 1.1s · 394 tokens</span>
+        </div>
+        <div className="msg__body">
+          <h4>Cosine similarity, step by step.</h4>
+          <p>
+            Cosine similarity measures the angle between two vectors, not their magnitude.
+            A result of 1 means identical direction; 0 means orthogonal; −1 means opposite.
+          </p>
+          <pre className="code">{`// Formula
+cosine_sim(A, B)  =  (A · B) / (‖A‖ × ‖B‖)
+
+// Example  —  A = [1, 2, 3],  B = [4, 0, 2]
+
+dot(A,B)  =  (1×4) + (2×0) + (3×2)  =  4 + 0 + 6  =  10
+‖A‖       =  √(1² + 2² + 3²)         =  √14        ≈  3.742
+‖B‖       =  √(4² + 0² + 2²)         =  √20        ≈  4.472
+
+result    =  10 / (3.742 × 4.472)    ≈  0.5976`}</pre>
+          <p>
+            A score of ≈ 0.60 indicates moderate directional similarity — these vectors
+            point roughly toward the same region of the embedding space.
+          </p>
+          <div className="trace">
+            <span>PIPELINE TRACE</span>
+            <span className="trace__line"/>
+            <span className="trace__dots">
+              <span className="trace__dot is-on"/><span style={{color:"var(--ink-3)"}}>router</span>
+              <span className="trace__line" style={{width:24, flex:"0 0 24px"}}/>
+              <span className="trace__dot is-on"/><span style={{color:"var(--ink-3)"}}>retrieve · 3 docs</span>
+              <span className="trace__line" style={{width:24, flex:"0 0 24px"}}/>
+              <span className="trace__dot is-on"/><span style={{color:"var(--ink-3)"}}>rag · compose</span>
+            </span>
+            <span className="trace__line"/>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
 };
