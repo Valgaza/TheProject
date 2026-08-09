@@ -365,7 +365,7 @@ export default function RagDemo() {
               {m.ingest && renderIngestStats(m.ingest)}
               {m.prompt && renderPrompt(m.prompt)}
               {m.sources && m.sources.length > 0 && renderSources(m.sources)}
-              {m.stats && renderStats(m)}
+              {m.stats && renderStats(m.stats)}
             </div>
           </div>
         ))}
