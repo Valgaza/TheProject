@@ -20,6 +20,7 @@ export const RailNav = () => {
     { id: "chat", label: "New chat", icon: "chat", path: "/chat" },
     { id: "projects", label: "Projects", icon: "folder", count: 4, path: "/projects" },
     { id: "graph", label: "Knowledge graph", icon: "graph", path: "/graph" },
+    { id: "rag-demo", label: "RAG Demo", icon: "flask", path: "/rag-demo" },
     { id: "settings", label: "Settings", icon: "cog", path: "/settings" },
   ];
 
@@ -126,6 +127,7 @@ export const TopBar = () => {
     conversation: ["Chat", "Q3 board narrative draft"],
     projects: ["Projects"],
     graph: ["Knowledge graph"],
+    "rag-demo": ["RAG Demo", "Knowledge Retrieval Playground"],
     settings: ["Settings"],
   };
   const trail = labels[page] || [page];
