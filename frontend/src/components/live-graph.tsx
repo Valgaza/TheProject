@@ -2,10 +2,13 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/icons";
-
-const MEMORY_URL = process.env.NEXT_PUBLIC_MEMORY_URL ?? "http://localhost:8000";
-const WS_URL = MEMORY_URL.replace(/^http/, "ws");
-const USER_ID = "user_001";
+import {
+  type ApiGraph,
+  MEMORY_URL,
+  USER_ID,
+  graphSocketUrl,
+  graphUrl,
+} from "@/lib/api";
 
 export const NODE_TYPES: Record<string, { label: string; color: string; fill: string }> = {
   entity:  { label: "Entity",   color: "var(--accent)",        fill: "oklch(0.94 0.03 195)" },
@@ -21,9 +24,6 @@ const nt = (type: string) => NODE_TYPES[type.toLowerCase()] ?? NODE_TYPES.entity
 type GNode = { id: string; label: string; type: string; summary: string; x: number; y: number; r: number };
 type GEdge = { s: string; t: string; label: string };
 
-type ApiNode = { id: string; name: string; type: string; summary: string; attributes: Record<string, unknown> };
-type ApiEdge = { id: string; source: string; target: string; label: string; fact: string };
-type ApiGraph = { group_id: string; nodes: ApiNode[]; edges: ApiEdge[] };
 
 const CX = 550, CY = 360;
 const RINGS = [
@@ -86,7 +86,7 @@ export function LiveGraph({ className }: LiveGraphProps) {
   useEffect(() => {
     let cancelled = false;
 
-    fetch(`${MEMORY_URL}/graph?user_id=${USER_ID}`)
+    fetch(graphUrl())
       .then(r => r.json())
       .then((data: ApiGraph) => { if (!cancelled) applyPayload(data); })
       .catch(err => {
@@ -94,7 +94,7 @@ export function LiveGraph({ className }: LiveGraphProps) {
         if (!cancelled) setLoading(false);
       });
 
-    const ws = new WebSocket(`${WS_URL}/ws/graph/${USER_ID}`);
+    const ws = new WebSocket(graphSocketUrl());
     ws.onopen    = ()  => { if (!cancelled) setWsStatus("connected"); };
     ws.onmessage = e   => { if (!cancelled) applyPayload(JSON.parse(e.data)); };
     ws.onerror   = err => { if (!cancelled) console.error("[graph] WS error:", err); };
@@ -120,7 +120,7 @@ export function LiveGraph({ className }: LiveGraphProps) {
 
   const handleReset = async () => {
     try {
-      await fetch(`${MEMORY_URL}/graph?user_id=${USER_ID}`, { method: "DELETE" });
+      await fetch(graphUrl(), { method: "DELETE" });
     } catch (err) {
       console.error("[graph] reset failed:", err);
     }
