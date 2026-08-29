@@ -16,6 +16,7 @@ from graphiti_core.llm_client.openai_client import OpenAIClient
 from graphiti_core.nodes import EntityNode, EpisodeType
 
 from .config import Settings
+from .logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,7 @@ async def _build_graph_response(gid: str) -> "GraphResponse":
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _graphiti
+    configure_logging()
     cfg = Settings()
 
     _graphiti = Graphiti(
