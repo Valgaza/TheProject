@@ -1,6 +1,7 @@
 import logging
-from collections import defaultdict
+import uuid
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -17,46 +18,69 @@ from graphiti_core.nodes import EntityNode, EpisodeType
 
 from .config import Settings
 from .logging_config import configure_logging
+from .scopes import Scope, read_groups, write_group
 
 logger = logging.getLogger(__name__)
 
 _graphiti: Graphiti | None = None
 
 
+def _require_graphiti() -> Graphiti:
+    """503 rather than 500 when startup failed.
+
+    This used to be a bare ``assert``, which vanishes under ``python -O`` and
+    reports a dead Neo4j connection as an internal error.
+    """
+    if _graphiti is None:
+        raise HTTPException(status_code=503, detail="memory service is still starting")
+    return _graphiti
+
+
 # ── Connection manager ────────────────────────────────────────────────────────
+
+
+@dataclass(eq=False)
+class Subscription:
+    """One websocket and the set of groups it wants to see.
+
+    A subscriber watching a project asks for two groups, its project tier and
+    the user tier. Keying subscriptions by a single group id (as this did
+    before) meant a user-scope write never reached a project watcher: memory
+    would form and the panel would not move.
+    """
+
+    websocket: WebSocket
+    groups: frozenset[str] = field(default_factory=frozenset)
 
 
 class ConnectionManager:
     def __init__(self) -> None:
-        self._connections: dict[str, list[WebSocket]] = defaultdict(list)
+        self._subscriptions: list[Subscription] = []
 
-    async def connect(self, group_id: str, ws: WebSocket) -> None:
-        await ws.accept()
-        self._connections[group_id].append(ws)
+    async def connect(self, websocket: WebSocket, groups: list[str]) -> Subscription:
+        await websocket.accept()
+        subscription = Subscription(websocket=websocket, groups=frozenset(groups))
+        self._subscriptions.append(subscription)
         logger.info(
-            "WS connected  group=%s total=%d", group_id, len(self._connections[group_id])
+            "WS connected  groups=%s total=%d", sorted(groups), len(self._subscriptions)
         )
+        return subscription
 
-    def disconnect(self, group_id: str, ws: WebSocket) -> None:
-        bucket = self._connections.get(group_id, [])
+    def disconnect(self, subscription: Subscription) -> None:
         try:
-            bucket.remove(ws)
+            self._subscriptions.remove(subscription)
         except ValueError:
-            pass
-        logger.info("WS disconnected group=%s remaining=%d", group_id, len(bucket))
-
-    async def broadcast(self, group_id: str, payload: str) -> None:
-        bucket = self._connections.get(group_id, [])
-        if not bucket:
             return
-        dead: list[WebSocket] = []
-        for ws in bucket:
-            try:
-                await ws.send_text(payload)
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self.disconnect(group_id, ws)
+        logger.info("WS disconnected remaining=%d", len(self._subscriptions))
+
+    def watchers_of(self, group_id: str) -> list[Subscription]:
+        return [s for s in self._subscriptions if group_id in s.groups]
+
+    async def send(self, subscription: Subscription, payload: str) -> None:
+        try:
+            await subscription.websocket.send_text(payload)
+        except Exception:
+            self.disconnect(subscription)
 
 
 manager = ConnectionManager()
@@ -65,19 +89,17 @@ manager = ConnectionManager()
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _group_id(user_id: str, project_id: str | None) -> str:
-    return f"{user_id}_{project_id}" if project_id else user_id
-
-
-async def _build_graph_response(gid: str) -> "GraphResponse":
-    assert _graphiti is not None
-    nodes: list[EntityNode] = await EntityNode.get_by_group_ids(_graphiti.driver, [gid])
+async def _build_graph_response(groups: list[str]) -> "GraphResponse":
+    """The union of several groups, as one graph."""
+    graphiti = _require_graphiti()
+    nodes: list[EntityNode] = await EntityNode.get_by_group_ids(graphiti.driver, groups)
     try:
-        edges: list[EntityEdge] = await EntityEdge.get_by_group_ids(_graphiti.driver, [gid])
+        edges: list[EntityEdge] = await EntityEdge.get_by_group_ids(graphiti.driver, groups)
     except GroupsEdgesNotFoundError:
+        # The node call returns [] for an empty group; the edge call raises.
         edges = []
     return GraphResponse(
-        group_id=gid,
+        group_ids=groups,
         nodes=[
             NodeOut(
                 id=n.uuid,
@@ -85,6 +107,7 @@ async def _build_graph_response(gid: str) -> "GraphResponse":
                 type=n.labels[0] if n.labels else "Entity",
                 summary=n.summary,
                 attributes=n.attributes,
+                group_id=n.group_id,
             )
             for n in nodes
         ],
@@ -95,10 +118,37 @@ async def _build_graph_response(gid: str) -> "GraphResponse":
                 target=e.target_node_uuid,
                 label=e.name,
                 fact=e.fact,
+                group_id=e.group_id,
             )
             for e in edges
         ],
     )
+
+
+async def _broadcast_write(group_id: str) -> None:
+    """Push a fresh snapshot to everyone whose scope set contains this group.
+
+    Each subscriber sees the union it asked for, not just the group that
+    changed, so a project watcher's view stays whole when a user-scope write
+    lands. Subscribers sharing a scope set share one query.
+    """
+    watchers = manager.watchers_of(group_id)
+    if not watchers:
+        return
+
+    by_scope_set: dict[frozenset[str], list[Subscription]] = {}
+    for subscription in watchers:
+        by_scope_set.setdefault(subscription.groups, []).append(subscription)
+
+    for groups, subscriptions in by_scope_set.items():
+        try:
+            graph = await _build_graph_response(sorted(groups))
+        except Exception:
+            logger.exception("Failed to build graph for groups=%s", sorted(groups))
+            continue
+        payload = graph.model_dump_json()
+        for subscription in subscriptions:
+            await manager.send(subscription, payload)
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
@@ -117,23 +167,34 @@ async def lifespan(app: FastAPI):
         llm_client=OpenAIClient(
             config=LLMConfig(
                 api_key=cfg.openai_api_key,
-                model="gpt-5.4-nano-2026-03-17",
+                model=cfg.extraction_model,
                 max_tokens=4096,
             ),
             reasoning="low",
         ),
         embedder=OpenAIEmbedder(
-            config=OpenAIEmbedderConfig(api_key=cfg.openai_api_key)
+            config=OpenAIEmbedderConfig(
+                api_key=cfg.openai_api_key,
+                embedding_model=cfg.embedding_model,
+                # Pinned in code, not left to graphiti's env-read default of
+                # 1024, which silently slices every vector. See config.py.
+                embedding_dim=cfg.embedding_dim,
+            )
         ),
     )
     await _graphiti.build_indices_and_constraints()
-    logger.info("Memory service ready")
+    logger.info(
+        "Memory service ready  embed=%s dim=%d extract=%s",
+        cfg.embedding_model,
+        cfg.embedding_dim,
+        cfg.extraction_model,
+    )
     yield
     await _graphiti.close()
     logger.info("Memory service shut down")
 
 
-app = FastAPI(title="Nexus Memory Service", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Nexus Memory Service", version="0.2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -148,12 +209,16 @@ app.add_middleware(
 
 class IngestRequest(BaseModel):
     text: str
-    user_id: str
-    project_id: str | None = None
+    user_id: uuid.UUID
+    project_id: uuid.UUID | None = None
+    # Explicit, never inferred. Defaulting this would make the tier a
+    # side effect of whether a project id happened to be passed.
+    scope: Scope = "user"
 
 
 class IngestResponse(BaseModel):
     status: str
+    group_id: str
 
 
 class NodeOut(BaseModel):
@@ -162,6 +227,8 @@ class NodeOut(BaseModel):
     type: str
     summary: str
     attributes: dict
+    # Which tier this came from, so the UI can say so.
+    group_id: str
 
 
 class EdgeOut(BaseModel):
@@ -170,10 +237,11 @@ class EdgeOut(BaseModel):
     target: str
     label: str
     fact: str
+    group_id: str
 
 
 class GraphResponse(BaseModel):
-    group_id: str
+    group_ids: list[str]
     nodes: list[NodeOut]
     edges: list[EdgeOut]
 
@@ -186,29 +254,26 @@ class HealthResponse(BaseModel):
 # ── Background task ───────────────────────────────────────────────────────────
 
 
-async def _run_ingest(text: str, user_id: str, project_id: str | None) -> None:
-    assert _graphiti is not None
-    gid = _group_id(user_id, project_id)
+async def _run_ingest(text: str, group_id: str) -> None:
+    graphiti = _require_graphiti()
     try:
-        await _graphiti.add_episode(
+        await graphiti.add_episode(
             name="message",
             episode_body=f"user: {text}",
             source=EpisodeType.message,
-            source_description="nexus chat message",
+            source_description=f"nexus chat message ({group_id})",
             reference_time=datetime.now(timezone.utc),
-            group_id=gid,
+            group_id=group_id,
         )
-        logger.info("Ingested episode for group=%s", gid)
+        logger.info("Ingested episode into group=%s", group_id)
     except Exception:
-        logger.exception("Failed to ingest episode for group=%s", gid)
+        logger.exception("Failed to ingest episode into group=%s", group_id)
         return
 
-    # Broadcast updated graph to all connected WebSocket clients for this group.
     try:
-        graph = await _build_graph_response(gid)
-        await manager.broadcast(gid, graph.model_dump_json())
+        await _broadcast_write(group_id)
     except Exception:
-        logger.exception("Failed to broadcast graph update for group=%s", gid)
+        logger.exception("Failed to broadcast update for group=%s", group_id)
 
 
 # ── HTTP routes ───────────────────────────────────────────────────────────────
@@ -216,43 +281,54 @@ async def _run_ingest(text: str, user_id: str, project_id: str | None) -> None:
 
 @app.post("/ingest", response_model=IngestResponse, status_code=202)
 async def ingest(req: IngestRequest, background_tasks: BackgroundTasks):
-    """Accept a chat message for async ingestion into the knowledge graph."""
+    """Accept text for async ingestion into exactly one scope."""
     if not req.text.strip():
         raise HTTPException(status_code=422, detail="text must not be empty")
-    background_tasks.add_task(_run_ingest, req.text, req.user_id, req.project_id)
-    return IngestResponse(status="accepted")
+    try:
+        group_id = write_group(req.scope, req.user_id, req.project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    background_tasks.add_task(_run_ingest, req.text, group_id)
+    return IngestResponse(status="accepted", group_id=group_id)
 
 
 @app.get("/graph", response_model=GraphResponse)
-async def get_graph(user_id: str, project_id: str | None = None):
-    """Return all entity nodes and edges for a user (optionally scoped to a project)."""
-    assert _graphiti is not None
-    return await _build_graph_response(_group_id(user_id, project_id))
+async def get_graph(user_id: uuid.UUID, project_id: uuid.UUID | None = None):
+    """The union of the user tier and, when given, one project tier."""
+    return await _build_graph_response(read_groups(user_id, project_id))
 
 
 @app.delete("/graph", status_code=204)
-async def delete_graph(user_id: str, project_id: str | None = None):
-    """Wipe all nodes and edges for a user — for demo resets only."""
-    assert _graphiti is not None
-    gid = _group_id(user_id, project_id)
-    await _graphiti.driver.execute_query(
-        "MATCH (n {group_id: $gid}) DETACH DELETE n",
-        gid=gid,
+async def delete_graph(user_id: uuid.UUID, project_id: uuid.UUID | None = None):
+    """Wipe every group this caller can read -- for demo resets only.
+
+    Deliberately matches the read set rather than a single tier: this backs a
+    reset button, and clearing half of what the panel shows would be worse than
+    clearing all of it.
+    """
+    graphiti = _require_graphiti()
+    groups = read_groups(user_id, project_id)
+    await graphiti.driver.execute_query(
+        "MATCH (n) WHERE n.group_id IN $groups DETACH DELETE n",
+        groups=groups,
     )
-    logger.info("Deleted graph for group=%s", gid)
-    empty = GraphResponse(group_id=gid, nodes=[], edges=[])
-    await manager.broadcast(gid, empty.model_dump_json())
+    logger.info("Deleted graph for groups=%s", groups)
+
+    empty = GraphResponse(group_ids=groups, nodes=[], edges=[])
+    payload = empty.model_dump_json()
+    for group_id in groups:
+        for subscription in manager.watchers_of(group_id):
+            await manager.send(subscription, payload)
 
 
 @app.get("/health", response_model=HealthResponse)
 async def health():
-    """Liveness + Neo4j reachability check."""
+    """Liveness plus Neo4j reachability."""
     if _graphiti is None:
         return HealthResponse(status="starting", neo4j="unknown")
     try:
-        records, _, _ = await _graphiti.driver.execute_query(
-            "RETURN 1 AS ok", routing_="r"
-        )
+        records, _, _ = await _graphiti.driver.execute_query("RETURN 1 AS ok", routing_="r")
         neo4j_status = "ok" if records else "unreachable"
     except Exception as exc:
         logger.error("Neo4j health check failed: %s", exc)
@@ -267,24 +343,22 @@ async def health():
 
 
 @app.websocket("/ws/graph/{user_id}")
-async def ws_graph(websocket: WebSocket, user_id: str, project_id: str | None = None):
-    """
-    Stream real-time graph updates to a client.
+async def ws_graph(websocket: WebSocket, user_id: uuid.UUID, project_id: uuid.UUID | None = None):
+    """Stream graph updates for one scope set.
 
-    Sends the current graph state immediately on connect, then pushes a fresh
-    snapshot whenever ingestion completes for this user/project scope.
+    Sends the current union on connect, then a fresh snapshot whenever a write
+    lands in *any* group the client asked for.
     """
-    gid = _group_id(user_id, project_id)
-    await manager.connect(gid, websocket)
+    groups = read_groups(user_id, project_id)
+    subscription = await manager.connect(websocket, groups)
     try:
-        # Push the current state immediately so the client doesn't have to poll.
-        graph = await _build_graph_response(gid)
+        graph = await _build_graph_response(groups)
         await websocket.send_text(graph.model_dump_json())
 
-        # Hold the connection open; we don't process inbound messages.
+        # Held open; inbound frames are not part of the protocol.
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
         pass
     finally:
-        manager.disconnect(gid, websocket)
+        manager.disconnect(subscription)
