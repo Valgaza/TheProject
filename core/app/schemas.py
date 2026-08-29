@@ -56,3 +56,24 @@ class MessageOut(BaseModel):
     content: str
     meta: dict = Field(serialization_alias="metadata")
     created_at: datetime
+
+
+class RouteOut(BaseModel):
+    """Which handler answered, and why it was picked."""
+
+    handler: str
+    reason: str
+
+
+class TurnOut(BaseModel):
+    """Both halves of an exchange.
+
+    The user message comes back rather than only the answer so the client can
+    reconcile its optimistic render against the stored row — the id and the
+    server timestamp are the server's to assign.
+    """
+
+    user_message: MessageOut
+    assistant_message: MessageOut
+    route: RouteOut
+    chat_title: str

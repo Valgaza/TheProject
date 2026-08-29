@@ -26,8 +26,12 @@ class OpenAIProvider(Provider):
         chat_model: str,
         embed_model: str,
         base_url: str | None = None,
+        timeout: float = 60.0,
     ) -> None:
-        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        # The SDK defaults to 600s with retries. A chat call is answered inline
+        # in an HTTP request, so a hung upstream would hang the user's browser
+        # for ten minutes; fail in one instead.
+        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
         self._chat_model = chat_model
         self._embed_model = embed_model
 
