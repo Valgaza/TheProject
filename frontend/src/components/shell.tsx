@@ -1,18 +1,30 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Icon } from "./icons";
+import { CHATS_CHANGED, type Chat, defaultProject, listChats } from "@/lib/api";
+
+/** "/c/abc" -> "c", "/" -> "landing". Only the first segment names a page. */
+const getPageId = (path: string) => {
+  const [segment] = path.split("/").filter(Boolean);
+  return segment ?? "landing";
+};
+
+function relativeTime(iso: string): string {
+  const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.round(hours / 24)}d`;
+}
 
 export const RailNav = () => {
   const pathname = usePathname();
   const router = useRouter();
 
-  const getPageId = (path: string) => {
-    if (path === "/") return "landing";
-    return path.replace("/", "");
-  };
   const page = getPageId(pathname);
 
   const main = [
@@ -23,14 +35,28 @@ export const RailNav = () => {
     { id: "settings", label: "Settings",         icon: "cog",    path: "/settings" },
   ];
 
-  const recent = [
-    { id: "r1", title: "Vector similarity metrics",    domain: "rag",     time: "2h" },
-    { id: "r2", title: "Embedding model comparison",   domain: "rag",     time: "yesterday" },
-    { id: "r3", title: "Project status draft",         domain: "general", time: "yesterday" },
-    { id: "r4", title: "Team standup transcript",      domain: "speech",  time: "Mon" },
-    { id: "r5", title: "Dashboard screenshot review",  domain: "vision",  time: "Mon" },
-    { id: "r6", title: "API documentation Q&A",        domain: "rag",     time: "Apr 18" },
-  ];
+  // Real chats, refetched whenever the route changes so a new conversation
+  // shows up here the moment it exists. Polling and live sync are phase 6's
+  // problem; this is the cheapest thing that makes the list true.
+  const [recent, setRecent] = useState<Chat[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const project = await defaultProject();
+        const chats = await listChats(project.id);
+        if (!cancelled) setRecent(chats);
+      } catch {
+        if (!cancelled) setRecent([]);
+      }
+    };
+    void load();
+    window.addEventListener(CHATS_CHANGED, load);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(CHATS_CHANGED, load);
+    };
+  }, [pathname]);
 
   const projects = [
     { id: "p1", name: "Knowledge Base Q&A", domain: "rag" },
@@ -80,15 +106,22 @@ export const RailNav = () => {
       <div className="rail__section" style={{ flex: 1, minHeight: 0 }}>
         <div className="rail__label">Recent</div>
         <div className="rail__history">
-          {recent.map(r => (
-            <div key={r.id} className="nav-item" onClick={() => router.push("/conversation")}>
+          {recent.length === 0 && (
+            <div className="nav-item" style={{ color: "var(--ink-3)", fontSize: 12.5 }}>
+              No conversations yet
+            </div>
+          )}
+          {recent.map(chat => (
+            <div key={chat.id}
+                 className={`nav-item ${pathname === `/c/${chat.id}` ? "is-active" : ""}`}
+                 onClick={() => router.push(`/c/${chat.id}`)}>
               <span className="dot" style={{
                 width: 5, height: 5, borderRadius: 999,
-                background: `var(--d-${r.domain})`, flex: "0 0 5px",
+                background: "var(--d-general)", flex: "0 0 5px",
                 opacity: 0.8
               }}/>
-              <span className="truncate" style={{ fontSize: 13 }}>{r.title}</span>
-              <span className="count" style={{ fontSize: 10.5 }}>{r.time}</span>
+              <span className="truncate" style={{ fontSize: 13 }}>{chat.title}</span>
+              <span className="count" style={{ fontSize: 10.5 }}>{relativeTime(chat.updated_at)}</span>
             </div>
           ))}
         </div>
@@ -109,16 +142,12 @@ export const TopBar = () => {
   const pathname = usePathname();
   const router = useRouter();
 
-  const getPageId = (path: string) => {
-    if (path === "/") return "landing";
-    return path.replace("/", "");
-  };
   const page = getPageId(pathname);
 
   const labels: Record<string, string[]> = {
     demo:         ["Demo"],
     chat:         ["Chat", "New conversation"],
-    conversation: ["Chat", "Vector similarity metrics"],
+    c:            ["Chat", "Conversation"],
     projects:     ["Projects"],
     graph:        ["Knowledge graph"],
     settings:     ["Settings"],
