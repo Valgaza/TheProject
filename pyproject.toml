@@ -1,8 +1,13 @@
 [project]
 name = "nexus"
 version = "0.1.0"
-description = "Nexus – local-first AI orchestration platform"
+description = "Nexus – local multi-pipeline AI orchestration system"
 requires-python = ">=3.12"
 
 [tool.uv.workspace]
-members = ["memory"]
+members = ["memory", "core"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["core/tests", "memory/tests"]
+pythonpath = ["core", "memory"]
