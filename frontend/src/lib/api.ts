@@ -10,8 +10,15 @@ export const CORE_URL = process.env.NEXT_PUBLIC_CORE_URL ?? "http://localhost:81
 export const MEMORY_URL = process.env.NEXT_PUBLIC_MEMORY_URL ?? "http://localhost:8000";
 export const MEMORY_WS_URL = MEMORY_URL.replace(/^http/, "ws");
 
-/** Auth is deferred; every request is this user until Supabase Auth lands. */
-export const USER_ID = "user_001";
+/**
+ * Auth is deferred; every request is this user until Supabase Auth lands.
+ *
+ * This is the profile seeded by supabase/seed.sql and the DEMO_USER_ID the core
+ * service runs as. It used to be the string "user_001", which meant the memory
+ * graph was keyed to an identity no Supabase row corresponded to -- chat history
+ * and memory were about two different people.
+ */
+export const USER_ID = "00000000-0000-0000-0000-000000000001";
 
 // ── Core service ─────────────────────────────────────────────────────────────
 
@@ -128,12 +135,17 @@ export async function defaultProject(): Promise<Project> {
 
 // ── Memory service ───────────────────────────────────────────────────────────
 
+/** Memory tiers. A read unions both; a write picks one. */
+export type Scope = "user" | "project";
+
 export type ApiNode = {
   id: string;
   name: string;
   type: string;
   summary: string;
   attributes: Record<string, unknown>;
+  /** Which tier this came from. */
+  group_id: string;
 };
 
 export type ApiEdge = {
@@ -142,21 +154,42 @@ export type ApiEdge = {
   target: string;
   label: string;
   fact: string;
+  group_id: string;
 };
 
-export type ApiGraph = { group_id: string; nodes: ApiNode[]; edges: ApiEdge[] };
+/** The union that was read, not a single group. */
+export type ApiGraph = { group_ids: string[]; nodes: ApiNode[]; edges: ApiEdge[] };
 
-export const graphUrl = (userId: string = USER_ID) =>
-  `${MEMORY_URL}/graph?user_id=${encodeURIComponent(userId)}`;
+const scopeQuery = (projectId?: string) =>
+  `user_id=${encodeURIComponent(USER_ID)}` +
+  (projectId ? `&project_id=${encodeURIComponent(projectId)}` : "");
 
-export const graphSocketUrl = (userId: string = USER_ID) =>
-  `${MEMORY_WS_URL}/ws/graph/${encodeURIComponent(userId)}`;
+/** Reads union the user tier with the project tier, when a project is given. */
+export const graphUrl = (projectId?: string) =>
+  `${MEMORY_URL}/graph?${scopeQuery(projectId)}`;
 
-/** Fire-and-forget: the graph updating is not worth failing a chat turn over. */
-export function ingest(text: string, userId: string = USER_ID): void {
+export const graphSocketUrl = (projectId?: string) =>
+  `${MEMORY_WS_URL}/ws/graph/${encodeURIComponent(USER_ID)}` +
+  (projectId ? `?project_id=${encodeURIComponent(projectId)}` : "");
+
+/**
+ * Fire-and-forget: the graph updating is not worth failing a chat turn over.
+ *
+ * Scope is explicit because the memory service refuses to infer it -- a project
+ * fact quietly landing in durable user memory is the hardest bug to notice.
+ */
+export function ingest(
+  text: string,
+  { scope = "user", projectId }: { scope?: Scope; projectId?: string } = {}
+): void {
   fetch(`${MEMORY_URL}/ingest`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text, user_id: userId }),
+    body: JSON.stringify({
+      text,
+      user_id: USER_ID,
+      project_id: projectId ?? null,
+      scope,
+    }),
   }).catch(err => console.error("[memory] ingest failed:", err));
 }
