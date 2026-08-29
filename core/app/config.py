@@ -10,6 +10,7 @@ local inference expensive.
 from __future__ import annotations
 
 import os
+import uuid
 
 from dotenv import load_dotenv
 
@@ -45,6 +46,23 @@ class Settings:
         # The write gate (phase 5) runs as its own cheap call so it can later be
         # served by a small local model while answering stays on a bigger one.
         self.gate_model = _optional("CORE_GATE_MODEL", self.chat_model)
+
+        # ── Database (Supabase Postgres) ─────────────────────────────────────
+        # Postgres stores what was said; Neo4j stores what was learned.
+        self.database_url = _require("DATABASE_URL")
+        self.database_echo = _optional("DATABASE_ECHO", "0") == "1"
+
+        # Auth is deferred, so every request acts as this one user. It must
+        # match the profile seeded by supabase/seed.sql.
+        self.demo_user_id = uuid.UUID(
+            _optional("DEMO_USER_ID", "00000000-0000-0000-0000-000000000001")
+        )
+
+        # Only needed once Supabase Auth lands. The service role key bypasses
+        # row level security entirely: it belongs to this process and must
+        # never reach the browser via a NEXT_PUBLIC_* variable.
+        self.supabase_url = os.getenv("SUPABASE_URL") or None
+        self.supabase_service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or None
 
         # ── Service wiring ───────────────────────────────────────────────────
         self.memory_service_url = _optional("MEMORY_SERVICE_URL", "http://localhost:8000")

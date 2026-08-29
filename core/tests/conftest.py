@@ -1,19 +1,31 @@
 """Test fixtures.
 
-The app's lifespan builds a real provider from a real API key, so tests bypass
-it and populate ``app.state`` directly with fakes. That keeps the default suite
-free, offline, and fast.
+The app's lifespan builds a real provider and a real engine, so tests bypass it
+and populate ``app.state`` directly. Model calls are faked; the database is
+real, because the point of these tests is the SQL, the constraints and the
+triggers, none of which a fake would exercise. Database tests skip themselves
+when the local Supabase stack isn't running, so the default suite stays green.
 """
 
 from __future__ import annotations
 
+import os
+import uuid
 from typing import Sequence
 
 import httpx
 import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.db import create_engine
 from app.main import app
 from app.providers.base import Message, Provider
+
+DEMO_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+TEST_DATABASE_URL = os.getenv(
+    "TEST_DATABASE_URL", "postgresql://postgres:postgres@127.0.0.1:54322/postgres"
+)
 
 
 class FakeProvider(Provider):
@@ -45,6 +57,7 @@ class FakeSettings:
     chat_model = "fake-chat-model"
     embed_model = "fake-embed-model"
     gate_model = "fake-gate-model"
+    demo_user_id = DEMO_USER_ID
     # A host that cannot resolve, so the health check exercises its failure path.
     memory_service_url = "http://memory.invalid"
 
@@ -55,10 +68,61 @@ def provider() -> FakeProvider:
 
 
 @pytest.fixture
+async def engine():
+    """Skip the whole database suite if the local stack isn't up."""
+    eng = create_engine(TEST_DATABASE_URL)
+    try:
+        async with eng.connect() as conn:
+            await conn.execute(text("select 1"))
+    except Exception as exc:
+        await eng.dispose()
+        pytest.skip(f"database unavailable ({exc.__class__.__name__}); run `supabase start`")
+    yield eng
+    await eng.dispose()
+
+
+@pytest.fixture
+async def session_factory(engine):
+    """Bind sessions to one connection inside a transaction we always roll back.
+
+    ``join_transaction_mode="create_savepoint"`` lets the request handlers call
+    ``session.commit()`` normally while the outer transaction still discards
+    everything, so tests never pollute the seeded data.
+    """
+    async with engine.connect() as connection:
+        transaction = await connection.begin()
+        factory = async_sessionmaker(
+            bind=connection,
+            expire_on_commit=False,
+            join_transaction_mode="create_savepoint",
+        )
+        yield factory
+        await transaction.rollback()
+
+
+@pytest.fixture
 async def client(provider: FakeProvider):
+    """A client with no database wired in, for tests that don't need one."""
     app.state.settings = FakeSettings()
     app.state.provider = provider
     app.state.http = httpx.AsyncClient(timeout=1.0)
+    # No factory: health should report the database as unreachable, not crash.
+    app.state.session_factory = None
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+    await app.state.http.aclose()
+
+
+@pytest.fixture
+async def db_client(provider: FakeProvider, session_factory):
+    """A client backed by the real database, rolled back after each test."""
+    app.state.settings = FakeSettings()
+    app.state.provider = provider
+    app.state.http = httpx.AsyncClient(timeout=1.0)
+    app.state.session_factory = session_factory
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:

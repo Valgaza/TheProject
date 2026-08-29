@@ -13,10 +13,13 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from sqlalchemy import text
 
 from .config import Settings
+from .db import create_engine, create_session_factory
 from .logging_config import configure_logging
 from .providers import Provider, build_provider
+from .routers import chats_router, projects_router
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,7 @@ class HealthResponse(BaseModel):
     provider: str
     chat_model: str
     memory_service: str
+    database: str
 
 
 @asynccontextmanager
@@ -35,10 +39,13 @@ async def lifespan(app: FastAPI):
     settings = Settings()
     provider = build_provider(settings)
     http = httpx.AsyncClient(timeout=10.0)
+    engine = create_engine(settings.database_url, echo=settings.database_echo)
 
     app.state.settings = settings
     app.state.provider = provider
     app.state.http = http
+    app.state.engine = engine
+    app.state.session_factory = create_session_factory(engine)
 
     logger.info(
         "Core service ready  provider=%s chat_model=%s memory=%s",
@@ -48,6 +55,7 @@ async def lifespan(app: FastAPI):
     )
     yield
 
+    await engine.dispose()
     await http.aclose()
     aclose = getattr(provider, "aclose", None)
     if aclose is not None:
@@ -70,6 +78,9 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Content-Type"],
 )
+
+app.include_router(projects_router)
+app.include_router(chats_router)
 
 
 def get_settings(request: Request) -> Settings:
@@ -98,9 +109,19 @@ async def health(request: Request) -> HealthResponse:
         logger.warning("Memory service unreachable: %s", exc)
         memory_status = "unreachable"
 
+    try:
+        async with request.app.state.session_factory() as session:
+            await session.execute(text("select 1"))
+        database_status = "ok"
+    except Exception as exc:
+        logger.error("Database unreachable: %s", exc)
+        database_status = "unreachable"
+
+    healthy = memory_status == "ok" and database_status == "ok"
     return HealthResponse(
-        status="ok" if memory_status == "ok" else "degraded",
+        status="ok" if healthy else "degraded",
         provider=provider.name,
         chat_model=settings.chat_model,
         memory_service=memory_status,
+        database=database_status,
     )
