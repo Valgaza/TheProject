@@ -18,9 +18,9 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app.db import create_engine
-from app.main import app
-from app.providers.base import Message, Provider
+from nexus_core.db import create_engine
+from nexus_core.main import app
+from nexus_core.providers.base import Message, Provider
 
 DEMO_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 TEST_DATABASE_URL = os.getenv(

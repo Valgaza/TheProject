@@ -3,11 +3,31 @@ name = "nexus"
 version = "0.1.0"
 description = "Nexus – local multi-pipeline AI orchestration system"
 requires-python = ">=3.12"
+# The two services are workspace members, depended on here so `uv sync` installs
+# both editable. Without this the members were only installed incidentally, and
+# a sync would quietly uninstall them.
+dependencies = [
+    "nexus-core",
+    "nexus-memory",
+]
 
 [tool.uv.workspace]
 members = ["memory", "core"]
 
+[tool.uv.sources]
+nexus-core = { workspace = true }
+nexus-memory = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["core/tests", "memory/tests"]
-pythonpath = ["core", "memory"]
+# No pythonpath: both services are installed as distinct top-level packages
+# (nexus_core, nexus_memory). They used to both be called `app`, which meant
+# `import app` resolved to whichever .pth file won and left the memory service
+# unimportable by name from anywhere outside memory/.

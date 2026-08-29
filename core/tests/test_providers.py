@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from app.providers.base import Provider
+from nexus_core.providers.base import Provider
 
 
 async def test_chat_returns_text(provider):
@@ -42,8 +42,8 @@ def test_chat_and_embed_are_required_of_every_provider():
 )
 async def test_live_openai_completion():
     """Smoke test against the real API. Opt-in, never part of the default run."""
-    from app.config import Settings
-    from app.providers import build_provider
+    from nexus_core.config import Settings
+    from nexus_core.providers import build_provider
 
     real = build_provider(Settings())
     try:

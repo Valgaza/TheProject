@@ -505,6 +505,28 @@ wheels = [
 name = "nexus"
 version = "0.1.0"
 source = { virtual = "." }
+dependencies = [
+    { name = "nexus-core" },
+    { name = "nexus-memory" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "nexus-core", editable = "core" },
+    { name = "nexus-memory", editable = "memory" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", specifier = ">=0.24.0" },
+]
 
 [[package]]
 name = "nexus-core"
