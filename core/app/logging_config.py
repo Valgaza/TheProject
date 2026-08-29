@@ -47,11 +47,14 @@ def configure_logging(level: str | None = None) -> None:
                 # httpx logs a line per request; graphiti makes many.
                 "httpx": {"level": "WARNING"},
                 "httpcore": {"level": "WARNING"},
-                # The Neo4j driver reports "index already exists" as an INFO
-                # notification on every startup after the first. CHECKPOINT_02
-                # calls these out as expected noise; at INFO they bury
-                # everything else.
-                "neo4j.notifications": {"level": "WARNING"},
+                # Silenced entirely, not merely raised to WARNING. The Neo4j
+                # driver reports "index already exists" on every startup after
+                # the first (CHECKPOINT_02 calls these expected noise), and
+                # graphiti triggers a 01N52 "property `episodes` does not
+                # exist" notification on every ingest. Those arrive AT warning
+                # level, roughly 1.5KB per line, and bury real output. Use
+                # `docker logs nexus-neo4j` when you need them.
+                "neo4j.notifications": {"level": "ERROR"},
                 "neo4j.pool": {"level": "WARNING"},
             },
         }
