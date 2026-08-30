@@ -31,3 +31,13 @@ class FakeWebSocket:
 @pytest.fixture
 def websocket() -> FakeWebSocket:
     return FakeWebSocket()
+
+
+@pytest.fixture
+def fake_websocket():
+    """The class itself, so tests can make several.
+
+    Handed over as a fixture rather than imported: `from conftest import ...`
+    resolves by module name, and there is more than one conftest on the path.
+    """
+    return FakeWebSocket
