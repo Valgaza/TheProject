@@ -17,7 +17,6 @@ from nexus_memory import main as memory_main
 from nexus_memory.main import ConnectionManager, GraphResponse
 from nexus_memory.scopes import project_group, read_groups, user_group
 
-from conftest import FakeWebSocket
 
 ALICE = uuid.UUID("11111111-1111-1111-1111-111111111111")
 THESIS = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
@@ -42,10 +41,12 @@ def fake_graph(monkeypatch):
     return queried
 
 
-async def test_a_project_watcher_sees_a_user_scope_write(manager, fake_graph, monkeypatch):
+async def test_a_project_watcher_sees_a_user_scope_write(
+    manager, fake_graph, monkeypatch, fake_websocket
+):
     """The regression this whole change exists for."""
     monkeypatch.setattr(memory_main, "manager", manager)
-    socket = FakeWebSocket()
+    socket = fake_websocket()
     await manager.connect(socket, read_groups(ALICE, THESIS))
 
     await memory_main._broadcast_write(user_group(ALICE))
@@ -54,10 +55,10 @@ async def test_a_project_watcher_sees_a_user_scope_write(manager, fake_graph, mo
 
 
 async def test_a_watcher_receives_its_whole_union_not_just_the_written_group(
-    manager, fake_graph, monkeypatch
+    manager, fake_graph, monkeypatch, fake_websocket
 ):
     monkeypatch.setattr(memory_main, "manager", manager)
-    socket = FakeWebSocket()
+    socket = fake_websocket()
     await manager.connect(socket, read_groups(ALICE, THESIS))
 
     await memory_main._broadcast_write(user_group(ALICE))
@@ -69,11 +70,11 @@ async def test_a_watcher_receives_its_whole_union_not_just_the_written_group(
 
 
 async def test_a_write_to_one_project_does_not_reach_another(
-    manager, fake_graph, monkeypatch
+    manager, fake_graph, monkeypatch, fake_websocket
 ):
     monkeypatch.setattr(memory_main, "manager", manager)
-    thesis_watcher = FakeWebSocket()
-    side_watcher = FakeWebSocket()
+    thesis_watcher = fake_websocket()
+    side_watcher = fake_websocket()
     await manager.connect(thesis_watcher, read_groups(ALICE, THESIS))
     await manager.connect(side_watcher, read_groups(ALICE, SIDE))
 
@@ -84,11 +85,11 @@ async def test_a_write_to_one_project_does_not_reach_another(
 
 
 async def test_a_user_scope_write_reaches_every_project_watcher(
-    manager, fake_graph, monkeypatch
+    manager, fake_graph, monkeypatch, fake_websocket
 ):
     monkeypatch.setattr(memory_main, "manager", manager)
-    thesis_watcher = FakeWebSocket()
-    side_watcher = FakeWebSocket()
+    thesis_watcher = fake_websocket()
+    side_watcher = fake_websocket()
     await manager.connect(thesis_watcher, read_groups(ALICE, THESIS))
     await manager.connect(side_watcher, read_groups(ALICE, SIDE))
 
@@ -99,12 +100,12 @@ async def test_a_user_scope_write_reaches_every_project_watcher(
 
 
 async def test_watchers_sharing_a_scope_set_share_one_query(
-    manager, fake_graph, monkeypatch
+    manager, fake_graph, monkeypatch, fake_websocket
 ):
     """Two browser tabs on the same project must not double the Neo4j work."""
     monkeypatch.setattr(memory_main, "manager", manager)
     for _ in range(3):
-        await manager.connect(FakeWebSocket(), read_groups(ALICE, THESIS))
+        await manager.connect(fake_websocket(), read_groups(ALICE, THESIS))
 
     await memory_main._broadcast_write(user_group(ALICE))
 
@@ -112,11 +113,11 @@ async def test_watchers_sharing_a_scope_set_share_one_query(
 
 
 async def test_a_broken_socket_is_dropped_and_does_not_block_the_others(
-    manager, fake_graph, monkeypatch
+    manager, fake_graph, monkeypatch, fake_websocket
 ):
     monkeypatch.setattr(memory_main, "manager", manager)
-    healthy = FakeWebSocket()
-    broken = FakeWebSocket(broken=True)
+    healthy = fake_websocket()
+    broken = fake_websocket(broken=True)
     await manager.connect(broken, read_groups(ALICE, THESIS))
     await manager.connect(healthy, read_groups(ALICE, THESIS))
 
@@ -135,9 +136,9 @@ async def test_nobody_watching_costs_nothing(manager, fake_graph, monkeypatch):
     assert fake_graph == []
 
 
-async def test_disconnect_stops_delivery(manager, fake_graph, monkeypatch):
+async def test_disconnect_stops_delivery(manager, fake_graph, monkeypatch, fake_websocket):
     monkeypatch.setattr(memory_main, "manager", manager)
-    socket = FakeWebSocket()
+    socket = fake_websocket()
     subscription = await manager.connect(socket, read_groups(ALICE, THESIS))
 
     manager.disconnect(subscription)

@@ -6,7 +6,12 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
-    "graphiti-core[groq]>=0.3.22",
+    # Pinned, not floated. The retrieval layer works around specific 0.29
+    # behaviour: search() mutating a shared recipe, add_episode's `uuid` meaning
+    # "update", episode_metadata being declared but never persisted, and node
+    # summaries replacing rather than accumulating. A minor bump could change
+    # any of those silently.
+    "graphiti-core==0.29.0",
     "neo4j>=5.0.0",
     "python-dotenv>=1.0.0",
     "openai>=1.0.0",

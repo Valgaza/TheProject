@@ -14,11 +14,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..chat_service import generate_turn
 from ..db import session_dependency
-from ..models import Chat, Message, Project
+from ..models import Chat, MemoryEpisode, Message, Project
 from ..memory_client import MemoryClient
 from ..memory_writer import run_write_gate
 from ..providers.base import Provider
-from ..schemas import ChatOut, FactOut, MessageCreate, MessageOut, RouteOut, TurnOut
+from ..schemas import (
+    ChatOut,
+    FactOut,
+    MemoryEpisodeOut,
+    MessageCreate,
+    MessageOut,
+    RouteOut,
+    TurnOut,
+)
 
 router = APIRouter(prefix="/chats", tags=["chats"])
 
@@ -136,3 +144,24 @@ async def create_message(
             for f in turn.facts
         ],
     )
+
+
+@router.get("/{chat_id}/memory-episodes", response_model=list[MemoryEpisodeOut])
+async def list_memory_episodes(
+    chat_id: uuid.UUID,
+    request: Request,
+    session: AsyncSession = Depends(session_dependency),
+) -> list[MemoryEpisode]:
+    """What this chat put into memory, and what happened to it.
+
+    Only persisted facts appear. The gate declines most turns by design, and
+    those are logged rather than stored -- a row per "thanks" would bury the
+    rows that matter.
+    """
+    await _get_chat(session, chat_id, _current_user_id(request))
+    result = await session.execute(
+        select(MemoryEpisode)
+        .where(MemoryEpisode.chat_id == chat_id)
+        .order_by(MemoryEpisode.created_at)
+    )
+    return list(result.scalars())

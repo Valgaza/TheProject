@@ -3,6 +3,7 @@
 import React, { createContext, useContext, useEffect } from "react";
 import { usePathname } from "next/navigation";
 import { RailNav, TopBar } from "./shell";
+import { ProjectProvider } from "@/lib/project-context";
 import {
   useTweaks,
   TweaksPanel,
@@ -61,6 +62,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <TweaksContext.Provider value={{ tweaks, setTweak }}>
+      <ProjectProvider>
       <div className={`app ${isLanding ? "is-landing" : ""}`}>
         {!isLanding && <RailNav />}
         <main className="main">
@@ -132,6 +134,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           }
         `}</style>
       </div>
+      </ProjectProvider>
     </TweaksContext.Provider>
   );
 }

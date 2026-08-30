@@ -183,10 +183,10 @@ export function TweaksPanel({ title = 'Tweaks', children, defaultOpen = true }: 
   );
 }
 
-export function TweakSection({ label, children }: any) {
+export function TweakSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <>
-      <div className="twk-sect">{label}</div>
+      <div className="twk-sect">{title}</div>
       {children}
     </>
   );

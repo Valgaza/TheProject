@@ -59,16 +59,25 @@ from graphiti_core.search.search_config import (
 
 DEFAULT_LIMIT = 8
 
-# graphiti's own default. Left alone deliberately.
+# Lowered from graphiti's default of 0.6, on measurement rather than taste.
 #
-# A sweep at 0.6 / 0.45 / 0.3 against the graph as it stands was inconclusive by
-# construction: with a single fact stored, 0.45 and below matched *every* query
-# including "how do I bake sourdough bread", and even 0.6 returned the fact for
-# "what is the capital of France". There is nothing for the ranking to
-# discriminate against yet, so any number picked now would be fitted to noise.
-# Exposed as a setting so phase 7 can sweep it against a realistic corpus, which
-# is the first point at which the answer means anything.
-DEFAULT_MIN_SCORE = 0.6
+# Swept against a five-fact corpus with eight queries -- three asking directly
+# about stored content, three referring to memory obliquely ("remind me what my
+# name is"), two deliberately unrelated:
+#
+#     0.6    2 hit, 4 missed, 1 noisy
+#     0.45   5 hit, 1 missed, 2 noisy
+#     0.3    5 hit, 1 missed, 2 noisy
+#
+# 0.6 missed even "what languages do I write in?", which is about as direct as a
+# question gets. 0.3 buys nothing over 0.45, so 0.45 is the knee.
+#
+# The extra noise is the right trade here. An unrecalled fact is a broken
+# promise -- the system was told something and forgot it -- while an irrelevant
+# one costs a few tokens in a context window that is nowhere near full, and the
+# prompt already tells the model to ignore what does not apply. That balance
+# will shift as the graph grows; re-run the sweep when it does.
+DEFAULT_MIN_SCORE = 0.45
 
 
 def _recipe(min_score: float) -> SearchConfig:
