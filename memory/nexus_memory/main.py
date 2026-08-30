@@ -10,6 +10,7 @@ from fastapi import (
     FastAPI,
     HTTPException,
     Request,
+    Response,
     WebSocket,
     WebSocketDisconnect,
 )
@@ -253,11 +254,19 @@ class IngestRequest(BaseModel):
     # This used to hardcode "user: " onto everything, which taught the graph
     # that a person literally named "user" was the subject of every fact.
     speaker: str | None = None
+    # Block until the episode is actually in the graph. Off by default, because
+    # extraction takes 12-30s and most callers are fire-and-forget. The write
+    # gate turns it on: it already runs off the request path, and it needs a
+    # real outcome -- and the episode's uuid -- to record rather than an
+    # optimistic guess.
+    wait: bool = False
 
 
 class IngestResponse(BaseModel):
-    status: str
+    status: Literal["accepted", "ingested", "failed"]
     group_id: str
+    episode_uuid: uuid.UUID | None = None
+    error: str | None = None
 
 
 class NodeOut(BaseModel):
@@ -297,7 +306,7 @@ class FactOut(BaseModel):
     fact: str
     # "relationship" when it came from an edge, "entity" when it came from a
     # node's summary. Standing facts about a person arrive as the latter.
-    kind: Literal["relationship", "entity"]
+    kind: Literal["relationship", "entity", "episode"]
     # The entity a summary describes; None for relationships.
     subject: str | None = None
     group_id: str
@@ -321,7 +330,19 @@ class HealthResponse(BaseModel):
 # ── Background task ───────────────────────────────────────────────────────────
 
 
-async def _run_ingest(text: str, group_id: str, speaker: str | None = None) -> None:
+async def _run_ingest(
+    text: str,
+    group_id: str,
+    speaker: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Returns (episode_uuid, error). Exactly one of the two is set.
+
+    The uuid is graphiti's to mint. ``add_episode`` does take a ``uuid``
+    argument, but it means "update this existing episode" -- it calls
+    ``EpisodicNode.get_by_uuid`` (graphiti.py:1053) and raises
+    ``NodeNotFoundError`` for anything it has not seen. Supplying a fresh one
+    fails every time.
+    """
     graphiti = _require_graphiti()
     if speaker:
         body = f"{speaker}: {text}"
@@ -332,7 +353,7 @@ async def _run_ingest(text: str, group_id: str, speaker: str | None = None) -> N
         source = EpisodeType.text
         description = f"nexus statement ({group_id})"
     try:
-        await graphiti.add_episode(
+        result = await graphiti.add_episode(
             name="episode",
             episode_body=body,
             source=source,
@@ -340,29 +361,42 @@ async def _run_ingest(text: str, group_id: str, speaker: str | None = None) -> N
             reference_time=datetime.now(timezone.utc),
             group_id=group_id,
         )
-        logger.info("Ingested episode into group=%s", group_id)
-    except Exception:
+        episode_uuid = result.episode.uuid
+        logger.info("Ingested episode into group=%s uuid=%s", group_id, episode_uuid)
+    except Exception as exc:
         logger.exception("Failed to ingest episode into group=%s", group_id)
-        return
+        return None, f"{exc.__class__.__name__}: {exc}"
 
     try:
         await _broadcast_write(group_id)
     except Exception:
         logger.exception("Failed to broadcast update for group=%s", group_id)
+    return episode_uuid, None
 
 
 # ── HTTP routes ───────────────────────────────────────────────────────────────
 
 
 @app.post("/ingest", response_model=IngestResponse, status_code=202)
-async def ingest(req: IngestRequest, background_tasks: BackgroundTasks):
-    """Accept text for async ingestion into exactly one scope."""
+async def ingest(req: IngestRequest, background_tasks: BackgroundTasks, response: Response):
+    """Accept text for ingestion into exactly one scope."""
     if not req.text.strip():
         raise HTTPException(status_code=422, detail="text must not be empty")
     try:
         group_id = write_group(req.scope, req.user_id, req.project_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if req.wait:
+        episode_uuid, error = await _run_ingest(req.text, group_id, req.speaker)
+        # 202 Accepted would be a lie here: the work is finished either way.
+        response.status_code = 500 if error else 201
+        return IngestResponse(
+            status="failed" if error else "ingested",
+            group_id=group_id,
+            episode_uuid=episode_uuid,
+            error=error,
+        )
 
     background_tasks.add_task(_run_ingest, req.text, group_id, req.speaker)
     return IngestResponse(status="accepted", group_id=group_id)
@@ -448,16 +482,31 @@ async def search(req: SearchRequest, request: Request):
         )
         for node in results.nodes
         if node.summary
+    ] + [
+        # Last in the candidate list, so an edge or a node summary wins the
+        # dedupe over the raw episode it was extracted from. Episodes are here
+        # as the durable fallback: node summaries do not accumulate, so a fact
+        # can be written, confirmed, and still be missing from every summary.
+        FactOut(
+            id=episode.uuid,
+            fact=episode.content,
+            kind="episode",
+            group_id=episode.group_id,
+            scope=scope_of(episode.group_id),
+        )
+        for episode in getattr(results, "episodes", [])
+        if episode.content
     ]
 
     facts = _dedupe(candidates)[: req.limit]
 
     logger.info(
-        "search groups=%s query=%r edges=%d nodes=%d -> %d after dedupe",
+        "search groups=%s query=%r edges=%d nodes=%d episodes=%d -> %d after dedupe",
         groups,
         req.query[:80],
         len(results.edges),
         len(results.nodes),
+        len(getattr(results, "episodes", [])),
         len(facts),
     )
     return SearchResponse(query=req.query, group_ids=groups, facts=facts)

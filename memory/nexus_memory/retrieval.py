@@ -26,6 +26,20 @@ than a relationship between two. An edge-only recipe cannot see it. Since
 standing facts about a person are precisely what the user tier exists to hold,
 edge-only retrieval would have missed the half of memory that matters most,
 while looking like it worked on project facts.
+
+**Search episodes too, despite the duplication.** Entity summaries do not
+accumulate. Four facts about Aarya were ingested and confirmed written, but the
+``Aarya`` node's summary held only the first of them -- a later fact about the
+same entity resolves onto the existing node and replaces its summary rather than
+extending it. The facts were not lost, only unreachable: every one was still
+sitting in its ``Episodic`` node verbatim. Episodes are the durable record and
+the distilled node summary is a lossy view of it, which is the opposite of the
+assumption this module started with. The duplication that argued against
+including them is real, and is what the dedupe pass exists to absorb.
+
+Episodes are BM25-only -- graphiti offers no vector search over episode content --
+so they answer keyword-shaped questions and miss paraphrases. That is still
+strictly better than the facts being unreachable.
 """
 
 from __future__ import annotations
@@ -34,6 +48,9 @@ from graphiti_core.search.search_config import (
     EdgeReranker,
     EdgeSearchConfig,
     EdgeSearchMethod,
+    EpisodeReranker,
+    EpisodeSearchConfig,
+    EpisodeSearchMethod,
     NodeReranker,
     NodeSearchConfig,
     NodeSearchMethod,
@@ -55,12 +72,10 @@ DEFAULT_MIN_SCORE = 0.6
 
 
 def _recipe(min_score: float) -> SearchConfig:
-    """Edges and nodes, hybrid retrieval, RRF reranking.
+    """Edges, nodes and episodes, with RRF reranking.
 
-    Episodes and communities are deliberately excluded. Episodes are the raw
-    ingested text, which is what the distilled fact was distilled *from* --
-    injecting both says everything twice. Communities are never built; nothing
-    calls ``build_communities``.
+    Communities stay excluded: nothing calls ``build_communities``, so there are
+    none to find.
     """
     return SearchConfig(
         edge_config=EdgeSearchConfig(
@@ -72,6 +87,11 @@ def _recipe(min_score: float) -> SearchConfig:
             search_methods=[NodeSearchMethod.bm25, NodeSearchMethod.cosine_similarity],
             reranker=NodeReranker.rrf,
             sim_min_score=min_score,
+        ),
+        episode_config=EpisodeSearchConfig(
+            # bm25 only; graphiti offers no vector search over episode content.
+            search_methods=[EpisodeSearchMethod.bm25],
+            reranker=EpisodeReranker.rrf,
         ),
     )
 

@@ -58,12 +58,15 @@ def test_nodes_are_searched_as_well_as_edges():
     assert config.edge_config is not None
 
 
-def test_episodes_and_communities_are_excluded():
-    """Episodes are the raw text a fact was distilled from, so including both
-    says everything twice. Communities are never built."""
+def test_episodes_are_searched_and_communities_are_not():
+    """Episodes are the durable record. Node summaries do not accumulate: four
+    facts about one entity were written and confirmed, and the entity's summary
+    held only the first. The rest survived solely as episodes.
+
+    Communities are excluded because nothing calls build_communities."""
     config = build_search_config()
 
-    assert config.episode_config is None
+    assert config.episode_config is not None
     assert config.community_config is None
 
 
@@ -89,21 +92,30 @@ class FakeNode:
         self.group_id = group_id
 
 
+class FakeEpisode:
+    def __init__(self, content, group_id):
+        self.uuid = str(uuid.uuid4())
+        self.content = content
+        self.group_id = group_id
+
+
 class FakeResults:
-    def __init__(self, edges, nodes):
+    def __init__(self, edges, nodes, episodes):
         self.edges = edges
         self.nodes = nodes
+        self.episodes = episodes
 
 
 class FakeGraphiti:
-    def __init__(self, edges, nodes):
+    def __init__(self, edges, nodes, episodes):
         self._edges = edges
         self._nodes = nodes
+        self._episodes = episodes
         self.calls: list[dict] = []
 
     async def search_(self, *, query, config, group_ids):
         self.calls.append({"query": query, "config": config, "group_ids": group_ids})
-        return FakeResults(self._edges, self._nodes)
+        return FakeResults(self._edges, self._nodes, self._episodes)
 
 
 @pytest.fixture
@@ -113,8 +125,8 @@ async def client():
         yield c
 
 
-def _install(monkeypatch, edges=(), nodes=()) -> FakeGraphiti:
-    fake = FakeGraphiti(list(edges), list(nodes))
+def _install(monkeypatch, edges=(), nodes=(), episodes=()) -> FakeGraphiti:
+    fake = FakeGraphiti(list(edges), list(nodes), list(episodes))
     monkeypatch.setattr(memory_main, "_graphiti", fake)
     return fake
 
@@ -295,3 +307,40 @@ async def test_the_limit_caps_the_merged_result(client, monkeypatch):
     )
 
     assert len(response.json()["facts"]) == 3
+
+
+async def test_an_episode_is_reachable_when_no_summary_holds_it(client, monkeypatch):
+    """The Phase 5 finding: a fact written and confirmed can still be missing
+    from every node summary, because a later fact about the same entity
+    replaces the summary rather than extending it. The episode still has it."""
+    _install(
+        monkeypatch,
+        episodes=[
+            FakeEpisode("Aarya prefers terse answers with no preamble.", user_group(ALICE))
+        ],
+    )
+
+    response = await client.post(
+        "/search", json={"query": "terse answers", "user_id": str(ALICE)}
+    )
+
+    facts = response.json()["facts"]
+    assert len(facts) == 1
+    assert facts[0]["kind"] == "episode"
+
+
+async def test_a_distilled_fact_outranks_the_episode_it_came_from(client, monkeypatch):
+    sentence = "Aarya decided to use Neo4j."
+    _install(
+        monkeypatch,
+        edges=[FakeEdge(sentence, user_group(ALICE))],
+        episodes=[FakeEpisode(sentence, user_group(ALICE))],
+    )
+
+    response = await client.post(
+        "/search", json={"query": "neo4j", "user_id": str(ALICE)}
+    )
+
+    facts = response.json()["facts"]
+    assert len(facts) == 1
+    assert facts[0]["kind"] == "relationship"

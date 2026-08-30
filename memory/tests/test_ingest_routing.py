@@ -20,8 +20,9 @@ def ingested(monkeypatch) -> list[tuple[str, str, str | None]]:
     """Capture what would have been written, without a 20s graphiti round trip."""
     calls: list[tuple[str, str, str | None]] = []
 
-    async def _run(text: str, group_id: str, speaker: str | None = None) -> None:
+    async def _run(text, group_id, speaker=None):
         calls.append((text, group_id, speaker))
+        return "00000000-0000-0000-0000-0000000000ff", None
 
     monkeypatch.setattr(memory_main, "_run_ingest", _run)
     return calls
@@ -139,3 +140,61 @@ async def test_a_named_speaker_is_carried_through(client, ingested):
     )
 
     assert ingested[0][2] == "Aarya"
+
+
+async def test_a_waited_ingest_returns_the_uuid_graphiti_minted(client, ingested):
+    """The uuid cannot be supplied by the caller: add_episode's `uuid` argument
+    means "update this existing episode" and raises NodeNotFoundError for one it
+    has not seen. So it has to come back out."""
+    response = await client.post(
+        "/ingest",
+        json={
+            "text": "Aarya uses Neo4j",
+            "user_id": str(ALICE),
+            "scope": "user",
+            "wait": True,
+        },
+    )
+
+    assert response.json()["episode_uuid"] == "00000000-0000-0000-0000-0000000000ff"
+
+
+async def test_wait_reports_the_real_outcome(client, monkeypatch):
+    async def _ok(text, group_id, speaker=None):
+        return "00000000-0000-0000-0000-0000000000ff", None
+
+    monkeypatch.setattr(memory_main, "_run_ingest", _ok)
+
+    response = await client.post(
+        "/ingest",
+        json={"text": "x", "user_id": str(ALICE), "scope": "user", "wait": True},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "ingested"
+    assert response.json()["error"] is None
+
+
+async def test_wait_surfaces_a_failure_instead_of_swallowing_it(client, monkeypatch):
+    async def _boom(text, group_id, speaker=None):
+        return None, "RuntimeError: neo4j is down"
+
+    monkeypatch.setattr(memory_main, "_run_ingest", _boom)
+
+    response = await client.post(
+        "/ingest",
+        json={"text": "x", "user_id": str(ALICE), "scope": "user", "wait": True},
+    )
+
+    body = response.json()
+    assert body["status"] == "failed"
+    assert "neo4j is down" in body["error"]
+
+
+async def test_without_wait_the_call_is_still_fire_and_forget(client, ingested):
+    response = await client.post(
+        "/ingest", json={"text": "x", "user_id": str(ALICE), "scope": "user"}
+    )
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "accepted"
