@@ -32,23 +32,31 @@ cd frontend && npm install && cd ..
 ## Cold start
 
 ```bash
-# 1. Infrastructure
-docker compose up -d          # Neo4j
-supabase start                # the Supabase stack (first run pulls images)
-supabase db reset             # applies migrations + seed.sql
+supabase start                # once; the CLI owns these containers
+supabase db reset             # first run only: migrations + seed.sql
 
-# 2. Services, each in its own terminal, from the repo root
-uv run uvicorn nexus_memory.main:app --reload --port 8000
-uv run uvicorn nexus_core.main:app   --reload --port 8100
-cd frontend && npm run dev
+./start.sh                    # Neo4j + memory (8000) + core (8100)
+cd frontend && npm run dev    # separate terminal
 ```
 
-No `PYTHONPATH` and no `cd memory` — the two services are installed as distinct
-packages (`nexus_memory`, `nexus_core`). They were both called `app` once, which
-meant whichever was imported first won.
+`start.sh` checks Supabase is up and tells you if it is not, rather than letting
+the core service fail with a wall of asyncpg traceback. Ctrl+C stops both
+services; Neo4j keeps running.
 
-`./start.sh` still brings up Neo4j and the memory service together, but it
-predates the core service and does not start it.
+To run a service by hand instead:
+
+```bash
+uv run uvicorn nexus_memory.main:app --reload --port 8000
+uv run uvicorn nexus_core.main:app   --reload --port 8100
+```
+
+**From the repo root, and through `uv run` or `.venv/bin/uvicorn`.** No
+`PYTHONPATH`, no `cd core`, and not the system `uvicorn` — that is a different
+interpreter with none of this installed.
+
+The old command `uvicorn app.main:app` no longer works. Both services used to
+ship a top-level package called `app`, so whichever was imported first won and
+the other was unreachable. They are `nexus_memory` and `nexus_core` now.
 
 ## Checking it works
 
