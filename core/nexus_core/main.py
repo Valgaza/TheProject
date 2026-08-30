@@ -18,6 +18,7 @@ from sqlalchemy import text
 from .config import Settings
 from .db import create_engine, create_session_factory
 from .logging_config import configure_logging
+from .memory_client import MemoryClient
 from .providers import Provider, build_provider
 from .routers import chats_router, projects_router
 
@@ -43,6 +44,7 @@ async def lifespan(app: FastAPI):
 
     app.state.settings = settings
     app.state.provider = provider
+    app.state.memory = MemoryClient(http, settings.memory_service_url)
     app.state.http = http
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)

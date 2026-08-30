@@ -15,8 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..chat_service import generate_turn
 from ..db import session_dependency
 from ..models import Chat, Message, Project
+from ..memory_client import MemoryClient
 from ..providers.base import Provider
-from ..schemas import ChatOut, MessageCreate, MessageOut, RouteOut, TurnOut
+from ..schemas import ChatOut, FactOut, MessageCreate, MessageOut, RouteOut, TurnOut
 
 router = APIRouter(prefix="/chats", tags=["chats"])
 
@@ -38,6 +39,10 @@ def _current_user_id(request: Request) -> uuid.UUID:
 
 def _provider(request: Request) -> Provider:
     return request.app.state.provider
+
+
+def _memory(request: Request) -> MemoryClient | None:
+    return getattr(request.app.state, "memory", None)
 
 
 @router.get("/{chat_id}", response_model=ChatOut)
@@ -83,16 +88,23 @@ async def create_message(
             detail="only user messages can be posted; the assistant turn is generated",
         )
 
-    chat = await _get_chat(session, chat_id, _current_user_id(request))
+    user_id = _current_user_id(request)
+    chat = await _get_chat(session, chat_id, user_id)
     turn = await generate_turn(
         session,
         chat=chat,
         content=body.content,
         provider=_provider(request),
+        user_id=user_id,
+        memory=_memory(request),
     )
     return TurnOut(
         user_message=MessageOut.model_validate(turn.user_message),
         assistant_message=MessageOut.model_validate(turn.assistant_message),
         route=RouteOut(handler=turn.route.handler, reason=turn.route.reason),
         chat_title=chat.title,
+        recalled=[
+            FactOut(id=f.id, fact=f.fact, scope=f.scope, kind=f.kind)
+            for f in turn.facts
+        ],
     )

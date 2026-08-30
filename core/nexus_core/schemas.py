@@ -65,6 +65,15 @@ class RouteOut(BaseModel):
     reason: str
 
 
+class FactOut(BaseModel):
+    """A fact recalled from memory and shown to the model for this turn."""
+
+    id: str
+    fact: str
+    scope: str
+    kind: str = "relationship"
+
+
 class TurnOut(BaseModel):
     """Both halves of an exchange.
 
@@ -77,3 +86,6 @@ class TurnOut(BaseModel):
     assistant_message: MessageOut
     route: RouteOut
     chat_title: str
+    # What memory contributed. Empty when nothing was recalled or the memory
+    # service was unreachable -- the answer still stands either way.
+    recalled: list[FactOut] = []
