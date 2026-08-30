@@ -2,13 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/icons";
-import {
-  type ApiGraph,
-  MEMORY_URL,
-  USER_ID,
-  graphSocketUrl,
-  graphUrl,
-} from "@/lib/api";
+import { type ApiGraph, graphSocketUrl, graphUrl } from "@/lib/api";
 
 export const NODE_TYPES: Record<string, { label: string; color: string; fill: string }> = {
   entity:  { label: "Entity",   color: "var(--accent)",        fill: "oklch(0.94 0.03 195)" },
@@ -52,9 +46,16 @@ function positionAt(index: number): { x: number; y: number; r: number } {
 
 interface LiveGraphProps {
   className?: string;
+  /**
+   * Scope the panel to one project. Omitted, it shows the user tier alone;
+   * given, it shows the union of the user tier and that project's, which is
+   * exactly what a read in that project would see. Phase 6 passes the project
+   * the user is actually looking at.
+   */
+  projectId?: string;
 }
 
-export function LiveGraph({ className }: LiveGraphProps) {
+export function LiveGraph({ className, projectId }: LiveGraphProps) {
   const [hover,       setHover]      = useState<string | null>(null);
   const [pinned,      setPinned]     = useState<string | null>(null);
   const [pulse,       setPulse]      = useState<string | null>(null);
@@ -86,7 +87,7 @@ export function LiveGraph({ className }: LiveGraphProps) {
   useEffect(() => {
     let cancelled = false;
 
-    fetch(graphUrl())
+    fetch(graphUrl(projectId))
       .then(r => r.json())
       .then((data: ApiGraph) => { if (!cancelled) applyPayload(data); })
       .catch(err => {
@@ -94,7 +95,7 @@ export function LiveGraph({ className }: LiveGraphProps) {
         if (!cancelled) setLoading(false);
       });
 
-    const ws = new WebSocket(graphSocketUrl());
+    const ws = new WebSocket(graphSocketUrl(projectId));
     ws.onopen    = ()  => { if (!cancelled) setWsStatus("connected"); };
     ws.onmessage = e   => { if (!cancelled) applyPayload(JSON.parse(e.data)); };
     ws.onerror   = err => { if (!cancelled) console.error("[graph] WS error:", err); };
@@ -104,7 +105,7 @@ export function LiveGraph({ className }: LiveGraphProps) {
       cancelled = true;
       ws.close();
     };
-  }, [applyPayload]);
+  }, [applyPayload, projectId]);
 
   useEffect(() => {
     let i = 0;
@@ -120,7 +121,7 @@ export function LiveGraph({ className }: LiveGraphProps) {
 
   const handleReset = async () => {
     try {
-      await fetch(graphUrl(), { method: "DELETE" });
+      await fetch(graphUrl(projectId), { method: "DELETE" });
     } catch (err) {
       console.error("[graph] reset failed:", err);
     }

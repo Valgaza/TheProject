@@ -188,7 +188,7 @@ Sequence:
 2. Validates Docker is available
 3. Runs `docker compose up -d`
 4. Polls `http://localhost:7474/` until Neo4j HTTP API responds
-5. `cd memory && PYTHONPATH=. uvicorn app.main:app --reload --port 8000` (foreground)
+5. `cd memory && PYTHONPATH=. uvicorn nexus_memory.main:app --reload --port 8000` (foreground)
 
 The frontend is intentionally left out — it runs separately so the two processes
 have independent logs.

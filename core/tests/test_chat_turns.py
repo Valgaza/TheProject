@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from app.chat_service import (
+from nexus_core.chat_service import (
     SYSTEM_PROMPT,
     TITLE_MAX_CHARS,
     _derive_title,
     build_prompt,
 )
-from app.orchestrator import select_route
+from nexus_core.orchestrator import select_route
 
 
 async def _make_chat(client, title: str = "New conversation") -> dict:
