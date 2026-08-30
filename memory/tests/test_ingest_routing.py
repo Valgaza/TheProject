@@ -16,12 +16,12 @@ THESIS = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 
 
 @pytest.fixture
-def ingested(monkeypatch) -> list[tuple[str, str]]:
+def ingested(monkeypatch) -> list[tuple[str, str, str | None]]:
     """Capture what would have been written, without a 20s graphiti round trip."""
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[str, str, str | None]] = []
 
-    async def _run(text: str, group_id: str) -> None:
-        calls.append((text, group_id))
+    async def _run(text: str, group_id: str, speaker: str | None = None) -> None:
+        calls.append((text, group_id, speaker))
 
     monkeypatch.setattr(memory_main, "_run_ingest", _run)
     return calls
@@ -43,7 +43,7 @@ async def test_a_user_scope_write_goes_to_the_user_group(client, ingested):
 
     assert response.status_code == 202
     assert response.json()["group_id"] == user_group(ALICE)
-    assert ingested == [("I prefer terse answers", user_group(ALICE))]
+    assert ingested == [("I prefer terse answers", user_group(ALICE), None)]
 
 
 async def test_a_project_scope_write_goes_to_the_project_group(client, ingested):
@@ -112,3 +112,30 @@ async def test_an_unknown_scope_is_refused(client, ingested):
     )
 
     assert response.status_code == 422
+
+
+async def test_a_statement_is_ingested_without_an_invented_speaker(client, ingested):
+    """The graph used to learn that a person named "user" was the subject of
+    every fact, because every episode body was prefixed "user: "."""
+    await client.post(
+        "/ingest",
+        json={"text": "Neo4j is the graph store", "user_id": str(ALICE), "scope": "user"},
+    )
+
+    text, _, speaker = ingested[0]
+    assert speaker is None
+    assert text == "Neo4j is the graph store"
+
+
+async def test_a_named_speaker_is_carried_through(client, ingested):
+    await client.post(
+        "/ingest",
+        json={
+            "text": "I prefer terse answers",
+            "user_id": str(ALICE),
+            "scope": "user",
+            "speaker": "Aarya",
+        },
+    )
+
+    assert ingested[0][2] == "Aarya"

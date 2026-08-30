@@ -214,6 +214,14 @@ class IngestRequest(BaseModel):
     # Explicit, never inferred. Defaulting this would make the tier a
     # side effect of whether a project id happened to be passed.
     scope: Scope = "user"
+    # Who said it, when that is a meaningful question. Given, the episode is
+    # dialogue and graphiti gets "<speaker>: <text>", its documented format for
+    # message episodes. Omitted, the episode is a plain statement and the text
+    # is passed as-is.
+    #
+    # This used to hardcode "user: " onto everything, which taught the graph
+    # that a person literally named "user" was the subject of every fact.
+    speaker: str | None = None
 
 
 class IngestResponse(BaseModel):
@@ -254,14 +262,22 @@ class HealthResponse(BaseModel):
 # ── Background task ───────────────────────────────────────────────────────────
 
 
-async def _run_ingest(text: str, group_id: str) -> None:
+async def _run_ingest(text: str, group_id: str, speaker: str | None = None) -> None:
     graphiti = _require_graphiti()
+    if speaker:
+        body = f"{speaker}: {text}"
+        source = EpisodeType.message
+        description = f"nexus dialogue ({group_id})"
+    else:
+        body = text
+        source = EpisodeType.text
+        description = f"nexus statement ({group_id})"
     try:
         await graphiti.add_episode(
-            name="message",
-            episode_body=f"user: {text}",
-            source=EpisodeType.message,
-            source_description=f"nexus chat message ({group_id})",
+            name="episode",
+            episode_body=body,
+            source=source,
+            source_description=description,
             reference_time=datetime.now(timezone.utc),
             group_id=group_id,
         )
@@ -289,7 +305,7 @@ async def ingest(req: IngestRequest, background_tasks: BackgroundTasks):
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    background_tasks.add_task(_run_ingest, req.text, group_id)
+    background_tasks.add_task(_run_ingest, req.text, group_id, req.speaker)
     return IngestResponse(status="accepted", group_id=group_id)
 
 
