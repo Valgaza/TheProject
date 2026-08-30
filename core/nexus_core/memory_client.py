@@ -19,6 +19,18 @@ logger = logging.getLogger(__name__)
 # leash. Better to answer without memory than to make someone wait for it.
 SEARCH_TIMEOUT_SECONDS = 4.0
 
+# Ingestion runs after the reply has gone out, so it can afford to wait for
+# graphiti's extraction, measured at 12-30s per episode.
+INGEST_TIMEOUT_SECONDS = 120.0
+
+
+@dataclass(frozen=True)
+class IngestResult:
+    ok: bool
+    group_id: str | None = None
+    episode_uuid: uuid.UUID | None = None
+    error: str | None = None
+
 
 @dataclass(frozen=True)
 class Fact:
@@ -86,3 +98,44 @@ class MemoryClient:
             )
             for item in body.get("facts", [])
         ]
+
+    async def ingest(
+        self,
+        statement: str,
+        *,
+        scope: str,
+        user_id: uuid.UUID,
+        project_id: uuid.UUID | None,
+    ) -> IngestResult:
+        """Write one distilled statement into one scope, and wait for it.
+
+        Waits because the caller is already off the request path and needs two
+        things a fire-and-forget call cannot give it: whether the write actually
+        landed, and the uuid graphiti minted for the episode. That uuid is the
+        only link back from a fact in the graph to the message that produced it.
+        """
+        try:
+            response = await self._http.post(
+                f"{self._base_url}/ingest",
+                json={
+                    "text": statement,
+                    "user_id": str(user_id),
+                    "project_id": str(project_id) if project_id else None,
+                    "scope": scope,
+                    "wait": True,
+                },
+                timeout=INGEST_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            logger.warning("Memory ingest failed: %s", exc)
+            return IngestResult(ok=False, error=f"{exc.__class__.__name__}: {exc}")
+
+        body = response.json()
+        raw_uuid = body.get("episode_uuid")
+        return IngestResult(
+            ok=body.get("status") == "ingested",
+            group_id=body.get("group_id"),
+            episode_uuid=uuid.UUID(raw_uuid) if raw_uuid else None,
+            error=body.get("error"),
+        )

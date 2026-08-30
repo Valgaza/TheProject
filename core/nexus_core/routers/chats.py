@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +16,7 @@ from ..chat_service import generate_turn
 from ..db import session_dependency
 from ..models import Chat, Message, Project
 from ..memory_client import MemoryClient
+from ..memory_writer import run_write_gate
 from ..providers.base import Provider
 from ..schemas import ChatOut, FactOut, MessageCreate, MessageOut, RouteOut, TurnOut
 
@@ -74,6 +75,7 @@ async def create_message(
     chat_id: uuid.UUID,
     body: MessageCreate,
     request: Request,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(session_dependency),
 ) -> TurnOut:
     """Send a message and get the answer to it.
@@ -98,6 +100,32 @@ async def create_message(
         user_id=user_id,
         memory=_memory(request),
     )
+    # Commit before scheduling, not after. FastAPI runs a background task
+    # before the exit code of a dependency that yields, so session_dependency's
+    # commit lands *after* the task -- the task would look up a message_id that
+    # is not in the table yet and the provenance insert would fail on its
+    # foreign key. Committing here makes the ordering explicit instead of
+    # depending on framework internals.
+    await session.commit()
+
+    # Memory forms after the answer is sent, never in front of it: graphiti's
+    # extraction takes 12-30s and nobody should wait on it to read their reply.
+    memory = _memory(request)
+    if memory is not None:
+        background_tasks.add_task(
+            run_write_gate,
+            session_factory=request.app.state.session_factory,
+            provider=_provider(request),
+            memory=memory,
+            gate_model=request.app.state.settings.gate_model,
+            chat_id=chat.id,
+            project_id=chat.project_id,
+            user_id=user_id,
+            message_id=turn.user_message.id,
+            user_message=body.content,
+            assistant_message=turn.assistant_message.content,
+        )
+
     return TurnOut(
         user_message=MessageOut.model_validate(turn.user_message),
         assistant_message=MessageOut.model_validate(turn.assistant_message),
