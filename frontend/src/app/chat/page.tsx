@@ -14,9 +14,11 @@ import { Composer } from "@/components/composer";
 import { Icon } from "@/components/icons";
 import { SUGGESTED } from "@/lib/domains";
 import { createChat, defaultProject } from "@/lib/api";
+import { useProjects } from "@/lib/project-context";
 
 export default function ChatHome() {
   const router = useRouter();
+  const { current } = useProjects();
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -28,7 +30,9 @@ export default function ChatHome() {
     setBusy(true);
     setError(null);
     try {
-      const project = await defaultProject();
+      // The current project, so a new chat inherits the memory scope the user
+      // is looking at. defaultProject() only covers a cold start with none.
+      const project = current ?? (await defaultProject());
       const chat = await createChat(project.id);
       // Carry the prompt to the thread rather than sending it here — the reply
       // takes a couple of seconds and it should arrive on the page you're
