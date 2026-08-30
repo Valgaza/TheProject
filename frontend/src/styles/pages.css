@@ -742,3 +742,106 @@
   flex: 1;
   min-height: 0;
 }
+
+/* ── Recalled facts ─────────────────────────────────────────────────────────
+   Sits under an assistant message. Quiet when closed, legible when open: it is
+   diagnostic information that should never compete with the answer itself. */
+.recall {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+.recall__toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 2px 0;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  color: var(--ink-3);
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  text-align: left;
+}
+.recall__toggle:hover { color: var(--ink-2); }
+.recall__caret {
+  display: inline-block;
+  transition: transform 160ms ease;
+  font-size: 10px;
+}
+.recall__caret.is-open { transform: rotate(90deg); }
+.recall__count { text-transform: uppercase; }
+.recall__tiers { margin-left: auto; display: flex; gap: 6px; }
+.recall__tier {
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--line);
+  font-size: 10.5px;
+}
+.recall__tier--user    { color: var(--accent); border-color: oklch(from var(--accent) 0.85 0.03 h); }
+.recall__tier--project { color: var(--d-general); border-color: oklch(from var(--d-general) 0.85 0.03 h); }
+
+.recall__list {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.recall__item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.recall__badge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.recall__badge--user    { background: oklch(from var(--accent) 0.95 0.02 h); color: var(--accent); }
+.recall__badge--project { background: oklch(from var(--d-general) 0.95 0.02 h); color: var(--d-general); }
+.recall__fact { flex: 1; }
+.recall__kind { flex: 0 0 auto; font-size: 10.5px; color: var(--ink-3); }
+
+/* ── Project switcher ───────────────────────────────────────────────────── */
+.pswitch { position: relative; }
+.pswitch__menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px oklch(0 0 0 / 0.10);
+  padding: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.pswitch__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--ink);
+  text-align: left;
+}
+.pswitch__item:hover { background: var(--veil); }
+.pswitch__item.is-on { background: var(--veil); font-weight: 500; }

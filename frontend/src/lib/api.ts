@@ -52,17 +52,29 @@ export type Message = {
     latency_ms?: number;
     prompt_messages?: number;
     error?: string;
+    // Recorded on the assistant message, so a reloaded thread can show what
+    // memory contributed just as well as a live one.
+    recalled_facts?: RecalledFact[];
   };
   created_at: string;
 };
 
 export type Route = { handler: string; reason: string };
 
+/** A fact memory supplied for a turn. "kind" says where in the graph it lived. */
+export type RecalledFact = {
+  id: string;
+  fact: string;
+  scope: "user" | "project";
+  kind: "relationship" | "entity" | "episode";
+};
+
 export type Turn = {
   user_message: Message;
   assistant_message: Message;
   route: Route;
   chat_title: string;
+  recalled: RecalledFact[];
 };
 
 export class ApiError extends Error {
