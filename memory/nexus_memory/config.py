@@ -48,6 +48,6 @@ class Settings:
         # Treat it as fixed once the graph has real content in it.
         self.embedding_dim = int(_optional("EMBEDDING_DIM", "1536"))
 
-        # Cosine floor for retrieval. See retrieval.py for why this is still
-        # graphiti's default rather than a tuned number.
-        self.search_min_score = float(_optional("MEMORY_SEARCH_MIN_SCORE", "0.6"))
+        # Cosine floor for retrieval, measured rather than guessed. See
+        # retrieval.py for the sweep this number came from.
+        self.search_min_score = float(_optional("MEMORY_SEARCH_MIN_SCORE", "0.45"))
