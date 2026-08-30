@@ -75,3 +75,16 @@ def read_groups(user_id: uuid.UUID, project_id: uuid.UUID | None) -> list[str]:
     if project_id is not None:
         groups.append(project_group(user_id, project_id))
     return groups
+
+
+def scope_of(group_id: str) -> Scope:
+    """Which tier a group id belongs to.
+
+    Lets a search result say where a fact came from without the caller having to
+    hold onto which group it asked for.
+    """
+    if group_id.startswith(f"{USER_PREFIX}_"):
+        return "user"
+    if group_id.startswith(f"{PROJECT_PREFIX}_"):
+        return "project"
+    raise ValueError(f"unrecognised group id: {group_id!r}")
