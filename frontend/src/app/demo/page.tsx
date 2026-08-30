@@ -3,9 +3,7 @@
 import React, { useState } from "react";
 import { Icon } from "@/components/icons";
 import { LiveGraph } from "@/components/live-graph";
-
-const MEMORY_URL = process.env.NEXT_PUBLIC_MEMORY_URL ?? "http://localhost:8000";
-const USER_ID = "user_001";
+import { ingest } from "@/lib/api";
 
 export default function Demo() {
   const [messages, setMessages] = useState<{ role: "user" | "ai"; id: number; text?: string }[]>([]);
@@ -18,11 +16,7 @@ export default function Demo() {
     setMessages(m => [...m, { role: "user", id, text }]);
     setVal("");
 
-    fetch(`${MEMORY_URL}/ingest`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, user_id: USER_ID }),
-    }).catch(err => console.error("[demo] ingest failed:", err));
+    ingest(text);
 
     setTimeout(() => {
       setMessages(m => [...m, { role: "ai", id: id + 1 }]);

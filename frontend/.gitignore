@@ -32,6 +32,9 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...and we do, for the example: it is the only record of which variables
+# the browser bundle expects.
+!.env.example
 
 # vercel
 .vercel

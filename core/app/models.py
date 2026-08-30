@@ -90,7 +90,11 @@ class Message(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     # Which handler answered, retrieved fact ids, token counts, latency.
     meta: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
-    created_at: Mapped[datetime] = _created_at()
+    # clock_timestamp(), not now(): a turn writes the question and the answer in
+    # one transaction, and now() would give them the same timestamp.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.clock_timestamp()
+    )
 
     chat: Mapped[Chat] = relationship(back_populates="messages")
 

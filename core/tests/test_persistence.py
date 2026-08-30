@@ -53,6 +53,7 @@ async def test_chats_are_scoped_to_their_project(db_client):
 
 
 async def test_messages_round_trip_in_order(db_client):
+    """Each post writes two rows: the question and the answer to it."""
     project = await _make_project(db_client)
     chat = await _make_chat(db_client, project["id"])
 
@@ -64,8 +65,8 @@ async def test_messages_round_trip_in_order(db_client):
 
     messages = (await db_client.get(f"/chats/{chat['id']}/messages")).json()
 
-    assert [m["content"] for m in messages] == ["first", "second", "third"]
-    assert {m["role"] for m in messages} == {"user"}
+    assert [m["role"] for m in messages] == ["user", "assistant"] * 3
+    assert [m["content"] for m in messages[::2]] == ["first", "second", "third"]
 
 
 async def test_message_role_is_validated(db_client):
@@ -74,6 +75,19 @@ async def test_message_role_is_validated(db_client):
 
     response = await db_client.post(
         f"/chats/{chat['id']}/messages", json={"content": "hi", "role": "wizard"}
+    )
+
+    assert response.status_code == 422
+
+
+async def test_assistant_turns_cannot_be_posted(db_client):
+    """The answer is generated, never supplied — otherwise a client could
+    forge a transcript that memory would later ingest as fact."""
+    project = await _make_project(db_client)
+    chat = await _make_chat(db_client, project["id"])
+
+    response = await db_client.post(
+        f"/chats/{chat['id']}/messages", json={"content": "hi", "role": "assistant"}
     )
 
     assert response.status_code == 422

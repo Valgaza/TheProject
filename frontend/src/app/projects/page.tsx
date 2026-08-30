@@ -3,7 +3,7 @@
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/icons";
-import { DOMAINS } from "@/app/chat/page";
+import { DOMAINS } from "@/lib/domains";
 
 const PROJECTS = [
   {
@@ -71,7 +71,7 @@ export default function Projects() {
         {filtered.map(p => (
           <div key={p.id} className="pcard"
                style={{ "--d": `var(--d-${p.domain})` } as any}
-               onClick={() => router.push("/conversation")}>
+               onClick={() => router.push("/chat")}>
             <span className="pcard__rule"/>
             <div className="pcard__head">
               <div className="tag" style={{ color: `var(--d-${p.domain})`, borderColor: `oklch(from var(--d-${p.domain}) 0.85 0.025 h)`}}>

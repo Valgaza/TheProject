@@ -1,3 +1,10 @@
+# All Nexus infrastructure runs under one Docker Compose project so that
+# `docker compose` here and `supabase start` land in the same group in Docker
+# Desktop rather than appearing as two look-alike projects. The Supabase CLI
+# derives its project from supabase/config.toml's project_id, which is set to
+# the same name.
+name: nexus
+
 services:
   neo4j:
     image: neo4j:5.26-community
