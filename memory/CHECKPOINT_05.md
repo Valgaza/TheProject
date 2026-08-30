@@ -1,5 +1,14 @@
 # Checkpoint 05 — Demo Hardening and Polish
 
+> **Historical record.** This describes the system as it stood at this
+> checkpoint, before the core service, Supabase, two-tier memory scoping, the
+> write gate and retrieval existed. The runbook below is out of date: the
+> packages have been renamed, `user_001` is no longer a valid identity, and
+> there is a second service and a second database to start.
+>
+> For how to run the system today, see [`RUNBOOK.md`](../RUNBOOK.md).
+
+
 ## Demo Runbook (cold start → live demo)
 
 ### Prerequisites
