@@ -11,10 +11,12 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass
+from typing import Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .memory_client import Fact, MemoryClient
 from .models import Chat, Message
 from .orchestrator import Attachment, Route, select_route
 from .providers.base import Message as ProviderMessage
@@ -43,6 +45,7 @@ class Turn:
     user_message: Message
     assistant_message: Message
     route: Route
+    facts: tuple[Fact, ...] = ()
 
 
 def _derive_title(content: str) -> str:
@@ -65,13 +68,36 @@ async def _load_history(session: AsyncSession, chat_id: uuid.UUID) -> list[Messa
     return list(reversed(list(result.scalars())))
 
 
-def build_prompt(history: list[Message]) -> list[ProviderMessage]:
-    """History plus the system prompt, in the shape a provider wants.
+def render_memory(facts: Sequence[Fact]) -> str:
+    """Recalled facts as a system message.
 
-    Retrieved memory joins this list in phase 4, after the system prompt and
-    before the conversation.
+    Framed as things already known rather than as instructions, and explicitly
+    fallible. Presented as ground truth, a model will defend a stale fact
+    against the user correcting it, which is exactly the failure that makes
+    memory feel broken rather than helpful.
+    """
+    lines = "\n".join(f"- {fact.render()}" for fact in facts)
+    return (
+        "What you already know about this person and their work, recalled from "
+        "earlier conversations:\n"
+        f"{lines}\n\n"
+        "Use it where it is relevant and say nothing about it where it is not. "
+        "It may be incomplete or out of date; if the user contradicts it, they "
+        "are right."
+    )
+
+
+def build_prompt(
+    history: list[Message], facts: Sequence[Fact] = ()
+) -> list[ProviderMessage]:
+    """The system prompt, then recalled memory, then the conversation.
+
+    Memory goes above the transcript so the turn the user just typed stays the
+    most recent thing in the window, and stays what the model is answering.
     """
     prompt: list[ProviderMessage] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    if facts:
+        prompt.append({"role": "system", "content": render_memory(facts)})
     for message in history:
         if message.role == "system":
             continue
@@ -85,6 +111,8 @@ async def generate_turn(
     chat: Chat,
     content: str,
     provider: Provider,
+    user_id: uuid.UUID,
+    memory: MemoryClient | None = None,
     attachments: tuple[Attachment, ...] = (),
 ) -> Turn:
     """Store the user message, answer it, store the answer.
@@ -107,7 +135,23 @@ async def generate_turn(
         chat.title = _derive_title(content)
 
     history = await _load_history(session, chat.id)
-    prompt = build_prompt(history)
+
+    # Retrieval runs against what the user just said, before generation. It is
+    # allowed to come back empty -- an unreachable memory service degrades the
+    # answer, it does not fail the turn.
+    facts: list[Fact] = []
+    if memory is not None:
+        try:
+            facts = await memory.search(
+                content, user_id=user_id, project_id=chat.project_id
+            )
+        except Exception:
+            # The client already swallows transport failures; this catches
+            # everything else, because the rule is that memory degrades an
+            # answer and never fails one.
+            logger.exception("Memory search raised for chat=%s", chat.id)
+
+    prompt = build_prompt(history, facts)
 
     started = time.perf_counter()
     error: str | None = None
@@ -127,6 +171,12 @@ async def generate_turn(
         "route_reason": route.reason,
         "latency_ms": latency_ms,
         "prompt_messages": len(prompt),
+        # What was recalled, so the UI can show it and so a bad answer can be
+        # traced back to what the model was told.
+        "recalled_facts": [
+            {"id": f.id, "fact": f.fact, "scope": f.scope, "kind": f.kind}
+            for f in facts
+        ],
     }
     if error is not None:
         meta["error"] = error
@@ -141,15 +191,17 @@ async def generate_turn(
     await session.flush()
 
     logger.info(
-        "turn chat=%s handler=%s latency_ms=%d history=%d%s",
+        "turn chat=%s handler=%s latency_ms=%d history=%d recalled=%d%s",
         chat.id,
         route.handler,
         latency_ms,
         len(history),
+        len(facts),
         " FAILED" if error else "",
     )
     return Turn(
         user_message=user_message,
         assistant_message=assistant_message,
         route=route,
+        facts=tuple(facts),
     )

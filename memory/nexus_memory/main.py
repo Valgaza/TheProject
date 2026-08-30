@@ -3,10 +3,19 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Literal
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import (
+    BackgroundTasks,
+    FastAPI,
+    HTTPException,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from graphiti_core import Graphiti
 from graphiti_core.edges import EntityEdge
@@ -18,7 +27,8 @@ from graphiti_core.nodes import EntityNode, EpisodeType
 
 from .config import Settings
 from .logging_config import configure_logging
-from .scopes import Scope, read_groups, write_group
+from .retrieval import DEFAULT_LIMIT, DEFAULT_MIN_SCORE, build_search_config
+from .scopes import Scope, read_groups, scope_of, write_group
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +135,27 @@ async def _build_graph_response(groups: list[str]) -> "GraphResponse":
     )
 
 
+def _dedupe(facts: list["FactOut"]) -> list["FactOut"]:
+    """Drop repeats of the same sentence, keeping the best-ranked one.
+
+    An entity's summary is frequently the verbatim text of the edge it was
+    extracted alongside, and both of a relationship's endpoint nodes carry it.
+    One ingested sentence can therefore come back three times, and a prompt that
+    says the same thing three times reads as emphasis the user never intended.
+    Edges come first in the candidate list, so a relationship wins over the
+    node summary that duplicates it.
+    """
+    seen: set[str] = set()
+    unique: list[FactOut] = []
+    for fact in facts:
+        key = " ".join(fact.fact.lower().split())
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(fact)
+    return unique
+
+
 async def _broadcast_write(group_id: str) -> None:
     """Push a fresh snapshot to everyone whose scope set contains this group.
 
@@ -160,6 +191,7 @@ async def lifespan(app: FastAPI):
     configure_logging()
     cfg = Settings()
 
+    app.state.search_min_score = cfg.search_min_score
     _graphiti = Graphiti(
         uri=cfg.neo4j_uri,
         user=cfg.neo4j_username,
@@ -222,11 +254,19 @@ class IngestRequest(BaseModel):
     # This used to hardcode "user: " onto everything, which taught the graph
     # that a person literally named "user" was the subject of every fact.
     speaker: str | None = None
+    # Block until the episode is actually in the graph. Off by default, because
+    # extraction takes 12-30s and most callers are fire-and-forget. The write
+    # gate turns it on: it already runs off the request path, and it needs a
+    # real outcome -- and the episode's uuid -- to record rather than an
+    # optimistic guess.
+    wait: bool = False
 
 
 class IngestResponse(BaseModel):
-    status: str
+    status: Literal["accepted", "ingested", "failed"]
     group_id: str
+    episode_uuid: uuid.UUID | None = None
+    error: str | None = None
 
 
 class NodeOut(BaseModel):
@@ -254,6 +294,34 @@ class GraphResponse(BaseModel):
     edges: list[EdgeOut]
 
 
+class SearchRequest(BaseModel):
+    query: str
+    user_id: uuid.UUID
+    project_id: uuid.UUID | None = None
+    limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=50)
+
+
+class FactOut(BaseModel):
+    id: str
+    fact: str
+    # "relationship" when it came from an edge, "entity" when it came from a
+    # node's summary. Standing facts about a person arrive as the latter.
+    kind: Literal["relationship", "entity", "episode"]
+    # The entity a summary describes; None for relationships.
+    subject: str | None = None
+    group_id: str
+    # Which tier it came from, so a caller can weigh a durable personal fact
+    # differently from a project detail without parsing group ids.
+    scope: Scope
+    valid_at: datetime | None = None
+
+
+class SearchResponse(BaseModel):
+    query: str
+    group_ids: list[str]
+    facts: list[FactOut]
+
+
 class HealthResponse(BaseModel):
     status: str
     neo4j: str
@@ -262,7 +330,19 @@ class HealthResponse(BaseModel):
 # ── Background task ───────────────────────────────────────────────────────────
 
 
-async def _run_ingest(text: str, group_id: str, speaker: str | None = None) -> None:
+async def _run_ingest(
+    text: str,
+    group_id: str,
+    speaker: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Returns (episode_uuid, error). Exactly one of the two is set.
+
+    The uuid is graphiti's to mint. ``add_episode`` does take a ``uuid``
+    argument, but it means "update this existing episode" -- it calls
+    ``EpisodicNode.get_by_uuid`` (graphiti.py:1053) and raises
+    ``NodeNotFoundError`` for anything it has not seen. Supplying a fresh one
+    fails every time.
+    """
     graphiti = _require_graphiti()
     if speaker:
         body = f"{speaker}: {text}"
@@ -273,7 +353,7 @@ async def _run_ingest(text: str, group_id: str, speaker: str | None = None) -> N
         source = EpisodeType.text
         description = f"nexus statement ({group_id})"
     try:
-        await graphiti.add_episode(
+        result = await graphiti.add_episode(
             name="episode",
             episode_body=body,
             source=source,
@@ -281,29 +361,42 @@ async def _run_ingest(text: str, group_id: str, speaker: str | None = None) -> N
             reference_time=datetime.now(timezone.utc),
             group_id=group_id,
         )
-        logger.info("Ingested episode into group=%s", group_id)
-    except Exception:
+        episode_uuid = result.episode.uuid
+        logger.info("Ingested episode into group=%s uuid=%s", group_id, episode_uuid)
+    except Exception as exc:
         logger.exception("Failed to ingest episode into group=%s", group_id)
-        return
+        return None, f"{exc.__class__.__name__}: {exc}"
 
     try:
         await _broadcast_write(group_id)
     except Exception:
         logger.exception("Failed to broadcast update for group=%s", group_id)
+    return episode_uuid, None
 
 
 # ── HTTP routes ───────────────────────────────────────────────────────────────
 
 
 @app.post("/ingest", response_model=IngestResponse, status_code=202)
-async def ingest(req: IngestRequest, background_tasks: BackgroundTasks):
-    """Accept text for async ingestion into exactly one scope."""
+async def ingest(req: IngestRequest, background_tasks: BackgroundTasks, response: Response):
+    """Accept text for ingestion into exactly one scope."""
     if not req.text.strip():
         raise HTTPException(status_code=422, detail="text must not be empty")
     try:
         group_id = write_group(req.scope, req.user_id, req.project_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if req.wait:
+        episode_uuid, error = await _run_ingest(req.text, group_id, req.speaker)
+        # 202 Accepted would be a lie here: the work is finished either way.
+        response.status_code = 500 if error else 201
+        return IngestResponse(
+            status="failed" if error else "ingested",
+            group_id=group_id,
+            episode_uuid=episode_uuid,
+            error=error,
+        )
 
     background_tasks.add_task(_run_ingest, req.text, group_id, req.speaker)
     return IngestResponse(status="accepted", group_id=group_id)
@@ -336,6 +429,87 @@ async def delete_graph(user_id: uuid.UUID, project_id: uuid.UUID | None = None):
     for group_id in groups:
         for subscription in manager.watchers_of(group_id):
             await manager.send(subscription, payload)
+
+
+@app.post("/search", response_model=SearchResponse)
+async def search(req: SearchRequest, request: Request):
+    """Facts relevant to a query, drawn from the user tier and, when given, one
+    project tier, ranked together.
+
+    Superseded facts are dropped. graphiti keeps an invalidated edge rather than
+    deleting it, which is right for history and wrong for context: injecting
+    "the graph store is SQLite" into a prompt after it became Neo4j would make
+    the assistant confidently stale.
+    """
+    if not req.query.strip():
+        raise HTTPException(status_code=422, detail="query must not be empty")
+
+    graphiti = _require_graphiti()
+    groups = read_groups(req.user_id, req.project_id)
+
+    results = await graphiti.search_(
+        query=req.query,
+        config=build_search_config(
+            req.limit,
+            getattr(request.app.state, "search_min_score", DEFAULT_MIN_SCORE),
+        ),
+        group_ids=groups,
+    )
+
+    candidates: list[FactOut] = [
+        FactOut(
+            id=edge.uuid,
+            fact=edge.fact,
+            kind="relationship",
+            group_id=edge.group_id,
+            scope=scope_of(edge.group_id),
+            valid_at=edge.valid_at,
+        )
+        # A superseded edge is kept by graphiti rather than deleted, which is
+        # right for history and wrong for context: injecting "the graph store
+        # is SQLite" after it became Neo4j makes the assistant confidently
+        # stale.
+        for edge in results.edges
+        if edge.invalid_at is None and edge.expired_at is None
+    ] + [
+        FactOut(
+            id=node.uuid,
+            fact=node.summary,
+            kind="entity",
+            subject=node.name,
+            group_id=node.group_id,
+            scope=scope_of(node.group_id),
+        )
+        for node in results.nodes
+        if node.summary
+    ] + [
+        # Last in the candidate list, so an edge or a node summary wins the
+        # dedupe over the raw episode it was extracted from. Episodes are here
+        # as the durable fallback: node summaries do not accumulate, so a fact
+        # can be written, confirmed, and still be missing from every summary.
+        FactOut(
+            id=episode.uuid,
+            fact=episode.content,
+            kind="episode",
+            group_id=episode.group_id,
+            scope=scope_of(episode.group_id),
+        )
+        for episode in getattr(results, "episodes", [])
+        if episode.content
+    ]
+
+    facts = _dedupe(candidates)[: req.limit]
+
+    logger.info(
+        "search groups=%s query=%r edges=%d nodes=%d episodes=%d -> %d after dedupe",
+        groups,
+        req.query[:80],
+        len(results.edges),
+        len(results.nodes),
+        len(getattr(results, "episodes", [])),
+        len(facts),
+    )
+    return SearchResponse(query=req.query, group_ids=groups, facts=facts)
 
 
 @app.get("/health", response_model=HealthResponse)

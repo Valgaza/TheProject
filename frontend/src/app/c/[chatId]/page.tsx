@@ -11,6 +11,7 @@
 import React, { Suspense, use, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Composer } from "@/components/composer";
+import { RecalledFacts } from "@/components/recalled-facts";
 import { Icon } from "@/components/icons";
 import { domainById } from "@/lib/domains";
 import {
@@ -252,6 +253,7 @@ const AssistantMessage = ({
       </div>
       <div className="msg__body">
         <p style={{ whiteSpace: "pre-wrap" }}>{message.content}</p>
+        <RecalledFacts facts={message.metadata.recalled_facts ?? []} />
         <div className="trace">
           <span>PIPELINE TRACE</span>
           <span className="trace__line" />

@@ -4,7 +4,8 @@ import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Icon } from "./icons";
-import { CHATS_CHANGED, type Chat, defaultProject, listChats } from "@/lib/api";
+import { CHATS_CHANGED, type Chat, listChats } from "@/lib/api";
+import { useProjects } from "@/lib/project-context";
 
 /** "/c/abc" -> "c", "/" -> "landing". Only the first segment names a page. */
 const getPageId = (path: string) => {
@@ -24,6 +25,8 @@ function relativeTime(iso: string): string {
 export const RailNav = () => {
   const pathname = usePathname();
   const router = useRouter();
+  const { projects, current, select } = useProjects();
+  const [switcherOpen, setSwitcherOpen] = useState(false);
 
   const page = getPageId(pathname);
 
@@ -35,16 +38,18 @@ export const RailNav = () => {
     { id: "settings", label: "Settings",         icon: "cog",    path: "/settings" },
   ];
 
-  // Real chats, refetched whenever the route changes so a new conversation
-  // shows up here the moment it exists. Polling and live sync are phase 6's
-  // problem; this is the cheapest thing that makes the list true.
+  // Chats belong to the current project, so the list changes when you switch.
   const [recent, setRecent] = useState<Chat[]>([]);
+  const projectId = current?.id;
   useEffect(() => {
     let cancelled = false;
+    if (!projectId) {
+      setRecent([]);
+      return;
+    }
     const load = async () => {
       try {
-        const project = await defaultProject();
-        const chats = await listChats(project.id);
+        const chats = await listChats(projectId);
         if (!cancelled) setRecent(chats);
       } catch {
         if (!cancelled) setRecent([]);
@@ -56,11 +61,7 @@ export const RailNav = () => {
       cancelled = true;
       window.removeEventListener(CHATS_CHANGED, load);
     };
-  }, [pathname]);
-
-  const projects = [
-    { id: "p1", name: "Knowledge Base Q&A", domain: "rag" },
-  ];
+  }, [pathname, projectId]);
 
   return (
     <aside className="rail">
@@ -88,19 +89,50 @@ export const RailNav = () => {
         ))}
       </div>
 
-      <div className="rail__section">
+      {/* The project is a memory scope, not just a folder: switching changes
+          which chats are listed and what the assistant can recall. */}
+      <div className="rail__section pswitch">
         <div className="rail__label">
-          Pinned projects <span className="add"><Icon name="plus" size={12}/></span>
+          Project
+          <span className="add" onClick={() => router.push("/projects")}>
+            <Icon name="plus" size={12}/>
+          </span>
         </div>
-        {projects.map(p => (
-          <div key={p.id} className="nav-item" onClick={() => router.push("/projects")}>
-            <span className="dot" style={{
-              width: 6, height: 6, borderRadius: 999,
-              background: `var(--d-${p.domain})`, flex: "0 0 6px"
-            }}/>
-            <span className="truncate">{p.name}</span>
+        {/* A button, not a div: this is a real control, and the rest of the
+            rail being click-handlers on divs is not a reason to add another. */}
+        <button className="nav-item"
+                type="button"
+                aria-expanded={switcherOpen}
+                aria-label="Switch project"
+                style={{ width: "100%", font: "inherit", textAlign: "left" }}
+                onClick={() => setSwitcherOpen(o => !o)}>
+          <span className="dot" style={{
+            width: 6, height: 6, borderRadius: 999,
+            background: `var(--d-${current?.domain ?? "general"})`, flex: "0 0 6px",
+          }}/>
+          <span className="truncate">{current?.name ?? "No project"}</span>
+          <span className="count">{switcherOpen ? "▴" : "▾"}</span>
+        </button>
+        {switcherOpen && (
+          <div className="pswitch__menu">
+            {projects.map(p => (
+              <button key={p.id}
+                      className={`pswitch__item ${p.id === current?.id ? "is-on" : ""}`}
+                      onClick={() => { select(p.id); setSwitcherOpen(false); }}>
+                <span className="dot" style={{
+                  width: 6, height: 6, borderRadius: 999,
+                  background: `var(--d-${p.domain})`, flex: "0 0 6px",
+                }}/>
+                <span className="truncate">{p.name}</span>
+              </button>
+            ))}
+            <button className="pswitch__item"
+                    onClick={() => { setSwitcherOpen(false); router.push("/projects"); }}>
+              <Icon name="plus" size={12}/>
+              <span>New project…</span>
+            </button>
           </div>
-        ))}
+        )}
       </div>
 
       <div className="rail__section" style={{ flex: 1, minHeight: 0 }}>

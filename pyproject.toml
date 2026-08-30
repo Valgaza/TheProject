@@ -26,7 +26,9 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["core/tests", "memory/tests"]
+# `tests/` holds the end-to-end scenarios. They skip themselves unless
+# RUN_SCENARIOS=1, so the default run stays fast and free.
+testpaths = ["core/tests", "memory/tests", "tests"]
 # No pythonpath: both services are installed as distinct top-level packages
 # (nexus_core, nexus_memory). They used to both be called `app`, which meant
 # `import app` resolved to whichever .pth file won and left the memory service
