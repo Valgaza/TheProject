@@ -90,8 +90,8 @@ async def create_chat(
     request: Request,
     session: AsyncSession = Depends(session_dependency),
 ) -> Chat:
-    await _get_project(session, project_id, _current_user_id(request))
-    chat = Chat(project_id=project_id, title=body.title)
+    project = await _get_project(session, project_id, _current_user_id(request))
+    chat = Chat(user_id=project.user_id, project_id=project_id, title=body.title)
     session.add(chat)
     await session.flush()
     return chat

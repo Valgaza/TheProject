@@ -30,13 +30,16 @@ class ProjectOut(BaseModel):
 
 class ChatCreate(BaseModel):
     title: str = Field(default="New conversation", min_length=1, max_length=200)
+    # Only meaningful on POST /chats. Null starts a chat outside every project,
+    # which reads and writes the user memory tier alone.
+    project_id: uuid.UUID | None = None
 
 
 class ChatOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    project_id: uuid.UUID
+    project_id: uuid.UUID | None
     title: str
     created_at: datetime
     updated_at: datetime
@@ -110,3 +113,29 @@ class MemoryEpisodeOut(BaseModel):
     reason: str | None
     error: str | None
     created_at: datetime
+
+
+class MaintenanceRequest(BaseModel):
+    """One tidy-up of whatever a view covers."""
+
+    view: Literal["all", "user", "project"] = "all"
+    project_id: uuid.UUID | None = None
+    # Reports without changing anything unless the caller asks. The sweep will
+    # be wrong sometimes and the diff is worth reading first.
+    dry_run: bool = True
+
+
+class MaintenanceRunOut(BaseModel):
+    """One recorded pass. The report is the sweep's own, passed through."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    project_id: uuid.UUID | None
+    scope: str
+    group_id: str
+    dry_run: bool
+    report: dict
+    episodes_at_run: int
+    started_at: datetime
+    finished_at: datetime | None
