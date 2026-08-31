@@ -3,7 +3,7 @@
 import React, { useRef, useState, useEffect } from "react";
 import { Icon } from "@/components/icons";
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_RAG_URL ?? "http://localhost:8001";
 
 interface SourceInfo {
   file_name: string;

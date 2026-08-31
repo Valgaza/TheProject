@@ -112,3 +112,11 @@ class QueryPipeline:
             reranked_results=reranked_results,
             elapsed_seconds=elapsed,
         )
+
+    def collection_info(self) -> dict[str, Any]:
+        """Cheap collection stats (point count etc.) with no embedding,
+        search, or reranking — useful for callers (like the orchestrator)
+        that just want to know "is there anything in here at all" without
+        paying for a full query.
+        """
+        return self._retriever._vector_store.get_collection_info()

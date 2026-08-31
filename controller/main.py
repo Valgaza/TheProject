@@ -196,3 +196,13 @@ async def query_knowledge_base(question: str = Form(...)):
 async def health():
     """Health check."""
     return {"status": "ok", "service": "rag-controller"}
+
+
+@app.get("/api/status")
+async def status():
+    """Cheap collection stats (point count etc.) — no embedding, search, or
+    reranking involved. Used by the orchestrator to check whether there's
+    anything ingested at all before bothering to run a full query.
+    """
+    pipeline = _get_query_pipeline()
+    return pipeline.collection_info()
