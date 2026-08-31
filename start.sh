@@ -2,9 +2,17 @@
 # Starts the whole Nexus backend: Neo4j, the memory service and the core
 # service. Run the frontend separately: cd frontend && npm run dev
 #
-# Both services run under one uvicorn each, deliberately. The memory service's
-# WebSocket subscriptions and background ingests are in-process, so --workers > 1
-# would give each worker a different half of the connected clients.
+# Both services run under one uvicorn each, deliberately. Four things in the
+# memory service are in-process state, so --workers > 1 would give each worker
+# its own copy and break all of them:
+#
+#   1. the WebSocket ConnectionManager  — half the clients per worker
+#   2. BackgroundTasks                  — ingests scattered across workers
+#   3. hygiene.group_lock               — two workers sweeping and ingesting
+#                                         the same group at once
+#   4. hygiene._suppressed              — duplicate episodes reappearing in
+#                                         search on whichever worker missed
+#                                         the sweep
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

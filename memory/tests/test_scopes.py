@@ -7,7 +7,13 @@ import uuid
 
 import pytest
 
-from nexus_memory.scopes import project_group, read_groups, user_group, write_group
+from nexus_memory.scopes import (
+    project_group,
+    read_groups,
+    user_group,
+    view_groups,
+    write_group,
+)
 
 ALICE = uuid.UUID("11111111-1111-1111-1111-111111111111")
 BOB = uuid.UUID("22222222-2222-2222-2222-222222222222")
@@ -81,3 +87,29 @@ def test_one_project_cannot_read_another():
     assert project_group(ALICE, SIDE) not in thesis_read
     assert project_group(ALICE, THESIS) not in side_read
     assert thesis_read & side_read == {user_group(ALICE)}
+
+
+# ── views ─────────────────────────────────────────────────────────────────────
+# A view is what the panel draws, which is not the same question as what a read
+# is allowed to see. Reads always union; views can isolate a tier.
+
+
+def test_the_user_view_is_the_universal_tier_alone():
+    assert view_groups("user", ALICE, THESIS) == [user_group(ALICE)]
+
+
+def test_the_project_view_excludes_the_user_tier():
+    """Otherwise the two tiers are indistinguishable on screen."""
+    groups = view_groups("project", ALICE, THESIS)
+
+    assert groups == [project_group(ALICE, THESIS)]
+    assert user_group(ALICE) not in groups
+
+
+def test_the_default_view_is_what_a_read_would_see():
+    assert view_groups("all", ALICE, THESIS) == read_groups(ALICE, THESIS)
+
+
+def test_a_project_view_without_a_project_is_refused():
+    with pytest.raises(ValueError):
+        view_groups("project", ALICE, None)

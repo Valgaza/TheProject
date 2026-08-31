@@ -33,7 +33,8 @@ export type Project = {
 
 export type Chat = {
   id: string;
-  project_id: string;
+  /** Null for a chat filed under no project: user-tier memory only. */
+  project_id: string | null;
   title: string;
   created_at: string;
   updated_at: string;
@@ -102,13 +103,26 @@ export const listProjects = () => core<Project[]>("/projects");
 export const createProject = (body: { name: string; description?: string; domain?: string }) =>
   core<Project>("/projects", { method: "POST", body: JSON.stringify(body) });
 
+/** Every chat this user has, newest activity first. */
+export const listAllChats = () => core<Chat[]>("/chats");
+
 export const listChats = (projectId: string) =>
   core<Chat[]>(`/projects/${projectId}/chats`);
 
-export const createChat = (projectId: string, title?: string) =>
-  core<Chat>(`/projects/${projectId}/chats`, {
+/**
+ * Start a conversation. No project means user-tier memory only, which is what
+ * a one-off question should get — filing it under a project would write into
+ * that body of work.
+ */
+export const createChat = (
+  { projectId, title }: { projectId?: string | null; title?: string } = {}
+) =>
+  core<Chat>("/chats", {
     method: "POST",
-    body: JSON.stringify(title ? { title } : {}),
+    body: JSON.stringify({
+      ...(projectId ? { project_id: projectId } : {}),
+      ...(title ? { title } : {}),
+    }),
   });
 
 export const getChat = (chatId: string) => core<Chat>(`/chats/${chatId}`);
@@ -133,17 +147,6 @@ export const CHATS_CHANGED = "nexus:chats-changed";
 export const notifyChatsChanged = () => {
   if (typeof window !== "undefined") window.dispatchEvent(new Event(CHATS_CHANGED));
 };
-
-/**
- * The project every chat lands in until the project switcher is wired up in
- * phase 6. Reuses the first existing project rather than creating a duplicate
- * on every cold start.
- */
-export async function defaultProject(): Promise<Project> {
-  const existing = await listProjects();
-  if (existing.length > 0) return existing[0];
-  return createProject({ name: "General", domain: "general" });
-}
 
 // ── Memory service ───────────────────────────────────────────────────────────
 
@@ -172,17 +175,28 @@ export type ApiEdge = {
 /** The union that was read, not a single group. */
 export type ApiGraph = { group_ids: string[]; nodes: ApiNode[]; edges: ApiEdge[] };
 
-const scopeQuery = (projectId?: string) =>
-  `user_id=${encodeURIComponent(USER_ID)}` +
-  (projectId ? `&project_id=${encodeURIComponent(projectId)}` : "");
+/**
+ * Which slice of the graph to draw.
+ *
+ * Not the same question as what a retrieval may see — that always unions both
+ * tiers. "user" is the universal graph on its own, "project" is one body of
+ * work on its own, and "all" is the union. Isolating them is the only way to
+ * see on screen which tier a fact actually landed in.
+ */
+export type GraphView = "all" | "user" | "project";
 
-/** Reads union the user tier with the project tier, when a project is given. */
-export const graphUrl = (projectId?: string) =>
-  `${MEMORY_URL}/graph?${scopeQuery(projectId)}`;
+/** The half of the query both graph endpoints share; the user id differs. */
+const viewQuery = (view: GraphView, projectId?: string) => {
+  const params = new URLSearchParams({ view });
+  if (projectId) params.set("project_id", projectId);
+  return params.toString();
+};
 
-export const graphSocketUrl = (projectId?: string) =>
-  `${MEMORY_WS_URL}/ws/graph/${encodeURIComponent(USER_ID)}` +
-  (projectId ? `?project_id=${encodeURIComponent(projectId)}` : "");
+export const graphUrl = (view: GraphView = "all", projectId?: string) =>
+  `${MEMORY_URL}/graph?user_id=${encodeURIComponent(USER_ID)}&${viewQuery(view, projectId)}`;
+
+export const graphSocketUrl = (view: GraphView = "all", projectId?: string) =>
+  `${MEMORY_WS_URL}/ws/graph/${encodeURIComponent(USER_ID)}?${viewQuery(view, projectId)}`;
 
 /**
  * Fire-and-forget: the graph updating is not worth failing a chat turn over.
@@ -205,3 +219,52 @@ export function ingest(
     }),
   }).catch(err => console.error("[memory] ingest failed:", err));
 }
+
+// ── Maintenance ──────────────────────────────────────────────────────────────
+
+/** What one group's tidy-up found. Text, not counts: when the pass is wrong,
+ *  the only useful question is which fact it touched. */
+export type SweepReport = {
+  group_id: string;
+  scope: Scope;
+  duplicate_edges: string[];
+  near_duplicates: string[];
+  /** Two relations live between one pair. Never merged automatically — "uses X"
+   *  and "no longer uses X" look almost identical to an embedding. */
+  conflicts: string[];
+  /** Where graphiti's own invalidation looks wrong. Reported, never repaired. */
+  suspect_invalidations: string[];
+  summaries_rebuilt: string[];
+  episodes_suppressed: string[];
+  orphans_deleted: string[];
+};
+
+export type MaintenanceResult = {
+  group_ids: string[];
+  dry_run: boolean;
+  clean: boolean;
+  total_changes: number;
+  reports: SweepReport[];
+};
+
+/**
+ * Tidy the graph behind one view. Reports without changing anything unless
+ * `dryRun` is false — the pass will be wrong sometimes and the diff is worth
+ * reading first.
+ *
+ * Goes through core rather than straight to the memory service, unlike the
+ * graph reads: every run is recorded in Postgres, and core is what owns that.
+ */
+export const runMaintenance = (
+  view: GraphView,
+  projectId: string | undefined,
+  dryRun: boolean
+) =>
+  core<MaintenanceResult>("/maintenance", {
+    method: "POST",
+    body: JSON.stringify({
+      view,
+      project_id: view === "project" ? projectId : null,
+      dry_run: dryRun,
+    }),
+  });

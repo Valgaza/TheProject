@@ -139,3 +139,30 @@ class MemoryClient:
             episode_uuid=uuid.UUID(raw_uuid) if raw_uuid else None,
             error=body.get("error"),
         )
+
+    async def maintenance(
+        self,
+        *,
+        user_id: uuid.UUID,
+        project_id: uuid.UUID | None,
+        view: str,
+        dry_run: bool,
+    ) -> dict:
+        """Ask the memory service to tidy one view of the graph.
+
+        Given the ingest timeout rather than the search one: a sweep reads every
+        edge in a group and rebuilds its summaries, which is slower than a
+        search and, like ingest, never has a user waiting on it.
+        """
+        response = await self._http.post(
+            f"{self._base_url}/maintenance",
+            json={
+                "user_id": str(user_id),
+                "project_id": str(project_id) if project_id else None,
+                "view": view,
+                "dry_run": dry_run,
+            },
+            timeout=INGEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        return response.json()
