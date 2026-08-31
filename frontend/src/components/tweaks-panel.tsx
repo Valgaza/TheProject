@@ -109,6 +109,7 @@ export function useTweaks(defaults: any) {
 
 export function TweaksPanel({ title = 'Tweaks', children, defaultOpen = true }: any) {
   const [open, setOpen] = useState(defaultOpen);
+  const [offset, setOffset] = useState({ x: 16, y: 16 });
   const dragRef = useRef<HTMLDivElement>(null);
   const offsetRef = useRef({ x: 16, y: 16 });
   const PAD = 16;
@@ -119,10 +120,12 @@ export function TweaksPanel({ title = 'Tweaks', children, defaultOpen = true }: 
     const w = panel.offsetWidth, h = panel.offsetHeight;
     const maxRight = Math.max(PAD, window.innerWidth - w - PAD);
     const maxBottom = Math.max(PAD, window.innerHeight - h - PAD);
-    offsetRef.current = {
+    const nextOffset = {
       x: Math.min(maxRight, Math.max(PAD, offsetRef.current.x)),
       y: Math.min(maxBottom, Math.max(PAD, offsetRef.current.y)),
     };
+    offsetRef.current = nextOffset;
+    setOffset(nextOffset);
     panel.style.right = offsetRef.current.x + 'px';
     panel.style.bottom = offsetRef.current.y + 'px';
   }, []);
@@ -170,7 +173,7 @@ export function TweaksPanel({ title = 'Tweaks', children, defaultOpen = true }: 
     <>
       <style>{__TWEAKS_STYLE}</style>
       <div ref={dragRef} className="twk-panel"
-           style={{ right: offsetRef.current.x, bottom: offsetRef.current.y }}>
+           style={{ right: offset.x, bottom: offset.y }}>
         <div className="twk-hd" onMouseDown={onDragStart}>
           <b>{title}</b>
           <button className="twk-x" aria-label="Close tweaks"
@@ -232,7 +235,10 @@ export function TweakRadio({ label, value, options, onChange }: any) {
   const n = opts.length;
 
   const valueRef = useRef(value);
-  valueRef.current = value;
+
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
 
   const segAt = (clientX: number) => {
     const r = trackRef.current!.getBoundingClientRect();
@@ -244,11 +250,17 @@ export function TweakRadio({ label, value, options, onChange }: any) {
   const onPointerDown = (e: any) => {
     setDragging(true);
     const v0 = segAt(e.clientX);
-    if (v0 !== valueRef.current) onChange(v0);
+    if (v0 !== valueRef.current) {
+      valueRef.current = v0;
+      onChange(v0);
+    }
     const move = (ev: any) => {
       if (!trackRef.current) return;
       const v = segAt(ev.clientX);
-      if (v !== valueRef.current) onChange(v);
+      if (v !== valueRef.current) {
+        valueRef.current = v;
+        onChange(v);
+      }
     };
     const up = () => {
       setDragging(false);
