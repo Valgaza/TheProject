@@ -1,27 +1,42 @@
 "use client";
 
 /**
- * The starting screen: one composer, no pipeline picker.
+ * The starting screen: one composer, nothing else.
  *
- * The four-card domain grid used to live here and made the user choose a
- * pipeline before typing. The orchestrator makes that call now, so the choice
- * is gone; the domains survive as labels on answers, in src/lib/domains.ts.
+ * A pipeline picker used to live here, then a row of suggested prompts. Both
+ * were the screen telling the user what to do. The orchestrator picks the
+ * handler and the person picks the question.
  */
 
-import React, { useState } from "react";
-import { useRouter } from "next/navigation";
+import React, { Suspense, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Composer } from "@/components/composer";
-import { Icon } from "@/components/icons";
-import { SUGGESTED } from "@/lib/domains";
-import { createChat, defaultProject } from "@/lib/api";
+import { createChat } from "@/lib/api";
 import { useProjects } from "@/lib/project-context";
 
 export default function ChatHome() {
+  // useSearchParams opts everything above it out of prerendering unless it
+  // sits under a boundary. Next's docs are explicit about wrapping it.
+  return (
+    <Suspense fallback={<div className="chathome" />}>
+      <Start />
+    </Suspense>
+  );
+}
+
+function Start() {
   const router = useRouter();
-  const { current } = useProjects();
+  const searchParams = useSearchParams();
+  const { projects } = useProjects();
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // A project only when the rail asked for one. Defaulting to whatever project
+  // happens to be selected would file passing questions into a body of work,
+  // and a project is a memory scope — that write is not free.
+  const projectId = searchParams.get("project");
+  const project = projects.find(p => p.id === projectId);
 
   const start = async () => {
     const content = value.trim();
@@ -30,13 +45,10 @@ export default function ChatHome() {
     setBusy(true);
     setError(null);
     try {
-      // The current project, so a new chat inherits the memory scope the user
-      // is looking at. defaultProject() only covers a cold start with none.
-      const project = current ?? (await defaultProject());
-      const chat = await createChat(project.id);
+      const chat = await createChat({ projectId });
       // Carry the prompt to the thread rather than sending it here — the reply
-      // takes a couple of seconds and it should arrive on the page you're
-      // reading, not on the one you're leaving.
+      // takes a couple of seconds and it should arrive on the page you are
+      // reading, not the one you are leaving.
       router.push(`/c/${chat.id}?q=${encodeURIComponent(content)}`);
     } catch {
       setBusy(false);
@@ -46,53 +58,38 @@ export default function ChatHome() {
 
   return (
     <div className="chathome">
-      <div className="chathome__hero">
-        <div className="eyebrow">§ Command</div>
-        <h1 className="display chathome__title">
-          Good afternoon.<br />
-          <em>What</em> are we making?
-        </h1>
-        <p className="chathome__sub">
-          Just start typing — Nexus routes the prompt to the right handler on its own.
-        </p>
-      </div>
-
-      <div className="chathome__suggest">
-        <div className="chathome__strip">
-          <span className="eyebrow">§ Suggested</span>
-          <span className="hr-line" />
-        </div>
-        <div className="chips">
-          {SUGGESTED.map((s, i) => (
-            <button key={i} className="chip" onClick={() => setValue(s)}>
-              <span className="chip__num mono">{String(i + 1).padStart(2, "0")}</span>
-              <span className="chip__text">{s}</span>
-              <span className="chip__arrow"><Icon name="arrow" size={14} /></span>
-            </button>
-          ))}
+      <div className="chathome__mid">
+        <div className="chathome__hero">
+          <div className="eyebrow">§ Command</div>
+          <h1 className="display chathome__title">
+            <em>What</em> are we making?
+          </h1>
         </div>
       </div>
 
-      <Composer
-        value={value}
-        onChange={setValue}
-        onSubmit={start}
-        placeholder="Ask Nexus something — or paste a document, link, or table…"
-        busy={busy}
-        autoFocus
-        badge={
-          <div className="tag tag--accent">
-            <span className="dot" style={{ background: "var(--accent)" }} />
-            auto-routed
-          </div>
-        }
-      />
-
-      {error && (
-        <p className="mono" style={{ marginTop: 12, fontSize: 12, color: "var(--ink-3)" }}>
-          {error}
-        </p>
-      )}
+      <div className="chathome__dock">
+        <Composer
+          value={value}
+          onChange={setValue}
+          onSubmit={start}
+          placeholder="Ask Nexus something…"
+          busy={busy}
+          autoFocus
+          badge={
+            <div className="tag tag--accent">
+              <span className="dot" style={{
+                background: project ? `var(--d-${project.domain})` : "var(--accent)",
+              }} />
+              {project ? project.name : "no project"}
+            </div>
+          }
+        />
+        {error && (
+          <p className="mono" style={{ marginTop: 10, fontSize: 12, color: "var(--ink-3)" }}>
+            {error}
+          </p>
+        )}
+      </div>
     </div>
   );
 }

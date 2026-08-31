@@ -118,12 +118,83 @@
   flex: 1;
 }
 
-.rail__history {
+/* The whole tree scrolls as one: projects with their chats nested, then the
+   chats that belong to no project. */
+.rail__scroll {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   margin: 0 -8px;
   padding: 0 8px;
 }
+.rail__empty {
+  padding: 4px 10px 8px;
+  font-size: 12.5px;
+  color: var(--ink-4);
+}
+
+/* — Project tree — */
+.tree__group { margin-bottom: 1px; }
+
+/* The current project is a memory scope, not a selection: a chat started here
+   can recall what the others in it said. Marked, but quietly — it is state,
+   not the active page. */
+.nav-item.is-current { color: var(--ink); font-weight: 500; }
+.nav-item.is-current .dot { box-shadow: 0 0 0 3px var(--accent-veil); }
+
+.tree__twist {
+  width: 16px; height: 16px;
+  flex: 0 0 16px;
+  display: grid; place-items: center;
+  border: 0; background: transparent; padding: 0;
+  border-radius: var(--r-1);
+  color: var(--ink-3);
+  cursor: pointer;
+  transition: transform var(--dur-2), color var(--dur-2);
+}
+.tree__twist.is-open { transform: rotate(90deg); }
+.tree__twist:hover { color: var(--ink); }
+
+.tree__add {
+  margin-left: auto;
+  width: 18px; height: 18px;
+  flex: 0 0 18px;
+  display: grid; place-items: center;
+  border: 0; background: transparent; padding: 0;
+  border-radius: var(--r-2);
+  color: var(--ink-3);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--dur-2), background var(--dur-2), color var(--dur-2);
+}
+.nav-item:hover .tree__add { opacity: 1; }
+.tree__add:hover { background: var(--bg-deep); color: var(--ink); }
+/* Keyboard users never hover, so the control has to appear on focus too. */
+.tree__add:focus-visible { opacity: 1; }
+
+/* The rule is the nesting: it draws the containment the indent only implies. */
+.tree__children {
+  margin-left: 15px;
+  padding-left: 9px;
+  border-left: 1px solid var(--line);
+}
+.tree__empty {
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--ink-4);
+}
+.tree__bullet {
+  width: 4px; height: 4px;
+  flex: 0 0 4px;
+  border-radius: 999px;
+  background: var(--ink-4);
+}
+.nav-item--leaf {
+  height: 29px;
+  font-size: 13px;
+  gap: 9px;
+}
+.nav-item--leaf.is-active .tree__bullet { background: var(--accent); }
 
 .rail__user {
   display: flex; align-items: center; gap: 10px;

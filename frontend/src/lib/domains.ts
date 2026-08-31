@@ -23,10 +23,3 @@ export const DOMAINS: Domain[] = [
 
 export const domainById = (id: string): Domain =>
   DOMAINS.find(d => d.id === id) ?? DOMAINS[1];
-
-export const SUGGESTED: string[] = [
-  "Explain the concept of knowledge graphs in simple terms",
-  "Help me draft a status update for this project",
-  "Summarise the key points from our last three conversations",
-  "What are the trade-offs between cosine similarity and dot product?",
-];
