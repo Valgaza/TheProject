@@ -155,20 +155,72 @@ memory/nexus_memory/    the graph: scopes, ingest, retrieval, live updates
 frontend/               Next.js 16, hand-written CSS, no UI dependencies
 supabase/migrations/    the schema, source of truth for what Postgres holds
 tests/                  end-to-end scenarios (opt-in, drives the live stack)
-pipelines/, shared/     empty; where the RAG and vision work will land
+pipelines/, shared/     empty; the original plan for where RAG and vision
+                        would land — see below, that's not where they landed
+RAG/, controller/,      the RAG pipeline, its demo controller, and an
+orchestrator/           orchestrator scaffold — built on a separate branch,
+                        merged in below `pipelines/`'s intended spot
 ```
 
-Each service owns its tests: `core/tests/` and `memory/tests/`.
+Each service owns its tests: `core/tests/` and `memory/tests/`. `RAG/` owns its
+own (`RAG/tests/`).
 
 The two Python packages are named `nexus_core` and `nexus_memory` rather than
 `app`. They were both `app` once, installed into the same virtualenv, which
 meant `import app` resolved to whichever won and the other was unreachable.
 
+## RAG pipeline and orchestrator — merged 2026-08-31, not yet integrated
+
+`RAG/`, `controller/`, and `orchestrator/` were built on `feature/rag-pipeline`,
+in parallel with everything above, and landed here through a git merge rather
+than through the `pipelines/`/`shared/` seam this README describes. Read this
+section as "what exists on disk," not "how it's meant to fit together" —
+reconciling the two is open work.
+
+| Service | Location | Port | Depends on |
+|---|---|---|---|
+| RAG controller | `controller/`, backed by `RAG/rag_pipeline/` | `8001` | Qdrant |
+| Orchestrator (scaffold) | `orchestrator/` | `8002` | RAG controller, `memory`, SearXNG |
+
+Both are fully local — no cloud LLM calls anywhere in `RAG/rag_pipeline`, and
+`orchestrator`'s LLM client is a swappable stub rather than a real model yet.
+
+**Two orchestrators currently exist**, doing overlapping jobs: `core`'s
+`select_route()` (above), designed with RAG and vision as its next branches,
+and this `orchestrator/`'s own router. That overlap is a real open decision,
+not an oversight — see
+[`.github/PROJECT_STATUS_REPORT.md`](.github/PROJECT_STATUS_REPORT.md) and
+[`orchestrator/OrchestratorReadme.md`](orchestrator/OrchestratorReadme.md)
+for what each one actually does before picking a direction.
+[`.github/IMPORTANT_BUSINESS_LOGIC_FLAGS.md`](.github/IMPORTANT_BUSINESS_LOGIC_FLAGS.md)
+tracks open product/safety decisions the same way `RUNBOOK.md` tracks
+operational ones.
+
+Setup, from the repo root, in a separate venv from `core`/`memory` for now:
+
+```bash
+cp RAG/env.example RAG/.env
+docker compose -f RAG/docker-compose.yml up -d      # Qdrant
+pip install -e "RAG[dev]"
+pip install -r controller/requirements.txt
+uvicorn controller.main:app --reload --port 8001
+
+cp orchestrator/.env.example orchestrator/.env
+docker compose -f orchestrator/docker-compose.yml up -d   # SearXNG
+pip install -e "orchestrator"
+uvicorn app.main:app --reload --port 8002 --app-dir orchestrator
+```
+
+The first RAG query after a cold start downloads embedding/reranker models
+from the internet and caches them locally — after that, no internet access is
+needed to use the pipeline.
+
 ## Tests
 
 ```bash
-uv run pytest                            # ~110 tests, ~2s, no services needed
+uv run pytest                            # core + memory: ~110 tests, ~2s, no services needed
 RUN_SCENARIOS=1 uv run pytest tests -v   # end-to-end, ~2 min, spends API credit
+python -m pytest RAG/tests               # RAG pipeline's own suite
 ```
 
 The scenario suite is the one that answers whether memory works: a fact stated
@@ -185,107 +237,3 @@ extraction.
 `memory/CHECKPOINT_0*.md` are historical records of earlier states. They describe
 a layout that no longer exists and are kept for the reasoning, not the
 instructions.
-# NexusAI
-
-A locally-run AI assistant for institutions that can't send client data to the cloud (medical practices, law firms). Documents and conversations stay on-machine; retrieval, memory, and (eventually) generation all run against local infrastructure.
-
-The system has two memory subsystems that feed context to an LLM:
-
-- **RAG pipeline** — documents (PDF/Markdown) get chunked, embedded, and stored in a vector database, so relevant passages can be retrieved for a question.
-- **Knowledge graph** — entities and relationships extracted from conversations, for information that doesn't fit well into a vector search (e.g. "who reports to whom," "which case cites which precedent").
-
-See [`.github/PROJECT_STATUS_REPORT.md`](.github/PROJECT_STATUS_REPORT.md) for the current architecture snapshot, known issues, and open decisions — that document goes deeper than this README and is the place to check for what's unresolved.
-
-## Services
-
-| Service | Location | Port | Depends on |
-|---|---|---|---|
-| Frontend (Next.js) | `frontend/` | `3000` | Memory service, RAG controller |
-| Knowledge graph memory service (FastAPI) | `memory/` | `8000` | Neo4j, OpenAI (see status report — planned to move local) |
-| RAG controller (FastAPI) | `controller/`, backed by `RAG/rag_pipeline/` | `8001` | Qdrant |
-| Orchestrator (FastAPI) | `orchestrator/` | `8002` | Memory service, RAG controller, SearXNG. Early scaffold — see `orchestrator/README.md`. |
-
-## Prerequisites
-
-- Node.js (for the frontend)
-- Python 3.12+
-- Docker (for Neo4j and Qdrant, via `docker-compose`)
-
-## Running everything
-
-Each service is started separately today — there's no single script yet that boots all of them (see status report's "Recommended Next Steps").
-
-### 1. Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Open [http://localhost:3000](http://localhost:3000).
-
-### 2. Knowledge graph memory service
-
-From the repository root:
-
-```bash
-cp .env.example .env
-```
-
-Fill in the required keys in `.env` (Neo4j credentials, `OPENAI_API_KEY`), then:
-
-```bash
-./start.sh
-```
-
-This starts Neo4j via Docker Compose and runs the memory service on `http://localhost:8000`.
-
-### 3. RAG service
-
-From the repository root:
-
-```bash
-cp RAG/env.example RAG/.env
-docker compose -f RAG/docker-compose.yml up -d
-python -m venv .venv
-source .venv/bin/activate
-pip install -e "RAG[dev]"
-pip install -r controller/requirements.txt
-uvicorn controller.main:app --reload --port 8001
-```
-
-This starts Qdrant via Docker Compose and runs the RAG controller on `http://localhost:8001`.
-
-Note: the first run of the RAG pipeline (ingesting or querying) downloads embedding and reranker models from the internet and caches them locally. After that first download, no internet access is required to use the pipeline.
-
-### 4. Orchestrator
-
-From the repository root:
-
-```bash
-cp orchestrator/.env.example orchestrator/.env
-docker compose -f orchestrator/docker-compose.yml up -d
-source .venv/bin/activate
-pip install -e "orchestrator"
-uvicorn app.main:app --reload --port 8002 --app-dir orchestrator
-```
-
-This starts SearXNG (self-hosted web search) via Docker Compose and runs the orchestrator on `http://localhost:8002`. See `orchestrator/README.md` — it's an early scaffold, not wired to a real LLM yet.
-
-## Frontend environment variables
-
-The frontend reads these at build time (see `frontend/src/app/demo/page.tsx`, `conversation/page.tsx`, `rag-demo/page.tsx`, `live-graph.tsx`):
-
-```bash
-NEXT_PUBLIC_MEMORY_URL=http://localhost:8000   # defaults to this if unset
-NEXT_PUBLIC_RAG_URL=http://localhost:8001      # defaults to this if unset
-```
-
-No committed template file for these exists yet — set them in a local, git-ignored `frontend/.env.local` if you need to point at non-default URLs.
-
-## Tests
-
-```bash
-python -m pytest RAG/tests
-```
