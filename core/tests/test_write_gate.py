@@ -12,7 +12,14 @@ from sqlalchemy import select
 from nexus_core.memory_client import IngestResult
 from nexus_core.memory_writer import run_write_gate
 from nexus_core.models import MemoryEpisode
-from nexus_core.write_gate import GateDecision, decide, looks_trivial
+from nexus_core.write_gate import (
+    GateDecision,
+    GateFact,
+    decide,
+    drop_known,
+    looks_trivial,
+    overlap,
+)
 
 
 class ScriptedProvider:
@@ -34,8 +41,15 @@ class ScriptedProvider:
         return [[0.0] for _ in texts]
 
 
-def _gate_json(**kwargs) -> str:
-    return json.dumps({"persist": True, "scope": "user", "statement": "x", "reason": "r", **kwargs})
+def _gate_json(statement: str = "Aarya lives in Pune.", scope: str = "user", **kwargs) -> str:
+    """One persist decision in the shape the gate now returns."""
+    body = {
+        "persist": True,
+        "facts": [{"statement": statement, "scope": scope}],
+        "reason": "r",
+    }
+    body.update(kwargs)
+    return json.dumps(body)
 
 
 # ── The pre-filter ────────────────────────────────────────────────────────────
@@ -75,14 +89,7 @@ async def test_a_pleasantry_never_reaches_the_model():
 
 async def test_a_persist_decision_is_read_out():
     provider = ScriptedProvider(
-        json.dumps(
-            {
-                "persist": True,
-                "scope": "project",
-                "statement": "The Nexus project uses Neo4j as its graph store.",
-                "reason": "technology decision",
-            }
-        )
+        _gate_json("The Nexus project uses Neo4j as its graph store.", "project")
     )
 
     decision = await decide(
@@ -90,8 +97,9 @@ async def test_a_persist_decision_is_read_out():
     , subject_name="Aarya")
 
     assert decision.persist
-    assert decision.scope == "project"
-    assert decision.statement.startswith("The Nexus project uses Neo4j")
+    assert len(decision.facts) == 1
+    assert decision.facts[0].scope == "project"
+    assert decision.facts[0].statement.startswith("The Nexus project uses Neo4j")
 
 
 async def test_a_code_fence_around_the_json_is_tolerated():
@@ -139,6 +147,9 @@ async def test_a_provider_failure_writes_nothing():
 
 
 async def test_the_gate_sees_both_halves_of_the_turn():
+    """It needs the reply to resolve references, and is told not to learn
+    from it -- "yes, and it also needs retries" is a real fact whose content
+    lives in the previous assistant message."""
     provider = ScriptedProvider(_gate_json())
 
     await decide(
@@ -148,6 +159,7 @@ async def test_the_gate_sees_both_halves_of_the_turn():
     turn = provider.calls[0][1]["content"]
     assert "what did I pick?" in turn
     assert "you picked Neo4j" in turn
+    assert "context only, not a source" in turn
 
 
 # ── Provenance ────────────────────────────────────────────────────────────────
@@ -178,7 +190,7 @@ async def test_a_persisted_fact_gets_a_provenance_row(db_client, session_factory
     ).json()
 
     provider = ScriptedProvider(
-        _gate_json(scope="project", statement="Nexus uses Neo4j.", reason="tech choice")
+        _gate_json("Nexus uses Neo4j.", "project", reason="tech choice")
     )
     memory = FakeMemory(IngestResult(ok=True, group_id="p_x"))
 
@@ -284,7 +296,7 @@ async def test_a_user_scope_fact_is_not_filed_under_the_project(db_client, sessi
     await run_write_gate(
         session_factory=session_factory,
         provider=ScriptedProvider(
-            _gate_json(scope="user", statement="Aarya prefers terse answers.")
+            _gate_json("Aarya prefers terse answers.", "user")
         ),
         memory=memory,
         gate_model="gate",
@@ -315,3 +327,252 @@ async def test_the_gate_is_told_who_it_is_writing_about():
     turn = provider.calls[0][1]["content"]
     assert "Aarya" in turn
     assert "The person is named: Aarya" in turn
+
+
+# ── Several facts per turn ────────────────────────────────────────────────────
+# One message can carry a durable fact about the person and one about the work.
+# The gate used to emit a single sentence, so one of the two was silently lost:
+# on the 31 Aug run "my name is Aarya, I'm a final year B.Tech student, and I
+# prefer short answers" wrote the identity and dropped the preference, while the
+# gate's own reason said it had seen both.
+
+
+def _multi_json(*pairs, reason: str = "r") -> str:
+    return json.dumps(
+        {
+            "persist": True,
+            "facts": [{"statement": s, "scope": sc} for s, sc in pairs],
+            "reason": reason,
+        }
+    )
+
+
+async def test_one_turn_can_carry_facts_for_two_different_tiers():
+    provider = ScriptedProvider(
+        _multi_json(
+            ("Aarya is a final year B.Tech student.", "user"),
+            ("Aarya prefers short, direct answers.", "user"),
+            ("Aarya is building Nexus.", "project"),
+        )
+    )
+
+    decision = await decide(
+        provider,
+        user_message="I'm a final year B.Tech student, I like short answers, and I'm building Nexus",
+        assistant_message="noted",
+        subject_name="Aarya",
+    )
+
+    assert [f.scope for f in decision.facts] == ["user", "user", "project"]
+    assert any("prefers short" in f.statement for f in decision.facts)
+
+
+async def test_more_facts_than_the_cap_are_trimmed():
+    """Each fact costs 12-30s of ingest. Without a cap a long message becomes
+    ten episodes restating one paragraph."""
+    provider = ScriptedProvider(
+        _multi_json(*[(f"Aarya knows fact {i}.", "user") for i in range(9)])
+    )
+
+    decision = await decide(
+        provider, user_message="a real fact here", assistant_message="ok", subject_name="Aarya"
+    )
+
+    assert len(decision.facts) == 3
+
+
+async def test_one_malformed_fact_does_not_lose_the_good_ones_beside_it():
+    provider = ScriptedProvider(
+        json.dumps(
+            {
+                "persist": True,
+                "facts": [
+                    {"statement": "Aarya uses Rust.", "scope": "project"},
+                    {"statement": "", "scope": "user"},
+                    {"statement": "Aarya is in Pune.", "scope": "nowhere"},
+                ],
+                "reason": "r",
+            }
+        )
+    )
+
+    decision = await decide(
+        provider, user_message="a real fact here", assistant_message="ok", subject_name="Aarya"
+    )
+
+    assert [f.statement for f in decision.facts] == ["Aarya uses Rust."]
+
+
+async def test_a_facts_list_that_is_entirely_junk_persists_nothing():
+    provider = ScriptedProvider(json.dumps({"persist": True, "facts": [], "reason": "r"}))
+
+    decision = await decide(
+        provider, user_message="a real fact here", assistant_message="ok", subject_name="Aarya"
+    )
+
+    assert decision.persist is False
+
+
+async def test_several_facts_write_several_provenance_rows(db_client, session_factory):
+    project_id, chat_id = await _seed_chat(db_client)
+    turn = (
+        await db_client.post(f"/chats/{chat_id}/messages", json={"content": "hello there"})
+    ).json()
+    memory = FakeMemory(IngestResult(ok=True, group_id="g"))
+
+    await run_write_gate(
+        session_factory=session_factory,
+        provider=ScriptedProvider(
+            _multi_json(
+                ("Aarya is a final year B.Tech student.", "user"),
+                ("Nexus uses Neo4j.", "project"),
+            )
+        ),
+        memory=memory,
+        gate_model="gate",
+        chat_id=uuid.UUID(chat_id),
+        project_id=uuid.UUID(project_id),
+        user_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+        message_id=uuid.UUID(turn["user_message"]["id"]),
+        user_message="I'm a final year student and Nexus uses Neo4j",
+        assistant_message="noted",
+    )
+
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(MemoryEpisode).where(MemoryEpisode.chat_id == uuid.UUID(chat_id))
+            )
+        ).scalars().all()
+
+    assert sorted(r.scope for r in rows) == ["project", "user"]
+    # Each lands in its own tier, and only the project one carries the project.
+    by_scope = {c["scope"]: c for c in memory.calls}
+    assert by_scope["user"]["project_id"] is None
+    assert by_scope["project"]["project_id"] == uuid.UUID(project_id)
+
+
+# ── Not re-learning what was just recalled ────────────────────────────────────
+# The loop this closes: asking "what am I using for the graph store?" made the
+# assistant answer "Neo4j", and the gate wrote that answer back as a new fact.
+# Seven episodes for four distinct facts, and one node summary holding the same
+# sentence five times.
+
+
+def test_overlap_scores_a_repeat_high_and_a_new_fact_low():
+    same = overlap(
+        "Aarya uses Neo4j as the graph store.",
+        "Aarya uses Neo4j as the graph store.",
+    )
+    rephrased = overlap(
+        "Aarya's current graph store for the project is Neo4j.",
+        "Aarya is using Neo4j as the graph store for this project.",
+    )
+    unrelated = overlap(
+        "Aarya is a final year B.Tech student.",
+        "Aarya is building Nexus, a local AI orchestration system.",
+    )
+
+    assert same == 1.0
+    assert rephrased > unrelated
+    assert unrelated < 0.5
+
+
+def test_drop_known_removes_a_restated_fact_and_keeps_a_new_one():
+    facts = (
+        GateFact("Aarya uses Neo4j as the graph store.", "project"),
+        GateFact("Aarya's deadline is in March.", "project"),
+    )
+
+    kept, dropped = drop_known(facts, ["Aarya uses Neo4j as the graph store."])
+
+    assert [f.statement for f in kept] == ["Aarya's deadline is in March."]
+    assert len(dropped) == 1
+
+
+async def test_recalled_facts_are_named_in_the_prompt():
+    provider = ScriptedProvider(_gate_json())
+
+    await decide(
+        provider,
+        user_message="what am I using for the graph store?",
+        assistant_message="Neo4j",
+        subject_name="Aarya",
+        known_facts=["Aarya uses Neo4j as the graph store."],
+    )
+
+    prompt = provider.calls[0][1]["content"]
+    assert "Already in memory, do not restate" in prompt
+    assert "Aarya uses Neo4j as the graph store." in prompt
+
+
+async def test_restating_a_recalled_fact_persists_nothing():
+    """The backstop behind the prompt, for when the gate ignores it."""
+    provider = ScriptedProvider(
+        _gate_json("Aarya uses Neo4j as the graph store.", "project")
+    )
+
+    decision = await decide(
+        provider,
+        user_message="what am I using for the graph store?",
+        assistant_message="You're using Neo4j.",
+        subject_name="Aarya",
+        known_facts=["Aarya uses Neo4j as the graph store."],
+    )
+
+    assert decision.persist is False
+    assert "already in memory" in decision.reason
+
+
+async def test_a_genuinely_new_fact_survives_alongside_a_restated_one():
+    provider = ScriptedProvider(
+        _multi_json(
+            ("Aarya uses Neo4j as the graph store.", "project"),
+            ("Aarya's thesis is due in March.", "project"),
+        )
+    )
+
+    decision = await decide(
+        provider,
+        user_message="right, and the thesis is due in March",
+        assistant_message="noted",
+        subject_name="Aarya",
+        known_facts=["Aarya uses Neo4j as the graph store."],
+    )
+
+    assert [f.statement for f in decision.facts] == ["Aarya's thesis is due in March."]
+
+
+async def test_a_recall_turn_leaves_no_provenance_row(db_client, session_factory):
+    """End to end: the exact turn that produced duplicate Neo4j facts."""
+    project_id, chat_id = await _seed_chat(db_client)
+    turn = (
+        await db_client.post(f"/chats/{chat_id}/messages", json={"content": "hello there"})
+    ).json()
+    memory = FakeMemory(IngestResult(ok=True))
+
+    await run_write_gate(
+        session_factory=session_factory,
+        provider=ScriptedProvider(
+            _gate_json("Aarya uses Neo4j as the graph store.", "project")
+        ),
+        memory=memory,
+        gate_model="gate",
+        chat_id=uuid.UUID(chat_id),
+        project_id=uuid.UUID(project_id),
+        user_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+        message_id=uuid.UUID(turn["user_message"]["id"]),
+        user_message="What am I using for the graph store?",
+        assistant_message="You're using Neo4j as the graph store.",
+        recalled_facts=["Aarya uses Neo4j as the graph store."],
+    )
+
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(MemoryEpisode).where(MemoryEpisode.chat_id == uuid.UUID(chat_id))
+            )
+        ).scalars().all()
+
+    assert rows == []
+    assert memory.calls == []
