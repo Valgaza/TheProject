@@ -21,6 +21,7 @@ from .models import Chat, Message
 from .orchestrator import Attachment, Route, select_route
 from .providers.base import Message as ProviderMessage
 from .providers.base import Provider
+from .rag_client import RagClient, RagResult, RagSource
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ class Turn:
     assistant_message: Message
     route: Route
     facts: tuple[Fact, ...] = ()
+    rag_sources: tuple[RagSource, ...] = ()
 
 
 def _derive_title(content: str) -> str:
@@ -87,17 +89,38 @@ def render_memory(facts: Sequence[Fact]) -> str:
     )
 
 
-def build_prompt(
-    history: list[Message], facts: Sequence[Fact] = ()
-) -> list[ProviderMessage]:
-    """The system prompt, then recalled memory, then the conversation.
+def render_rag_context(rag_result: RagResult) -> str:
+    """Retrieved document passages as a system message, same framing rule as
+    render_memory: presented as material to use, not as instructions, and
+    explicitly allowed to be irrelevant."""
+    return (
+        "Passages retrieved from this project's documents, relevant to what "
+        "was just asked:\n"
+        f"{rag_result.prompt}\n\n"
+        "Use them where they answer the question. If they don't, say so rather "
+        "than guessing from them anyway."
+    )
 
-    Memory goes above the transcript so the turn the user just typed stays the
-    most recent thing in the window, and stays what the model is answering.
+
+def build_prompt(
+    history: list[Message],
+    facts: Sequence[Fact] = (),
+    rag_result: RagResult | None = None,
+) -> list[ProviderMessage]:
+    """The system prompt, then recalled memory, then retrieved documents, then
+    the conversation.
+
+    Both memory and RAG context go above the transcript so the turn the user
+    just typed stays the most recent thing in the window, and stays what the
+    model is answering. Memory first (durable, about the person) then RAG
+    (specific to this one question) — broad to narrow, right before the live
+    conversation.
     """
     prompt: list[ProviderMessage] = [{"role": "system", "content": SYSTEM_PROMPT}]
     if facts:
         prompt.append({"role": "system", "content": render_memory(facts)})
+    if rag_result is not None and rag_result.prompt:
+        prompt.append({"role": "system", "content": render_rag_context(rag_result)})
     for message in history:
         if message.role == "system":
             continue
@@ -113,6 +136,7 @@ async def generate_turn(
     provider: Provider,
     user_id: uuid.UUID,
     memory: MemoryClient | None = None,
+    rag: RagClient | None = None,
     attachments: tuple[Attachment, ...] = (),
 ) -> Turn:
     """Store the user message, answer it, store the answer.
@@ -120,7 +144,7 @@ async def generate_turn(
     Both messages are written even if generation fails — the transcript records
     what was said, and a turn that errored is still something that was said.
     """
-    route = select_route(content=content, attachments=attachments)
+    route = await select_route(content=content, attachments=attachments, rag=rag)
 
     user_message = Message(
         chat_id=chat.id,
@@ -151,7 +175,20 @@ async def generate_turn(
             # answer and never fails one.
             logger.exception("Memory search raised for chat=%s", chat.id)
 
-    prompt = build_prompt(history, facts)
+    # Same rule as memory: RAG being unreachable degrades this answer, it does
+    # not fail the turn. Only called at all when the route said "rag" — the
+    # existence check in select_route() already decided it's worth trying.
+    rag_result: RagResult | None = None
+    if route.handler == "rag" and rag is not None:
+        try:
+            rag_result = await rag.query(content)
+        except Exception:
+            # rag.query() already catches its own transport failures and
+            # returns None; this catches anything else, same reasoning as
+            # the memory search above.
+            logger.exception("RAG query raised for chat=%s", chat.id)
+
+    prompt = build_prompt(history, facts, rag_result)
 
     started = time.perf_counter()
     error: str | None = None
@@ -177,6 +214,15 @@ async def generate_turn(
             {"id": f.id, "fact": f.fact, "scope": f.scope, "kind": f.kind}
             for f in facts
         ],
+        "rag_sources": [
+            {
+                "file_name": s.file_name,
+                "page_number": s.page_number,
+                "chunk_index": s.chunk_index,
+                "heading_path": s.heading_path,
+            }
+            for s in (rag_result.sources if rag_result else ())
+        ],
     }
     if error is not None:
         meta["error"] = error
@@ -191,12 +237,13 @@ async def generate_turn(
     await session.flush()
 
     logger.info(
-        "turn chat=%s handler=%s latency_ms=%d history=%d recalled=%d%s",
+        "turn chat=%s handler=%s latency_ms=%d history=%d recalled=%d rag_sources=%d%s",
         chat.id,
         route.handler,
         latency_ms,
         len(history),
         len(facts),
+        len(rag_result.sources) if rag_result else 0,
         " FAILED" if error else "",
     )
     return Turn(
@@ -204,4 +251,5 @@ async def generate_turn(
         assistant_message=assistant_message,
         route=route,
         facts=tuple(facts),
+        rag_sources=rag_result.sources if rag_result else (),
     )

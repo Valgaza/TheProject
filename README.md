@@ -67,72 +67,85 @@ another, while "I prefer terse answers" follows you everywhere.
 
 ## Containers
 
-Thirteen containers across two Docker Compose projects, both named `nexus` so
-Docker Desktop groups them together. Only one of them is ours.
+Four containers, all declared in the root `docker-compose.yml`, all started by
+one `docker compose up -d`.
 
 | Container | Port | What it does |
 |---|---|---|
-| `nexus-neo4j` | 7474, 7687 | The knowledge graph. Browser UI on 7474, bolt on 7687. |
+| `nexus-postgres` | 54322 | Postgres 17. Chats, messages, projects — what was said. |
+| `nexus-neo4j` | 7474, 7687 | The knowledge graph — what was learned. Browser UI on 7474, bolt on 7687. |
+| `nexus-qdrant` | 6333, 6334 | Document vectors, backing `RAG/rag_pipeline`. |
+| `nexus-searxng` | 8080 | Private metasearch, so web queries never hit a third-party search API. Not used by anything yet — see the RAG/orchestrator section below. |
 
-The other twelve come from `supabase start` and are managed by the Supabase CLI,
-not by `docker-compose.yml`:
+Only the databases are containerised. The application code (`core`, `memory`,
+the RAG API, the frontend) runs directly on the host during development, so
+editing a line doesn't mean rebuilding an image. Dockerfiles for those come
+when we deploy.
 
-| Container | Port | What it does |
-|---|---|---|
-| `supabase_db_nexus` | 54322 | Postgres 17. The one that matters — chats, messages, projects. |
-| `supabase_kong_nexus` | 54321 | API gateway; the `SUPABASE_URL` everything else goes through. |
-| `supabase_studio_nexus` | 54323 | Web UI for browsing tables. Useful for watching rows land. |
-| `supabase_rest_nexus` | — | PostgREST. Unused: `core` talks to Postgres directly over SQL. |
-| `supabase_auth_nexus` | — | GoTrue. Unused until auth lands; the schema is already shaped for it. |
-| `supabase_realtime_nexus` | — | Postgres change streams. Unused. |
-| `supabase_storage_nexus` | — | File storage. Unused. |
-| `supabase_inbucket_nexus` | 54324 | Catches outbound email in development. Unused. |
-| `supabase_analytics_nexus` | 54327 | Log aggregation. |
-| `supabase_vector_nexus` | — | Log shipping for the above. |
-| `supabase_pg_meta_nexus` | — | Backs Studio's table browser. |
-| `supabase_edge_runtime_nexus` | — | Deno functions. Not used, and normally sits exited. |
+**Postgres replaced the Supabase CLI on 2026-09-02.** The CLI started twelve
+containers (Auth, Storage, Realtime, Studio, an email catcher, log shipping…)
+for the one Postgres this project actually uses. The schema in
+`supabase/migrations/` is plain Postgres — no Supabase-specific roles or
+policies — so it applies unchanged to a stock `postgres:17` image, and
+`supabase/` is still the source of truth for it. What's gone is Studio (the
+table-browsing web UI) and `supabase db reset`; see below for the replacement.
 
-Most of that stack is idle. It comes as one unit and the local CLI does not offer
-a smaller version, which is a fair trade for a Postgres that matches production
-and applies migrations the same way.
+> ⚠️ **`docker compose down -v` now wipes every database at once** — graph,
+> vectors and chat history together. Plain `docker compose down` (no `-v`)
+> stops the containers and keeps the data.
 
-**`docker compose down` only stops Neo4j.** It scopes to services declared in
-`docker-compose.yml`, and the Supabase containers are the CLI's. Use
-`supabase stop` for those.
+To reset **only** Postgres — the `supabase db reset` equivalent, re-applying
+migrations and the seed from scratch:
+
+```bash
+docker compose rm -sf postgres
+docker volume rm nexus_postgres_data
+docker compose up -d postgres
+```
+
+The schema is applied by `docker/postgres-init.sh`, which the `postgres` image
+runs automatically the first time the data volume is created. It loops over
+`supabase/migrations/*.sql` in filename order, so a new migration added later
+needs no change to the compose file or the script.
+
+To browse tables without Studio:
+
+```bash
+docker exec -it nexus-postgres psql -U postgres -d postgres
+```
 
 ## Setup
 
-Needs Docker Desktop, [uv](https://docs.astral.sh/uv/), Node 20.9+ (Next 16
-requires it), and the
-[Supabase CLI](https://supabase.com/docs/guides/local-development).
+Needs Docker Desktop, [uv](https://docs.astral.sh/uv/), and Node 20.9+ (Next 16
+requires it). Nothing else is installed on your machine — the databases all run
+in containers.
 
 ```bash
 cp .env.example .env      # fill in OPENAI_API_KEY and NEO4J_PASSWORD
-uv sync                   # installs both services editable
+uv sync                   # installs core, memory and the RAG pipeline editable
 cd frontend && npm install && cd ..
-
-supabase start            # first run pulls a lot of images
-supabase db reset         # applies migrations and seeds the demo user
 ```
 
 Then, from the repo root:
 
 ```bash
-./start.sh                     # Neo4j + memory (8000) + core (8100)
+./start.sh                     # containers + memory (8000) + RAG API (8001) + core (8100)
 cd frontend && npm run dev     # separate terminal
 ```
 
-Open http://localhost:3000/chat. Ctrl+C stops both Python services and leaves
-Neo4j running.
+Open http://localhost:3000/chat. Ctrl+C stops the Python services and leaves the
+containers running.
 
-`start.sh` checks Supabase is up before starting anything, because `core` is
-useless without Postgres and the failure is otherwise a wall of asyncpg
-traceback thirty seconds after everything looked fine.
+`start.sh` starts the containers itself and then waits for Neo4j and Postgres
+before launching anything, because `core` is useless without them and the
+failure is otherwise a wall of asyncpg traceback thirty seconds after
+everything looked fine.
 
 To run a service by hand, from the repo root:
 
 ```bash
 uv run uvicorn nexus_memory.main:app --reload --port 8000
+uv run uvicorn rag_api:app --app-dir RAG --reload --port 8001
 uv run uvicorn nexus_core.main:app   --reload --port 8100
 ```
 
@@ -157,9 +170,10 @@ supabase/migrations/    the schema, source of truth for what Postgres holds
 tests/                  end-to-end scenarios (opt-in, drives the live stack)
 pipelines/, shared/     empty; the original plan for where RAG and vision
                         would land — see below, that's not where they landed
-RAG/, controller/,      the RAG pipeline, its demo controller, and an
-orchestrator/           orchestrator scaffold — built on a separate branch,
-                        merged in below `pipelines/`'s intended spot
+RAG/, orchestrator/     the RAG pipeline (RAG/rag_api.py is its HTTP front
+                        door, called by core) and a standalone orchestrator
+                        scaffold — built on a separate branch, merged in
+                        below `pipelines/`'s intended spot
 ```
 
 Each service owns its tests: `core/tests/` and `memory/tests/`. `RAG/` owns its
@@ -169,44 +183,49 @@ The two Python packages are named `nexus_core` and `nexus_memory` rather than
 `app`. They were both `app` once, installed into the same virtualenv, which
 meant `import app` resolved to whichever won and the other was unreachable.
 
-## RAG pipeline and orchestrator — merged 2026-08-31, not yet integrated
+## RAG pipeline — merged 2026-08-31, wired into `core` 2026-09-01
 
-`RAG/`, `controller/`, and `orchestrator/` were built on `feature/rag-pipeline`,
-in parallel with everything above, and landed here through a git merge rather
-than through the `pipelines/`/`shared/` seam this README describes. Read this
-section as "what exists on disk," not "how it's meant to fit together" —
-reconciling the two is open work.
+`RAG/` was built on `feature/rag-pipeline`, in parallel with everything
+above, and landed here through a git merge rather than through the
+`pipelines/`/`shared/` seam this README describes. It's now a real `uv`
+workspace member (same `uv sync`, same shared `.venv` as `core`/`memory` —
+no longer a separate install), and `core`'s `select_route()` calls it for
+real: a project with ingested documents routes to `"rag"`, and the retrieved
+context folds into the answer.
 
 | Service | Location | Port | Depends on |
 |---|---|---|---|
-| RAG controller | `controller/`, backed by `RAG/rag_pipeline/` | `8001` | Qdrant |
-| Orchestrator (scaffold) | `orchestrator/` | `8002` | RAG controller, `memory`, SearXNG |
+| RAG API | `RAG/rag_api.py`, backed by `RAG/rag_pipeline/` | `8001` | Qdrant |
+| Orchestrator (scaffold, standalone) | `orchestrator/` | `8002` | RAG API, `memory`, SearXNG |
 
-Both are fully local — no cloud LLM calls anywhere in `RAG/rag_pipeline`, and
-`orchestrator`'s LLM client is a swappable stub rather than a real model yet.
+`RAG/rag_api.py` is RAG's own HTTP front door — the only way `core` can
+reach it, since they're separate processes (see
+[`.github/CONTROLLER_SERVICE.md`](.github/CONTROLLER_SERVICE.md) for the
+full "why is this a separate service" writeup; it's not a user-facing
+surface, nothing outside `core` is meant to call it). Fully local — no cloud
+LLM calls anywhere in `RAG/rag_pipeline`.
 
-**Two orchestrators currently exist**, doing overlapping jobs: `core`'s
-`select_route()` (above), designed with RAG and vision as its next branches,
-and this `orchestrator/`'s own router. That overlap is a real open decision,
-not an oversight — see
-[`.github/PROJECT_STATUS_REPORT.md`](.github/PROJECT_STATUS_REPORT.md) and
-[`orchestrator/OrchestratorReadme.md`](orchestrator/OrchestratorReadme.md)
-for what each one actually does before picking a direction.
+**Two orchestrators still exist**, doing overlapping jobs: `core`'s
+`select_route()` (above, now doing real work) and the standalone
+`orchestrator/`'s own router (still just a scaffold — its LLM client is a
+stub, nothing calls it in production). Plan is to port `orchestrator/`'s
+useful pieces (its web-search/SearXNG client, its retry logic) into `core`
+and then retire it — see `steps-to-implement-Bhoumish.md` (gitignored, ask
+whoever's working on the orchestrator for the current state).
 [`.github/IMPORTANT_BUSINESS_LOGIC_FLAGS.md`](.github/IMPORTANT_BUSINESS_LOGIC_FLAGS.md)
 tracks open product/safety decisions the same way `RUNBOOK.md` tracks
 operational ones.
 
-Setup, from the repo root, in a separate venv from `core`/`memory` for now:
+Nothing extra to start: Qdrant and SearXNG are both in the root
+`docker-compose.yml`, and `./start.sh` runs the RAG API alongside `core` and
+`memory`. `RAG/docker-compose.yml` and `orchestrator/docker-compose.yml` were
+folded into the root file on 2026-09-02 and deleted.
+
+The standalone `orchestrator/` scaffold, if you want to poke at it, is the one
+thing still started by hand:
 
 ```bash
-cp RAG/env.example RAG/.env
-docker compose -f RAG/docker-compose.yml up -d      # Qdrant
-pip install -e "RAG[dev]"
-pip install -r controller/requirements.txt
-uvicorn controller.main:app --reload --port 8001
-
 cp orchestrator/.env.example orchestrator/.env
-docker compose -f orchestrator/docker-compose.yml up -d   # SearXNG
 pip install -e "orchestrator"
 uvicorn app.main:app --reload --port 8002 --app-dir orchestrator
 ```
@@ -220,7 +239,7 @@ needed to use the pipeline.
 ```bash
 uv run pytest                            # core + memory: ~110 tests, ~2s, no services needed
 RUN_SCENARIOS=1 uv run pytest tests -v   # end-to-end, ~2 min, spends API credit
-python -m pytest RAG/tests               # RAG pipeline's own suite
+uv run pytest RAG/tests                  # RAG pipeline's own suite
 ```
 
 The scenario suite is the one that answers whether memory works: a fact stated

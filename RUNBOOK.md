@@ -8,18 +8,22 @@ the file to trust.
 
 | Piece | Port | What it is |
 |---|---|---|
+| Postgres | 54322 | Chats, messages, projects. One Docker container. |
 | Neo4j | 7474 / 7687 | The knowledge graph. One Docker container. |
-| Supabase stack | 54321-54324 | Postgres, Studio, auth, storage. Eleven containers. |
+| Qdrant | 6333 / 6334 | Document vectors for RAG. One Docker container. |
+| SearXNG | 8080 | Private metasearch. Not wired into `core` yet. |
 | `nexus_memory` | 8000 | Owns the graph: ingest, search, live updates. |
+| RAG API | 8001 | `RAG/rag_api.py` — the only way `core` reaches the RAG pipeline. |
 | `nexus_core` | 8100 | Owns chat, the orchestrator, providers, and Postgres. |
 | Frontend | 3000 | Next.js. |
 
 Two databases, two jobs: **Postgres stores what was said**, every message,
 always. **Neo4j stores what was learned**, gated. Neither is a cache of the
-other.
+other. Qdrant is a third store with a narrower job: the chunks of uploaded
+documents, searched by the RAG pipeline.
 
-All containers run under one Docker Compose project named `nexus`, so Docker
-Desktop shows them as a single group.
+All four containers are declared in the root `docker-compose.yml` and start
+together with one `docker compose up -d` (which `./start.sh` runs for you).
 
 ## First-time setup
 
@@ -32,21 +36,26 @@ cd frontend && npm install && cd ..
 ## Cold start
 
 ```bash
-supabase start                # once; the CLI owns these containers
-supabase db reset             # first run only: migrations + seed.sql
-
-./start.sh                    # Neo4j + memory (8000) + core (8100)
+./start.sh                    # containers + memory (8000) + RAG API (8001) + core (8100)
 cd frontend && npm run dev    # separate terminal
 ```
 
-`start.sh` checks Supabase is up and tells you if it is not, rather than letting
-the core service fail with a wall of asyncpg traceback. Ctrl+C stops both
-services; Neo4j keeps running.
+`start.sh` brings the containers up itself and waits for Neo4j and Postgres
+before launching anything, rather than letting the core service fail with a
+wall of asyncpg traceback. Ctrl+C stops the Python services; the containers
+keep running.
+
+The Supabase CLI is no longer used (replaced 2026-09-02) — Postgres is just
+another container in `docker-compose.yml`, and the schema in
+`supabase/migrations/` is applied automatically the first time its volume is
+created. Do **not** run `supabase start`: it would try to bind port 54322 and
+collide with the Postgres container.
 
 To run a service by hand instead:
 
 ```bash
 uv run uvicorn nexus_memory.main:app --reload --port 8000
+uv run uvicorn rag_api:app --app-dir RAG --reload --port 8001
 uv run uvicorn nexus_core.main:app   --reload --port 8100
 ```
 
@@ -89,19 +98,36 @@ projects, and the write gate keeping chit-chat out of the graph.
 ## Stopping
 
 ```bash
-docker compose down            # Neo4j only -- it is the only service declared
-                               # in docker-compose.yml
-supabase stop                  # the Supabase containers, which the CLI owns
+docker compose down            # all four containers; volumes survive
 ```
 
-`docker compose down` genuinely does not touch Supabase, despite the shared
-project name. The two are managed by different tools.
+**Never `docker compose down -v` unless you mean it.** Since the compose files
+were merged (2026-09-02), `-v` deletes every volume at once: the graph, the
+document vectors and the chat history together.
 
-Neo4j's volumes are named explicitly, so they survive. Supabase's are not:
-`supabase stop --no-backup` loses the database, and `supabase db reset` re-runs
-migrations and the seed from scratch.
+Every volume is named explicitly (`nexus_postgres_data`, `nexus_neo4j_data`,
+`nexus_neo4j_logs`, `nexus_qdrant_storage`), so a plain `down` keeps all of it.
+
+To reset one database without touching the others — Postgres shown here, the
+same shape works for the rest:
+
+```bash
+docker compose rm -sf postgres
+docker volume rm nexus_postgres_data
+docker compose up -d postgres     # re-applies migrations + seed.sql
+```
 
 ## Things that will bite you
+
+**"Required environment variable 'OPENAI_API_KEY' is not set" — but it IS set
+in the root `.env`.** A stray `.env` in a subdirectory is shadowing it. Bare
+`load_dotenv()` searches *upward* from the calling file and stops at the first
+`.env` it finds, so `core/.env` wins over the repo-root `.env` for anything
+under `core/` — and if that stray file defines the key as empty, you get "not
+set" while the real value sits two directories up. `core/nexus_core/config.py`
+now loads the repo-root path explicitly and is immune; `memory/` still uses
+bare `load_dotenv()`, so a `memory/.env` would do the same thing to it. Check
+with `find . -name .env -not -path "*/node_modules/*" -not -path "*/.venv/*"`.
 
 **Frontend 404s on every route while Next says "Ready".** Stale Turbopack cache.
 `rm -rf frontend/.next frontend/tsconfig.tsbuildinfo`.

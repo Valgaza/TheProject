@@ -20,8 +20,9 @@ async def _make_chat(client, title: str = "New conversation") -> dict:
     return response.json()
 
 
-def test_route_is_general_and_explains_itself():
-    route = select_route(content="anything at all")
+async def test_route_is_general_and_explains_itself():
+    """No rag client passed — same as before RAG existed."""
+    route = await select_route(content="anything at all")
 
     assert route.handler == "general"
     assert route.reason

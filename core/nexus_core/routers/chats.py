@@ -12,18 +12,21 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..auth import current_user_id as _current_user_id
 from ..chat_service import generate_turn
 from ..db import session_dependency
 from ..models import Chat, MemoryEpisode, Message, Project
 from ..memory_client import MemoryClient
 from ..memory_writer import run_write_gate
 from ..providers.base import Provider
+from ..rag_client import RagClient
 from ..schemas import (
     ChatOut,
     FactOut,
     MemoryEpisodeOut,
     MessageCreate,
     MessageOut,
+    RagSourceOut,
     RouteOut,
     TurnOut,
 )
@@ -42,16 +45,16 @@ async def _get_chat(session: AsyncSession, chat_id: uuid.UUID, user_id: uuid.UUI
     return chat
 
 
-def _current_user_id(request: Request) -> uuid.UUID:
-    return request.app.state.settings.demo_user_id
-
-
 def _provider(request: Request) -> Provider:
     return request.app.state.provider
 
 
 def _memory(request: Request) -> MemoryClient | None:
     return getattr(request.app.state, "memory", None)
+
+
+def _rag(request: Request) -> RagClient | None:
+    return getattr(request.app.state, "rag", None)
 
 
 @router.get("/{chat_id}", response_model=ChatOut)
@@ -107,6 +110,7 @@ async def create_message(
         provider=_provider(request),
         user_id=user_id,
         memory=_memory(request),
+        rag=_rag(request),
     )
     # Commit before scheduling, not after. FastAPI runs a background task
     # before the exit code of a dependency that yields, so session_dependency's
@@ -142,6 +146,15 @@ async def create_message(
         recalled=[
             FactOut(id=f.id, fact=f.fact, scope=f.scope, kind=f.kind)
             for f in turn.facts
+        ],
+        rag_sources=[
+            RagSourceOut(
+                file_name=s.file_name,
+                page_number=s.page_number,
+                chunk_index=s.chunk_index,
+                heading_path=s.heading_path,
+            )
+            for s in turn.rag_sources
         ],
     )
 

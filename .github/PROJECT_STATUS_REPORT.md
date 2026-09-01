@@ -3,6 +3,14 @@
 Date: 2026-08-09
 Branch reviewed: `feature/rag-pipeline`
 
+> **Naming note (2026-09-02):** every `controller/` / "RAG controller"
+> reference below is historical — that folder was moved and renamed to
+> `RAG/rag_api.py` on 2026-09-02 (the name was confusing, sounding like "the
+> central brain" when it's really just RAG's own front door). Left as-is
+> here rather than rewritten, since this document is a point-in-time
+> snapshot of what was true when it was written. Current details live in
+> `.github/RAG_API_SERVICE.md`.
+
 ## Current Summary
 
 The project currently has three major parts:

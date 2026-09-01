@@ -6,9 +6,31 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 Role = Literal["user", "assistant", "system"]
+
+
+class SignupRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=200)
+    display_name: str = Field(min_length=1, max_length=200)
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class ProfileOut(BaseModel):
+    """A logged-in user. Never includes password_hash — this is what the
+    frontend gets back, not what's in the database row."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    display_name: str
+    email: str
 
 
 class ProjectCreate(BaseModel):
@@ -74,6 +96,16 @@ class FactOut(BaseModel):
     kind: str = "relationship"
 
 
+class RagSourceOut(BaseModel):
+    """A document chunk retrieved from RAG and shown to the model for this
+    turn — same idea as FactOut, one level of provenance the UI can render."""
+
+    file_name: str
+    page_number: int | str | None = None
+    chunk_index: int | str | None = None
+    heading_path: str = ""
+
+
 class TurnOut(BaseModel):
     """Both halves of an exchange.
 
@@ -89,6 +121,9 @@ class TurnOut(BaseModel):
     # What memory contributed. Empty when nothing was recalled or the memory
     # service was unreachable -- the answer still stands either way.
     recalled: list[FactOut] = []
+    # What RAG contributed. Empty when the route wasn't "rag", nothing was
+    # retrieved, or RAG was unreachable -- same non-fatal contract as memory.
+    rag_sources: list[RagSourceOut] = []
 
 
 class MemoryEpisodeOut(BaseModel):

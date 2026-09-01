@@ -9,14 +9,16 @@ requires-python = ">=3.12"
 dependencies = [
     "nexus-core",
     "nexus-memory",
+    "rag-pipeline",
 ]
 
 [tool.uv.workspace]
-members = ["memory", "core"]
+members = ["memory", "core", "RAG"]
 
 [tool.uv.sources]
 nexus-core = { workspace = true }
 nexus-memory = { workspace = true }
+rag-pipeline = { workspace = true }
 
 [dependency-groups]
 dev = [

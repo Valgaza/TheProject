@@ -1,8 +1,9 @@
 """Projects, and the chats that live under them.
 
-Auth is deferred, so every project belongs to the single configured demo user.
-When Supabase Auth lands, ``user_id`` comes from the verified token instead of
-settings and these handlers barely change.
+Real auth landed 2026-09-02 — user_id now comes from the session cookie
+(see ../auth.py), not from settings. Exactly the "these handlers barely
+change" the old docstring here predicted: every call site below is
+unchanged, only where _current_user_id gets its answer moved.
 """
 
 from __future__ import annotations
@@ -13,15 +14,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..auth import current_user_id as _current_user_id
 from ..db import session_dependency
 from ..models import Chat, Project
 from ..schemas import ChatCreate, ChatOut, ProjectCreate, ProjectOut
 
 router = APIRouter(prefix="/projects", tags=["projects"])
-
-
-def _current_user_id(request: Request) -> uuid.UUID:
-    return request.app.state.settings.demo_user_id
 
 
 @router.get("", response_model=list[ProjectOut])

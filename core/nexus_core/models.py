@@ -38,6 +38,13 @@ class Profile(Base):
 
     id: Mapped[uuid.UUID] = _pk()
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    # Login identity, added 2026-09-02 (see the auth migration). password_hash
+    # is null for a Google-only account, google_id is null for a
+    # password-only one — the database itself requires at least one, via a
+    # CHECK constraint, not application code.
+    email: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    password_hash: Mapped[str | None] = mapped_column(Text)
+    google_id: Mapped[str | None] = mapped_column(Text, unique=True)
     created_at: Mapped[datetime] = _created_at()
 
 

@@ -11,6 +11,17 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "sqlalchemy[asyncio]>=2.0.30",
     "asyncpg>=0.29.0",
+    # Auth (added 2026-09-02): bcrypt hashes passwords, pyjwt issues/verifies
+    # session tokens, authlib is the Starlette/FastAPI-native OAuth client
+    # (the Python equivalent of Node's Passport — Passport itself only
+    # plugs into Express/Node, it has no meaning in a Python service).
+    "bcrypt>=4.0.0",
+    "pyjwt>=2.9.0",
+    "authlib>=1.3.0",
+    "pydantic[email]>=2.0.0",
+    # Starlette's SessionMiddleware (Authlib's OAuth state storage) needs
+    # this to sign its own cookie — not a direct import anywhere of ours.
+    "itsdangerous>=2.2.0",
 ]
 
 [dependency-groups]

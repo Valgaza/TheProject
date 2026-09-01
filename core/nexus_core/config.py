@@ -11,10 +11,20 @@ from __future__ import annotations
 
 import os
 import uuid
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load the repo-root .env explicitly, rather than bare load_dotenv().
+#
+# Bare load_dotenv() searches UPWARD from this file's directory and stops at
+# the first .env it finds — so a stray core/.env shadows the real one at the
+# repo root, silently. That is not hypothetical: a core/.env holding an empty
+# OPENAI_API_KEY made the service fail on startup with "not set" while the
+# root .env sitting two directories up had the key all along (2026-09-02).
+# An explicit path can only ever load the file we mean.
+_ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
+load_dotenv(_ROOT_ENV)
 
 
 def _require(key: str) -> str:
@@ -52,8 +62,9 @@ class Settings:
         self.database_url = _require("DATABASE_URL")
         self.database_echo = _optional("DATABASE_ECHO", "0") == "1"
 
-        # Auth is deferred, so every request acts as this one user. It must
-        # match the profile seeded by supabase/seed.sql.
+        # Kept only as the fixed identity seeded by supabase/seed.sql, used in
+        # tests. Real requests no longer use this — see auth.py; every route
+        # now resolves the user from the session cookie, not from settings.
         self.demo_user_id = uuid.UUID(
             _optional("DEMO_USER_ID", "00000000-0000-0000-0000-000000000001")
         )
@@ -64,8 +75,33 @@ class Settings:
         self.supabase_url = os.getenv("SUPABASE_URL") or None
         self.supabase_service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or None
 
+        # ── Auth (added 2026-09-02) ─────────────────────────────────────────
+        # Signs and verifies session JWTs. Required, not defaulted — a
+        # guessable or empty secret means anyone can forge a login for any
+        # user, so this fails loud rather than silently running insecure.
+        self.jwt_secret = _require("JWT_SECRET")
+        self.jwt_algorithm = "HS256"
+        self.session_max_age_seconds = int(_optional("SESSION_MAX_AGE_SECONDS", str(60 * 60 * 24 * 30)))
+
+        # Google OAuth is optional — the app runs fine on email/password alone
+        # if these are left blank. google_oauth_enabled is what the route
+        # checks before attempting anything, rather than failing at startup.
+        self.google_client_id = os.getenv("GOOGLE_CLIENT_ID") or None
+        self.google_client_secret = os.getenv("GOOGLE_CLIENT_SECRET") or None
+        self.google_oauth_enabled = bool(self.google_client_id and self.google_client_secret)
+
+        # Where the browser gets sent back to after a Google login redirect.
+        self.frontend_url = _optional("FRONTEND_URL", "http://localhost:3000")
+
+        # False for local http development; a real deployment over https
+        # must set this to "1", or the browser will refuse to store the
+        # session cookie at all (browsers won't set Secure cookies over
+        # plain http, and won't send them back either).
+        self.session_cookie_secure = _optional("SESSION_COOKIE_SECURE", "0") == "1"
+
         # ── Service wiring ───────────────────────────────────────────────────
         self.memory_service_url = _optional("MEMORY_SERVICE_URL", "http://localhost:8000")
+        self.rag_service_url = _optional("RAG_SERVICE_URL", "http://localhost:8001")
         self.port = int(_optional("CORE_PORT", "8100"))
         self.cors_origins = [
             origin.strip()

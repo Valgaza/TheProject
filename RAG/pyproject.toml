@@ -14,6 +14,11 @@ dependencies = [
     "rich>=13.0.0",
     "python-dotenv>=1.0.0",
     "python-frontmatter>=1.1.0",
+    # For rag_api.py — the HTTP service exposing this pipeline, formerly
+    # controller/main.py, moved and renamed 2026-09-02.
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]

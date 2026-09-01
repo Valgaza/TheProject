@@ -1,18 +1,22 @@
 """
-RAG Controller — Mini FastAPI server for demo integration.
+RAG API — HTTP interface to the RAG pipeline.
 
-Exposes two endpoints:
+Called by core (core/nexus_core/rag_client.py) over the network — core and
+this service are separate processes, so this is the only way core can reach
+rag_pipeline. Not a user-facing surface; nobody outside core is meant to call
+this directly. See .github/CONTROLLER_SERVICE.md for the fuller "why is this
+a separate service" writeup.
+
+Exposes:
   POST /api/ingest   — upload a file (PDF/MD), ingest into Qdrant
   POST /api/query    — send a question, get back the assembled LLM prompt + sources
-
-This is a temporary demo controller. Not for production.
+  GET  /api/status   — cheap collection stats, no embedding/search/rerank
+  GET  /api/health   — liveness check
 """
 
 from __future__ import annotations
 
 import logging
-import os
-import sys
 import tempfile
 from pathlib import Path
 
@@ -20,35 +24,37 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# ── Ensure the RAG package is importable ──────────────────────────────────
-# If rag_pipeline isn't installed, add its parent to sys.path
-RAG_ROOT = Path(__file__).resolve().parent.parent / "RAG"
-if RAG_ROOT.exists():
-    sys.path.insert(0, str(RAG_ROOT))
+# rag_pipeline is a real installed package now (RAG/ is a uv workspace
+# member) — no sys.path manipulation needed to import it, unlike when this
+# file lived in a separate controller/ folder outside the RAG package.
+from dotenv import load_dotenv
 
-# Force .env loading from the RAG directory
-os.environ.setdefault("DOTENV_PATH", str(RAG_ROOT / ".env"))
-if (RAG_ROOT / ".env").exists():
-    from dotenv import load_dotenv
-    load_dotenv(RAG_ROOT / ".env", override=True)
+_ENV_PATH = Path(__file__).resolve().parent / ".env"
+if _ENV_PATH.exists():
+    load_dotenv(_ENV_PATH, override=True)
 
 from rag_pipeline.pipelines.ingestion import IngestionPipeline
 from rag_pipeline.pipelines.query import QueryPipeline
 
 # ── Logging ───────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(name)s | %(message)s")
-logger = logging.getLogger("rag-controller")
+logger = logging.getLogger("rag-api")
 
 # ── FastAPI app ───────────────────────────────────────────────────────────
 app = FastAPI(
-    title="RAG Demo Controller",
-    description="Temporary integration layer between the Nexus frontend and the RAG pipeline.",
+    title="RAG API",
+    description="HTTP interface to the RAG pipeline, called by core.",
     version="0.1.0",
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Demo only — lock down in production
+    # Only relevant if a browser ever calls this directly, which nothing is
+    # meant to do going forward — core (a server, not a browser) is the
+    # intended caller, and CORS doesn't apply to server-to-server calls at
+    # all. Left permissive for now since the frontend's old demo pages still
+    # exist; revisit once those are retired (see steps-to-implement doc).
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -195,14 +201,14 @@ async def query_knowledge_base(question: str = Form(...)):
 @app.get("/api/health")
 async def health():
     """Health check."""
-    return {"status": "ok", "service": "rag-controller"}
+    return {"status": "ok", "service": "rag-api"}
 
 
 @app.get("/api/status")
 async def status():
     """Cheap collection stats (point count etc.) — no embedding, search, or
-    reranking involved. Used by the orchestrator to check whether there's
-    anything ingested at all before bothering to run a full query.
+    reranking involved. Used by core to check whether there's anything
+    ingested at all before bothering to run a full query.
     """
     pipeline = _get_query_pipeline()
     return pipeline.collection_info()
