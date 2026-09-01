@@ -281,8 +281,8 @@ export default function Landing() {
             no compromise on the answer.
           </p>
           <div className="hero__cta">
-            <button className="btn btn--primary btn--xl" onClick={() => router.push("/demo")}>
-              See the demo <Icon name="arrow" size={16}/>
+            <button className="btn btn--primary btn--xl" onClick={() => router.push("/chat")}>
+              Start a conversation <Icon name="arrow" size={16}/>
             </button>
             <button className="btn btn--xl" onClick={() => router.push("/graph")}>
               View the graph
@@ -369,8 +369,8 @@ export default function Landing() {
             without the <em>egress</em>.
           </h2>
           <div className="hero__cta" style={{justifyContent:"center"}}>
-            <button className="btn btn--primary btn--xl" onClick={() => router.push("/demo")}>
-              Open demo <Icon name="arrow" size={16}/>
+            <button className="btn btn--primary btn--xl" onClick={() => router.push("/chat")}>
+              Open Nexus <Icon name="arrow" size={16}/>
             </button>
             <button className="btn btn--xl" onClick={() => router.push("/chat")}>
               Start a conversation

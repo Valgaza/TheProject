@@ -10,9 +10,11 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Integer,
     String,
     Text,
     func,
@@ -60,11 +62,21 @@ class Project(Base):
 
 
 class Chat(Base):
+    """One conversation.
+
+    ``project_id`` is optional: a chat outside every project reads and writes
+    the user tier alone. Ownership lives on the row rather than being derived
+    through the project, because there may not be a project to derive it from.
+    """
+
     __tablename__ = "chats"
 
     id: Mapped[uuid.UUID] = _pk()
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE")
     )
     title: Mapped[str] = mapped_column(Text, nullable=False, default="New conversation")
     created_at: Mapped[datetime] = _created_at()
@@ -72,7 +84,7 @@ class Chat(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    project: Mapped[Project] = relationship(back_populates="chats")
+    project: Mapped[Project | None] = relationship(back_populates="chats")
     messages: Mapped[list["Message"]] = relationship(back_populates="chat")
 
 
@@ -132,3 +144,38 @@ class MemoryEpisode(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class MaintenanceRun(Base):
+    """One pass of the graph tidy-up, and what it decided.
+
+    Recorded because the sweep marks rather than deletes: its decisions are
+    reversible, but only if you can find them afterwards.
+    """
+
+    __tablename__ = "maintenance_runs"
+    __table_args__ = (
+        CheckConstraint("scope in ('user', 'project')", name="maintenance_runs_scope_check"),
+    )
+
+    id: Mapped[uuid.UUID] = _pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE")
+    )
+    scope: Mapped[str] = mapped_column(String, nullable=False)
+    # The graphiti group this run swept. Text, not a foreign key: it is the
+    # memory service's identifier, not a row in this database.
+    group_id: Mapped[str] = mapped_column(Text, nullable=False)
+    dry_run: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    report: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    # Episodes in this group when the run fired. The automatic trigger compares
+    # against this rather than a clock: what matters is how much the graph
+    # changed, not how long it has been.
+    episodes_at_run: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

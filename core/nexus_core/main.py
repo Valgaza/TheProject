@@ -20,7 +20,7 @@ from .db import create_engine, create_session_factory
 from .logging_config import configure_logging
 from .memory_client import MemoryClient
 from .providers import Provider, build_provider
-from .routers import chats_router, projects_router
+from .routers import chats_router, maintenance_router, projects_router
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,7 @@ app.add_middleware(
 
 app.include_router(projects_router)
 app.include_router(chats_router)
+app.include_router(maintenance_router)
 
 
 def get_settings(request: Request) -> Settings:

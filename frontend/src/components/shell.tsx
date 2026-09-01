@@ -1,10 +1,10 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Icon } from "./icons";
-import { CHATS_CHANGED, type Chat, listChats } from "@/lib/api";
+import { CHATS_CHANGED, type Chat, listAllChats } from "@/lib/api";
 import { useProjects } from "@/lib/project-context";
 
 /** "/c/abc" -> "c", "/" -> "landing". Only the first segment names a page. */
@@ -13,46 +13,55 @@ const getPageId = (path: string) => {
   return segment ?? "landing";
 };
 
-function relativeTime(iso: string): string {
-  const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
-  if (minutes < 1) return "now";
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  return `${Math.round(hours / 24)}d`;
+/** Which projects the user has expanded. Survives navigation, not reloads. */
+const EXPANDED_KEY = "nexus:expanded-projects";
+
+function readExpanded(): string[] {
+  try {
+    return JSON.parse(window.sessionStorage.getItem(EXPANDED_KEY) ?? "[]");
+  } catch {
+    return [];
+  }
+}
+
+function writeExpanded(ids: string[]): void {
+  try {
+    window.sessionStorage.setItem(EXPANDED_KEY, JSON.stringify(ids));
+  } catch {
+    // Losing which folders were open is survivable; failing to render is not.
+  }
 }
 
 export const RailNav = () => {
   const pathname = usePathname();
   const router = useRouter();
   const { projects, current, select } = useProjects();
-  const [switcherOpen, setSwitcherOpen] = useState(false);
 
   const page = getPageId(pathname);
 
   const main = [
-    { id: "demo",     label: "Live demo",       icon: "bolt",   path: "/demo" },
-    { id: "chat",     label: "New chat",         icon: "chat",   path: "/chat" },
-    { id: "projects", label: "Projects",         icon: "folder", count: 1, path: "/projects" },
-    { id: "graph",    label: "Knowledge graph",  icon: "graph",  path: "/graph" },
-    { id: "settings", label: "Settings",         icon: "cog",    path: "/settings" },
+    { id: "projects", label: "Projects",        icon: "folder", path: "/projects" },
+    { id: "graph",    label: "Knowledge graph", icon: "graph",  path: "/graph" },
+    { id: "settings", label: "Settings",        icon: "cog",    path: "/settings" },
   ];
 
-  // Chats belong to the current project, so the list changes when you switch.
-  const [recent, setRecent] = useState<Chat[]>([]);
-  const projectId = current?.id;
+  // One fetch for every chat, grouped here. The rail used to load chats for the
+  // current project only, which is why nothing else could ever be listed.
+  const [chats, setChats] = useState<Chat[]>([]);
+  const [expanded, setExpanded] = useState<string[]>([]);
+
+  useEffect(() => {
+    setExpanded(readExpanded());
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
-    if (!projectId) {
-      setRecent([]);
-      return;
-    }
     const load = async () => {
       try {
-        const chats = await listChats(projectId);
-        if (!cancelled) setRecent(chats);
+        const loaded = await listAllChats();
+        if (!cancelled) setChats(loaded);
       } catch {
-        if (!cancelled) setRecent([]);
+        if (!cancelled) setChats([]);
       }
     };
     void load();
@@ -61,7 +70,41 @@ export const RailNav = () => {
       cancelled = true;
       window.removeEventListener(CHATS_CHANGED, load);
     };
-  }, [pathname, projectId]);
+  }, [pathname]);
+
+  const byProject = useMemo(() => {
+    const grouped = new Map<string, Chat[]>();
+    for (const chat of chats) {
+      if (!chat.project_id) continue;
+      const existing = grouped.get(chat.project_id);
+      if (existing) existing.push(chat);
+      else grouped.set(chat.project_id, [chat]);
+    }
+    return grouped;
+  }, [chats]);
+
+  const loose = useMemo(() => chats.filter(c => !c.project_id), [chats]);
+
+  const toggle = useCallback((projectId: string) => {
+    setExpanded(previous => {
+      const next = previous.includes(projectId)
+        ? previous.filter(id => id !== projectId)
+        : [...previous, projectId];
+      writeExpanded(next);
+      return next;
+    });
+  }, []);
+
+  // Opening a project expands it, makes it current — the graph and any chat
+  // started from it follow — and does not navigate. Navigating away from a tree
+  // every time you open a folder is the thing that makes trees annoying.
+  const openProject = useCallback(
+    (projectId: string) => {
+      select(projectId);
+      if (!expanded.includes(projectId)) toggle(projectId);
+    },
+    [expanded, select, toggle]
+  );
 
   return (
     <aside className="rail">
@@ -73,8 +116,7 @@ export const RailNav = () => {
       <button className="btn" style={{ width: "100%", justifyContent: "flex-start" }}
               onClick={() => router.push("/chat")}>
         <Icon name="plus" size={14} />
-        <span>New conversation</span>
-        <span style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-3)"}}>⌘K</span>
+        <span>New chat</span>
       </button>
 
       <div className="rail__section">
@@ -84,79 +126,91 @@ export const RailNav = () => {
                onClick={() => router.push(m.path)}>
             <Icon name={m.icon} size={15} />
             <span className="truncate">{m.label}</span>
-            {m.count != null && <span className="count">{m.count}</span>}
           </div>
         ))}
       </div>
 
-      {/* The project is a memory scope, not just a folder: switching changes
-          which chats are listed and what the assistant can recall. */}
-      <div className="rail__section pswitch">
+      <div className="rail__scroll">
+        {/* Projects, each holding its own chats. A project is a memory scope,
+            so this nesting is the storage model, not decoration: a chat inside
+            one can recall what the others in it said. */}
         <div className="rail__label">
-          Project
-          <span className="add" onClick={() => router.push("/projects")}>
-            <Icon name="plus" size={12}/>
+          Projects
+          <span className="add" title="New project" onClick={() => router.push("/projects")}>
+            <Icon name="plus" size={12} />
           </span>
         </div>
-        {/* A button, not a div: this is a real control, and the rest of the
-            rail being click-handlers on divs is not a reason to add another. */}
-        <button className="nav-item"
-                type="button"
-                aria-expanded={switcherOpen}
-                aria-label="Switch project"
-                style={{ width: "100%", font: "inherit", textAlign: "left" }}
-                onClick={() => setSwitcherOpen(o => !o)}>
-          <span className="dot" style={{
-            width: 6, height: 6, borderRadius: 999,
-            background: `var(--d-${current?.domain ?? "general"})`, flex: "0 0 6px",
-          }}/>
-          <span className="truncate">{current?.name ?? "No project"}</span>
-          <span className="count">{switcherOpen ? "▴" : "▾"}</span>
-        </button>
-        {switcherOpen && (
-          <div className="pswitch__menu">
-            {projects.map(p => (
-              <button key={p.id}
-                      className={`pswitch__item ${p.id === current?.id ? "is-on" : ""}`}
-                      onClick={() => { select(p.id); setSwitcherOpen(false); }}>
-                <span className="dot" style={{
-                  width: 6, height: 6, borderRadius: 999,
-                  background: `var(--d-${p.domain})`, flex: "0 0 6px",
-                }}/>
-                <span className="truncate">{p.name}</span>
-              </button>
-            ))}
-            <button className="pswitch__item"
-                    onClick={() => { setSwitcherOpen(false); router.push("/projects"); }}>
-              <Icon name="plus" size={12}/>
-              <span>New project…</span>
-            </button>
-          </div>
-        )}
-      </div>
 
-      <div className="rail__section" style={{ flex: 1, minHeight: 0 }}>
-        <div className="rail__label">Recent</div>
-        <div className="rail__history">
-          {recent.length === 0 && (
-            <div className="nav-item" style={{ color: "var(--ink-3)", fontSize: 12.5 }}>
-              No conversations yet
-            </div>
-          )}
-          {recent.map(chat => (
-            <div key={chat.id}
-                 className={`nav-item ${pathname === `/c/${chat.id}` ? "is-active" : ""}`}
-                 onClick={() => router.push(`/c/${chat.id}`)}>
-              <span className="dot" style={{
-                width: 5, height: 5, borderRadius: 999,
-                background: "var(--d-general)", flex: "0 0 5px",
-                opacity: 0.8
-              }}/>
-              <span className="truncate" style={{ fontSize: 13 }}>{chat.title}</span>
-              <span className="count" style={{ fontSize: 10.5 }}>{relativeTime(chat.updated_at)}</span>
-            </div>
-          ))}
+        {projects.length === 0 && <div className="rail__empty">No projects yet</div>}
+
+        <div className="tree">
+          {projects.map(project => {
+            const isOpen = expanded.includes(project.id);
+            const projectChats = byProject.get(project.id) ?? [];
+            return (
+              <div key={project.id} className="tree__group">
+                <div className={`nav-item ${current?.id === project.id ? "is-current" : ""}`}
+                     onClick={() => openProject(project.id)}>
+                  <button className={`tree__twist ${isOpen ? "is-open" : ""}`}
+                          type="button"
+                          aria-label={isOpen ? "Collapse" : "Expand"}
+                          aria-expanded={isOpen}
+                          onClick={e => { e.stopPropagation(); toggle(project.id); }}>
+                    <Icon name="chev" size={12} />
+                  </button>
+                  <span className="dot" style={{
+                    width: 6, height: 6, borderRadius: 999,
+                    background: `var(--d-${project.domain})`, flex: "0 0 6px",
+                  }} />
+                  <span className="truncate">{project.name}</span>
+                  <button className="tree__add"
+                          type="button"
+                          title={`New chat in ${project.name}`}
+                          onClick={e => {
+                            e.stopPropagation();
+                            select(project.id);
+                            router.push(`/chat?project=${project.id}`);
+                          }}>
+                    <Icon name="plus" size={12} />
+                  </button>
+                </div>
+
+                {isOpen && (
+                  <div className="tree__children">
+                    {projectChats.length === 0 && (
+                      <div className="tree__empty">No chats yet</div>
+                    )}
+                    {projectChats.map(chat => (
+                      <div key={chat.id}
+                           className={`nav-item nav-item--leaf ${
+                             pathname === `/c/${chat.id}` ? "is-active" : ""
+                           }`}
+                           onClick={() => router.push(`/c/${chat.id}`)}>
+                        <span className="tree__bullet" />
+                        <span className="truncate">{chat.title}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
+
+        {/* Everything filed under no project. These read and write the user
+            tier alone, which is what a passing question should touch. */}
+        <div className="rail__label" style={{ marginTop: 18 }}>Chats</div>
+        {loose.length === 0 && <div className="rail__empty">No loose chats</div>}
+        {loose.map(chat => (
+          <div key={chat.id}
+               className={`nav-item nav-item--leaf ${
+                 pathname === `/c/${chat.id}` ? "is-active" : ""
+               }`}
+               onClick={() => router.push(`/c/${chat.id}`)}>
+            <span className="tree__bullet" />
+            <span className="truncate">{chat.title}</span>
+          </div>
+        ))}
       </div>
 
       <div className="rail__user">
@@ -177,7 +231,6 @@ export const TopBar = () => {
   const page = getPageId(pathname);
 
   const labels: Record<string, string[]> = {
-    demo:         ["Demo"],
     chat:         ["Chat", "New conversation"],
     c:            ["Chat", "Conversation"],
     projects:     ["Projects"],

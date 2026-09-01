@@ -26,9 +26,10 @@ from graphiti_core.llm_client.openai_client import OpenAIClient
 from graphiti_core.nodes import EntityNode, EpisodeType
 
 from .config import Settings
+from .hygiene import group_lock, is_suppressed, load_suppressed, sweep
 from .logging_config import configure_logging
 from .retrieval import DEFAULT_LIMIT, DEFAULT_MIN_SCORE, build_search_config
-from .scopes import Scope, read_groups, scope_of, write_group
+from .scopes import Scope, View, read_groups, scope_of, view_groups, write_group
 
 logger = logging.getLogger(__name__)
 
@@ -215,11 +216,15 @@ async def lifespan(app: FastAPI):
         ),
     )
     await _graphiti.build_indices_and_constraints()
+    # The suppression set lives in memory, so it has to be read back after a
+    # restart or previously-hidden duplicate episodes reappear in search.
+    suppressed = await load_suppressed(_graphiti.driver)
     logger.info(
-        "Memory service ready  embed=%s dim=%d extract=%s",
+        "Memory service ready  embed=%s dim=%d extract=%s suppressed_episodes=%d",
         cfg.embedding_model,
         cfg.embedding_dim,
         cfg.extraction_model,
+        suppressed,
     )
     yield
     await _graphiti.close()
@@ -294,6 +299,48 @@ class GraphResponse(BaseModel):
     edges: list[EdgeOut]
 
 
+class MaintenanceRequest(BaseModel):
+    """One tidy-up of whatever a view covers."""
+
+    user_id: uuid.UUID
+    project_id: uuid.UUID | None = None
+    view: View = "all"
+    # Defaults to reporting rather than acting. This pass will be wrong
+    # sometimes, and you should see the diff before it is applied.
+    dry_run: bool = True
+
+
+class SweepReportOut(BaseModel):
+    """What one group's pass found. Text, not counts.
+
+    When this job is wrong the only useful question is which fact it touched,
+    and a number cannot answer that.
+    """
+
+    group_id: str
+    scope: Scope
+    duplicate_edges: list[str]
+    near_duplicates: list[str]
+    # Two relations live between one pair of nodes. Never merged automatically:
+    # "uses X" and "no longer uses X" look almost identical to an embedding.
+    conflicts: list[str]
+    # Where graphiti's own invalidation looks wrong. Reported, never repaired --
+    # judging these needs a model, and this pass makes no model calls.
+    suspect_invalidations: list[str]
+    summaries_rebuilt: list[str]
+    episodes_suppressed: list[str]
+    orphans_deleted: list[str]
+
+
+class MaintenanceResponse(BaseModel):
+    group_ids: list[str]
+    dry_run: bool
+    # The goal a scripted run is measured against: a dry sweep finding nothing.
+    clean: bool
+    total_changes: int
+    reports: list[SweepReportOut]
+
+
 class SearchRequest(BaseModel):
     query: str
     user_id: uuid.UUID
@@ -353,14 +400,18 @@ async def _run_ingest(
         source = EpisodeType.text
         description = f"nexus statement ({group_id})"
     try:
-        result = await graphiti.add_episode(
-            name="episode",
-            episode_body=body,
-            source=source,
-            source_description=description,
-            reference_time=datetime.now(timezone.utc),
-            group_id=group_id,
-        )
+        # Held for the whole 12-30s of extraction. A sweep running against the
+        # same group meanwhile would rebuild a summary from edges this write is
+        # still creating, and the loss would be silent.
+        async with group_lock(group_id):
+            result = await graphiti.add_episode(
+                name="episode",
+                episode_body=body,
+                source=source,
+                source_description=description,
+                reference_time=datetime.now(timezone.utc),
+                group_id=group_id,
+            )
         episode_uuid = result.episode.uuid
         logger.info("Ingested episode into group=%s uuid=%s", group_id, episode_uuid)
     except Exception as exc:
@@ -402,22 +453,44 @@ async def ingest(req: IngestRequest, background_tasks: BackgroundTasks, response
     return IngestResponse(status="accepted", group_id=group_id)
 
 
+def _view_groups(view: View, user_id: uuid.UUID, project_id: uuid.UUID | None) -> list[str]:
+    """``view_groups`` with the one bad combination turned into a 422."""
+    try:
+        return view_groups(view, user_id, project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @app.get("/graph", response_model=GraphResponse)
-async def get_graph(user_id: uuid.UUID, project_id: uuid.UUID | None = None):
-    """The union of the user tier and, when given, one project tier."""
-    return await _build_graph_response(read_groups(user_id, project_id))
+async def get_graph(
+    user_id: uuid.UUID,
+    project_id: uuid.UUID | None = None,
+    view: View = "all",
+):
+    """One view of the graph.
+
+    Default is the union a read would see. ``view=user`` isolates the universal
+    tier and ``view=project`` isolates one project, which is how the UI shows
+    the two apart instead of as one undifferentiated cloud.
+    """
+    return await _build_graph_response(_view_groups(view, user_id, project_id))
 
 
 @app.delete("/graph", status_code=204)
-async def delete_graph(user_id: uuid.UUID, project_id: uuid.UUID | None = None):
-    """Wipe every group this caller can read -- for demo resets only.
+async def delete_graph(
+    user_id: uuid.UUID,
+    project_id: uuid.UUID | None = None,
+    view: View = "all",
+):
+    """Wipe whatever the matching view shows -- for resets only.
 
-    Deliberately matches the read set rather than a single tier: this backs a
-    reset button, and clearing half of what the panel shows would be worse than
-    clearing all of it.
+    Scoped to the view rather than always to the union, so clearing one
+    project's memory no longer takes the universal tier down with it. The
+    default is still the union, because that is what a caller passing no view
+    is looking at.
     """
     graphiti = _require_graphiti()
-    groups = read_groups(user_id, project_id)
+    groups = _view_groups(view, user_id, project_id)
     await graphiti.driver.execute_query(
         "MATCH (n) WHERE n.group_id IN $groups DETACH DELETE n",
         groups=groups,
@@ -429,6 +502,52 @@ async def delete_graph(user_id: uuid.UUID, project_id: uuid.UUID | None = None):
     for group_id in groups:
         for subscription in manager.watchers_of(group_id):
             await manager.send(subscription, payload)
+
+
+@app.post("/maintenance", response_model=MaintenanceResponse)
+async def maintenance(req: MaintenanceRequest):
+    """Tidy the graph behind one view. Reports without changing unless asked.
+
+    Sweeps each group in the view separately and never across them. A pass that
+    merged an entity spanning the user tier and a project tier would destroy the
+    isolation the whole scope model rests on, and the damage would not show up
+    until a fact leaked between projects.
+    """
+    graphiti = _require_graphiti()
+    groups = _view_groups(req.view, req.user_id, req.project_id)
+
+    reports = [
+        await sweep(graphiti.driver, group_id, dry_run=req.dry_run)
+        for group_id in groups
+    ]
+
+    # A real pass changes what the graph holds, so anyone watching it should
+    # see the result rather than a stale panel.
+    if not req.dry_run:
+        for group_id, report in zip(groups, reports):
+            if report.total_changes:
+                await _broadcast_write(group_id)
+
+    return MaintenanceResponse(
+        group_ids=groups,
+        dry_run=req.dry_run,
+        clean=all(r.clean for r in reports),
+        total_changes=sum(r.total_changes for r in reports),
+        reports=[
+            SweepReportOut(
+                group_id=r.group_id,
+                scope=scope_of(r.group_id),
+                duplicate_edges=r.duplicate_edges,
+                near_duplicates=r.near_duplicates,
+                conflicts=r.conflicts,
+                suspect_invalidations=r.suspect_invalidations,
+                summaries_rebuilt=r.summaries_rebuilt,
+                episodes_suppressed=r.episodes_suppressed,
+                orphans_deleted=r.orphans_deleted,
+            )
+            for r in reports
+        ],
+    )
 
 
 @app.post("/search", response_model=SearchResponse)
@@ -495,7 +614,10 @@ async def search(req: SearchRequest, request: Request):
             scope=scope_of(episode.group_id),
         )
         for episode in getattr(results, "episodes", [])
-        if episode.content
+        # A duplicate episode is filtered here rather than in the query:
+        # graphiti's EpisodicNode is a fixed model, so the property the sweep
+        # sets on the node never reaches these results.
+        if episode.content and not is_suppressed(episode.uuid)
     ]
 
     facts = _dedupe(candidates)[: req.limit]
@@ -533,13 +655,23 @@ async def health():
 
 
 @app.websocket("/ws/graph/{user_id}")
-async def ws_graph(websocket: WebSocket, user_id: uuid.UUID, project_id: uuid.UUID | None = None):
-    """Stream graph updates for one scope set.
+async def ws_graph(
+    websocket: WebSocket,
+    user_id: uuid.UUID,
+    project_id: uuid.UUID | None = None,
+    view: View = "all",
+):
+    """Stream graph updates for one view.
 
-    Sends the current union on connect, then a fresh snapshot whenever a write
-    lands in *any* group the client asked for.
+    Sends the current snapshot on connect, then a fresh one whenever a write
+    lands in *any* group the client asked for. A project view therefore stops
+    redrawing on user-tier writes, which is correct: they are not in it.
     """
-    groups = read_groups(user_id, project_id)
+    try:
+        groups = view_groups(view, user_id, project_id)
+    except ValueError:
+        await websocket.close(code=1008, reason="the project view requires a project_id")
+        return
     subscription = await manager.connect(websocket, groups)
     try:
         graph = await _build_graph_response(groups)

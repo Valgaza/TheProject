@@ -88,3 +88,27 @@ def scope_of(group_id: str) -> Scope:
     if group_id.startswith(f"{PROJECT_PREFIX}_"):
         return "project"
     raise ValueError(f"unrecognised group id: {group_id!r}")
+
+
+View = Literal["all", "user", "project"]
+
+
+def view_groups(view: View, user_id: uuid.UUID, project_id: uuid.UUID | None) -> list[str]:
+    """The groups one *view* of the graph covers.
+
+    ``read_groups`` answers a different question -- what a retrieval in this
+    context is allowed to see -- and that is always the union. A view is for
+    looking: "user" is the universal graph on its own, "project" is one body of
+    work on its own, and "all" is the union, which is what a read would return.
+
+    Keeping them as separate functions matters. A project view that quietly
+    included the user tier would make the two tiers impossible to tell apart on
+    screen, and telling them apart is the entire point of having two.
+    """
+    if view == "user":
+        return [user_group(user_id)]
+    if view == "project":
+        if project_id is None:
+            raise ValueError("the project view requires a project_id")
+        return [project_group(user_id, project_id)]
+    return read_groups(user_id, project_id)

@@ -152,6 +152,7 @@ function Thread({ chatId }: { chatId: string }) {
 
   return (
     <div className="convo">
+      <div className="convo__thread">
       <div className="convo__head">
         <div className="convo__meta">
           <span className="tag tag--accent">
@@ -184,8 +185,9 @@ function Thread({ chatId }: { chatId: string }) {
       )}
 
       <div ref={bottomRef} />
+      </div>
 
-      <div style={{ marginTop: 32 }}>
+      <div className="convo__dock">
         <Composer
           value={value}
           onChange={setValue}

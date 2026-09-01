@@ -2,7 +2,15 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/icons";
-import { type ApiGraph, graphSocketUrl, graphUrl } from "@/lib/api";
+import {
+  type ApiGraph,
+  type GraphView,
+  type MaintenanceResult,
+  graphSocketUrl,
+  graphUrl,
+  runMaintenance,
+} from "@/lib/api";
+import { SweepReportPanel } from "@/components/sweep-report";
 
 export const NODE_TYPES: Record<string, { label: string; color: string; fill: string }> = {
   entity:  { label: "Entity",   color: "var(--accent)",        fill: "oklch(0.94 0.03 195)" },
@@ -15,7 +23,17 @@ export const NODE_TYPES: Record<string, { label: string; color: string; fill: st
 
 const nt = (type: string) => NODE_TYPES[type.toLowerCase()] ?? NODE_TYPES.entity;
 
-type GNode = { id: string; label: string; type: string; summary: string; x: number; y: number; r: number };
+/** The group id says its own tier: "u_<hex>" or "p_<hex>_<hex>". */
+const tierOf = (groupId: string): Tier => (groupId.startsWith("p_") ? "project" : "user");
+
+type Tier = "user" | "project";
+
+type GNode = {
+  id: string; label: string; type: string; summary: string;
+  /** Which memory tier this node lives in, read off its group id. */
+  tier: Tier;
+  x: number; y: number; r: number;
+};
 type GEdge = { s: string; t: string; label: string };
 
 
@@ -47,15 +65,16 @@ function positionAt(index: number): { x: number; y: number; r: number } {
 interface LiveGraphProps {
   className?: string;
   /**
-   * Scope the panel to one project. Omitted, it shows the user tier alone;
-   * given, it shows the union of the user tier and that project's, which is
-   * exactly what a read in that project would see. Phase 6 passes the project
-   * the user is actually looking at.
+   * Which tier to draw. "user" is the universal graph alone, "project" is one
+   * project alone, and "all" is the union — what a retrieval in that project
+   * would actually see.
    */
+  view?: GraphView;
+  /** Required by the "project" view, and by "all" to have a project half. */
   projectId?: string;
 }
 
-export function LiveGraph({ className, projectId }: LiveGraphProps) {
+export function LiveGraph({ className, view = "all", projectId }: LiveGraphProps) {
   const [hover,       setHover]      = useState<string | null>(null);
   const [pinned,      setPinned]     = useState<string | null>(null);
   const [pulse,       setPulse]      = useState<string | null>(null);
@@ -64,6 +83,8 @@ export function LiveGraph({ className, projectId }: LiveGraphProps) {
   const [lastUpdated, setLastUpdated] = useState<string>("–");
   const [loading,     setLoading]    = useState(true);
   const [wsStatus,    setWsStatus]   = useState<"connecting" | "connected" | "disconnected">("connecting");
+  const [sweep,       setSweep]      = useState<MaintenanceResult | null>(null);
+  const [sweeping,    setSweeping]   = useState(false);
 
   const svgRef       = useRef<SVGSVGElement>(null);
   const positionsRef = useRef<Map<string, { x: number; y: number; r: number }>>(new Map());
@@ -74,7 +95,11 @@ export function LiveGraph({ className, projectId }: LiveGraphProps) {
       if (!positionsRef.current.has(n.id)) {
         positionsRef.current.set(n.id, positionAt(positionsRef.current.size));
       }
-      return { id: n.id, label: n.name, type: n.type, summary: n.summary, ...positionsRef.current.get(n.id)! };
+      return {
+        id: n.id, label: n.name, type: n.type, summary: n.summary,
+        tier: tierOf(n.group_id),
+        ...positionsRef.current.get(n.id)!,
+      };
     });
     const edges: GEdge[] = data.edges.map(e => ({ s: e.source, t: e.target, label: e.label }));
     nodesRef.current = nodes;
@@ -87,7 +112,7 @@ export function LiveGraph({ className, projectId }: LiveGraphProps) {
   useEffect(() => {
     let cancelled = false;
 
-    fetch(graphUrl(projectId))
+    fetch(graphUrl(view, projectId))
       .then(r => r.json())
       .then((data: ApiGraph) => { if (!cancelled) applyPayload(data); })
       .catch(err => {
@@ -95,7 +120,7 @@ export function LiveGraph({ className, projectId }: LiveGraphProps) {
         if (!cancelled) setLoading(false);
       });
 
-    const ws = new WebSocket(graphSocketUrl(projectId));
+    const ws = new WebSocket(graphSocketUrl(view, projectId));
     ws.onopen    = ()  => { if (!cancelled) setWsStatus("connected"); };
     ws.onmessage = e   => { if (!cancelled) applyPayload(JSON.parse(e.data)); };
     ws.onerror   = err => { if (!cancelled) console.error("[graph] WS error:", err); };
@@ -105,7 +130,7 @@ export function LiveGraph({ className, projectId }: LiveGraphProps) {
       cancelled = true;
       ws.close();
     };
-  }, [applyPayload, projectId]);
+  }, [applyPayload, view, projectId]);
 
   useEffect(() => {
     let i = 0;
@@ -120,8 +145,15 @@ export function LiveGraph({ className, projectId }: LiveGraphProps) {
   }, []);
 
   const handleReset = async () => {
+    // Scoped to what is on screen, so clearing one project no longer takes the
+    // universal tier with it — but that is only obvious if the prompt says so.
+    const what =
+      view === "user" ? "your universal memory"
+      : view === "project" ? "this project's memory"
+      : "this project's memory and your universal memory";
+    if (!window.confirm(`Permanently delete ${what}? This cannot be undone.`)) return;
     try {
-      await fetch(graphUrl(projectId), { method: "DELETE" });
+      await fetch(graphUrl(view, projectId), { method: "DELETE" });
     } catch (err) {
       console.error("[graph] reset failed:", err);
     }
@@ -131,6 +163,19 @@ export function LiveGraph({ className, projectId }: LiveGraphProps) {
     positionsRef.current.clear();
     setPinned(null);
     setLastUpdated("–");
+  };
+
+  // Dry run first, always. The pass marks rather than deletes so it is
+  // reversible, but a diff you have read beats one you have to undo.
+  const tidy = async (dryRun: boolean) => {
+    setSweeping(true);
+    try {
+      setSweep(await runMaintenance(view, projectId, dryRun));
+    } catch (err) {
+      console.error("[graph] maintenance failed:", err);
+    } finally {
+      setSweeping(false);
+    }
   };
 
   const sel = pinned || hover;
@@ -179,7 +224,9 @@ export function LiveGraph({ className, projectId }: LiveGraphProps) {
           {!loading && graphNodes.length === 0 && (
             <text x="550" y="360" textAnchor="middle" dominantBaseline="middle"
                   fontSize="14" fontFamily="var(--font-sans)" fill="var(--ink-3)">
-              Graph is empty — send a message to start building memory.
+              {view === "project"
+                ? "Nothing in this project yet — talk to it and memory forms."
+                : "Graph is empty — send a message to start building memory."}
             </text>
           )}
 
@@ -234,6 +281,15 @@ export function LiveGraph({ className, projectId }: LiveGraphProps) {
                             fill="none" stroke="var(--accent)" strokeWidth="1"
                             style={{ animation: "ringOut 1.4s ease-out forwards", transformOrigin: `${n.x}px ${n.y}px` }}/>
                   )}
+                  {/* Only in the union view: a user-tier node wears a ring so
+                      the two tiers can be told apart at a glance. In a
+                      single-tier view every node is the same tier, and the
+                      ring would be noise. */}
+                  {view === "all" && n.tier === "user" && (
+                    <circle cx={n.x} cy={n.y} r={n.r + 3.5}
+                            fill="none" stroke={t.color} strokeWidth="0.8"
+                            strokeDasharray="2 2" opacity="0.7"/>
+                  )}
                   <circle cx={n.x} cy={n.y} r={n.r}
                           fill={t.fill} stroke={t.color}
                           strokeWidth={isFocus ? 2 : 1}
@@ -264,13 +320,19 @@ export function LiveGraph({ className, projectId }: LiveGraphProps) {
         `}</style>
 
         <div className="graph__chrome graph__chrome--tl">
-          <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)", letterSpacing: "0.12em" }}>NEXUS · GRAPH</div>
+          <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)", letterSpacing: "0.12em" }}>
+            {view === "user" ? "UNIVERSAL" : view === "project" ? "PROJECT" : "UNIVERSAL + PROJECT"}
+          </div>
           <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-3)", letterSpacing: "0.12em" }}>{graphNodes.length} NODES · {graphEdges.length} EDGES</div>
         </div>
         <div className="graph__chrome graph__chrome--tr">
+          <button className="ctool"
+                  title="Tidy this graph — collapse duplicates and rebuild summaries"
+                  disabled={sweeping}
+                  onClick={() => void tidy(true)}>
+            <Icon name="spark" size={15}/>
+          </button>
           <button className="ctool" title="Reset graph" onClick={handleReset}><Icon name="close" size={15}/></button>
-          <button className="ctool"><Icon name="search" size={15}/></button>
-          <button className="ctool"><Icon name="plus" size={15}/></button>
         </div>
         <div className="graph__chrome graph__chrome--br">
           <span className="mono" style={{ fontSize: 10.5, color: wsColor }}>● {wsLabel} · {lastUpdated}</span>
@@ -278,6 +340,15 @@ export function LiveGraph({ className, projectId }: LiveGraphProps) {
       </div>
 
       <aside className="inspector">
+        {sweep ? (
+          <SweepReportPanel
+            result={sweep}
+            busy={sweeping}
+            onApply={() => void tidy(false)}
+            onDismiss={() => setSweep(null)}
+          />
+        ) : (
+        <>
         <div className="inspector__head">
           <div className="eyebrow">§ Inspector</div>
           {focusNode && <button className="ctool" onClick={() => setPinned(null)}><Icon name="close" size={14}/></button>}
@@ -297,6 +368,7 @@ export function LiveGraph({ className, projectId }: LiveGraphProps) {
             )}
 
             <dl className="inspector__props">
+              <div><dt>Tier</dt><dd>{focusNode.tier === "user" ? "Universal" : "Project"}</dd></div>
               <div><dt>ID</dt><dd className="mono">nx://entity/{focusNode.id.slice(0, 8)}</dd></div>
               <div><dt>Connections</dt><dd>{connectedIds.size - 1}</dd></div>
               <div><dt>Last updated</dt><dd>{lastUpdated}</dd></div>
@@ -329,6 +401,8 @@ export function LiveGraph({ className, projectId }: LiveGraphProps) {
               ? "Send a message in the conversation page to start building the knowledge graph."
               : "Click any node on the canvas to inspect its provenance, properties, and incoming relationships. New nodes pulse as they arrive.")}
           </div>
+        )}
+        </>
         )}
       </aside>
     </div>

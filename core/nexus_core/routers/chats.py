@@ -19,6 +19,7 @@ from ..memory_client import MemoryClient
 from ..memory_writer import run_write_gate
 from ..providers.base import Provider
 from ..schemas import (
+    ChatCreate,
     ChatOut,
     FactOut,
     MemoryEpisodeOut,
@@ -32,9 +33,13 @@ router = APIRouter(prefix="/chats", tags=["chats"])
 
 
 async def _get_chat(session: AsyncSession, chat_id: uuid.UUID, user_id: uuid.UUID) -> Chat:
-    """Load a chat, refusing one that belongs to somebody else's project."""
+    """Load a chat, refusing one that belongs to somebody else.
+
+    Ownership is read off the chat rather than joined through the project: a
+    chat outside every project has no project to join to.
+    """
     result = await session.execute(
-        select(Chat).join(Project).where(Chat.id == chat_id, Project.user_id == user_id)
+        select(Chat).where(Chat.id == chat_id, Chat.user_id == user_id)
     )
     chat = result.scalar_one_or_none()
     if chat is None:
@@ -52,6 +57,47 @@ def _provider(request: Request) -> Provider:
 
 def _memory(request: Request) -> MemoryClient | None:
     return getattr(request.app.state, "memory", None)
+
+
+@router.get("", response_model=list[ChatOut])
+async def list_chats(
+    request: Request,
+    session: AsyncSession = Depends(session_dependency),
+    loose: bool = False,
+) -> list[Chat]:
+    """Every chat this user has, newest activity first.
+
+    ``loose=true`` narrows it to the ones filed under no project. The sidebar
+    asks for both: the full list to nest under project headings, and the loose
+    ones for the plain list underneath.
+    """
+    query = select(Chat).where(Chat.user_id == _current_user_id(request))
+    if loose:
+        query = query.where(Chat.project_id.is_(None))
+    result = await session.execute(query.order_by(Chat.updated_at.desc()))
+    return list(result.scalars())
+
+
+@router.post("", response_model=ChatOut, status_code=201)
+async def create_chat(
+    body: ChatCreate,
+    request: Request,
+    session: AsyncSession = Depends(session_dependency),
+) -> Chat:
+    """Start a conversation, with or without a project.
+
+    POST /projects/{id}/chats is the other door in; this one exists so a chat
+    can be started with no project at all, which the nested route cannot express.
+    """
+    user_id = _current_user_id(request)
+    if body.project_id is not None:
+        project = await session.get(Project, body.project_id)
+        if project is None or project.user_id != user_id:
+            raise HTTPException(status_code=404, detail="project not found")
+    chat = Chat(user_id=user_id, project_id=body.project_id, title=body.title)
+    session.add(chat)
+    await session.flush()
+    return chat
 
 
 @router.get("/{chat_id}", response_model=ChatOut)
@@ -132,6 +178,10 @@ async def create_message(
             message_id=turn.user_message.id,
             user_message=body.content,
             assistant_message=turn.assistant_message.content,
+            # What memory already supplied for this turn. The gate refuses to
+            # restate any of it, which is what stops recall from making a fact
+            # louder every time it is recalled.
+            recalled_facts=[f.fact for f in turn.facts],
         )
 
     return TurnOut(

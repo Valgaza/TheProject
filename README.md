@@ -65,6 +65,36 @@ has to *choose* a tier rather than write to both and sort it out later.
 The practical effect: a technology decision in one project is invisible from
 another, while "I prefer terse answers" follows you everywhere.
 
+A chat does not have to belong to a project. One that does not reads and writes
+the user tier alone, which is what a passing question should touch — filing it
+under a project would write into that body of work.
+
+`/graph` draws one tier at a time: the universal graph, one project's, or the
+union (`?view=user|project|all`). Drawing them as a single cloud is what makes
+it impossible to see which tier a fact actually landed in, and that is the thing
+most worth checking.
+
+### Memory is written carefully and tidied afterwards
+
+The write gate only learns from what *you* said. The assistant's reply is passed
+to it as context, so it can resolve references, but nothing is persisted on its
+authority — otherwise asking "what am I using for the graph store?" gets the
+answer "Neo4j" and writes that answer back as a new fact, which is a loop that
+makes a stale fact louder every time you ask about it. Facts memory already
+supplied for the same turn are named in the gate prompt and refused.
+
+One turn can leave several facts behind, in different tiers, capped at three.
+
+What cannot be prevented at write time gets repaired by a maintenance pass:
+duplicate and restated edges collapse, node summaries are rebuilt from the facts
+of their live edges, repeated episodes stop reaching search, and orphans go. It
+marks rather than deletes, never crosses a group boundary, makes no model calls,
+and reports before it acts. `POST /maintenance` runs it; the graph panel has a
+button; and a tier is swept automatically once it has taken ten new episodes.
+
+Each step's reasoning is in `memory/nexus_memory/hygiene.py`, alongside the
+measurements that motivated it.
+
 ## Containers
 
 Thirteen containers across two Docker Compose projects, both named `nexus` so
