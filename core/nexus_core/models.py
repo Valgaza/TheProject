@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -58,29 +59,51 @@ class Project(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     domain: Mapped[str] = mapped_column(Text, nullable=False, default="general")
+    pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
-    chats: Mapped[list["Chat"]] = relationship(back_populates="project")
+    # passive_deletes=True: same reasoning as Chat.messages below -- trust
+    # the FK's own ON DELETE CASCADE instead of the ORM loading every chat
+    # first and trying to null out project_id, which fails outright since
+    # that column is NOT NULL.
+    chats: Mapped[list["Chat"]] = relationship(back_populates="project", passive_deletes=True)
 
 
 class Chat(Base):
     __tablename__ = "chats"
 
     id: Mapped[uuid.UUID] = _pk()
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    # Who owns this chat -- independent of project_id, since a chat no
+    # longer has to be filed under a project to exist. Ownership used to
+    # come entirely through project_id -> projects.user_id; that join
+    # breaks the moment project_id can be null, hence this column.
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    # Null means unfiled: created from /chat directly, not from within a
+    # project. Set at creation (POST /projects/{id}/chats) or later via
+    # PATCH /chats/{id}'s move-to-project.
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True
     )
     title: Mapped[str] = mapped_column(Text, nullable=False, default="New conversation")
+    pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
-    project: Mapped[Project] = relationship(back_populates="chats")
-    messages: Mapped[list["Message"]] = relationship(back_populates="chat")
+    project: Mapped[Project | None] = relationship(back_populates="chats")
+    # passive_deletes=True: trust the FK's own ON DELETE CASCADE (see the
+    # schema migration) instead of the ORM's default behaviour, which loads
+    # every message first and tries to null out chat_id -- a write that
+    # fails outright, since chat_id is NOT NULL.
+    messages: Mapped[list["Message"]] = relationship(
+        back_populates="chat", passive_deletes=True
+    )
 
 
 class Message(Base):

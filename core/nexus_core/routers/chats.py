@@ -21,7 +21,9 @@ from ..memory_writer import run_write_gate
 from ..providers.base import Provider
 from ..rag_client import RagClient
 from ..schemas import (
+    ChatCreate,
     ChatOut,
+    ChatUpdate,
     FactOut,
     MemoryEpisodeOut,
     MessageCreate,
@@ -35,9 +37,15 @@ router = APIRouter(prefix="/chats", tags=["chats"])
 
 
 async def _get_chat(session: AsyncSession, chat_id: uuid.UUID, user_id: uuid.UUID) -> Chat:
-    """Load a chat, refusing one that belongs to somebody else's project."""
+    """Load a chat, refusing one that belongs to somebody else.
+
+    Checks Chat.user_id directly rather than joining through Project --
+    that join used to be the only way to know who a chat belonged to, but
+    it silently excluded unfiled chats (project_id IS NULL) entirely,
+    which would have made every one of them permanently unreachable.
+    """
     result = await session.execute(
-        select(Chat).join(Project).where(Chat.id == chat_id, Project.user_id == user_id)
+        select(Chat).where(Chat.id == chat_id, Chat.user_id == user_id)
     )
     chat = result.scalar_one_or_none()
     if chat is None:
@@ -57,6 +65,37 @@ def _rag(request: Request) -> RagClient | None:
     return getattr(request.app.state, "rag", None)
 
 
+@router.get("", response_model=list[ChatOut])
+async def list_unfiled_chats(
+    request: Request,
+    session: AsyncSession = Depends(session_dependency),
+) -> list[Chat]:
+    """Chats not filed under any project -- created from /chat directly.
+    The sidebar merges these with the current project's own chats
+    (GET /projects/{id}/chats) rather than showing them separately."""
+    result = await session.execute(
+        select(Chat)
+        .where(Chat.project_id.is_(None), Chat.user_id == _current_user_id(request))
+        .order_by(Chat.updated_at.desc())
+    )
+    return list(result.scalars())
+
+
+@router.post("", response_model=ChatOut, status_code=201)
+async def create_unfiled_chat(
+    body: ChatCreate,
+    request: Request,
+    session: AsyncSession = Depends(session_dependency),
+) -> Chat:
+    """The counterpart to POST /projects/{id}/chats -- this one is how
+    /chat's "New conversation" creates a chat with nothing to file it
+    under. Moving it into a project later is PATCH /chats/{id}."""
+    chat = Chat(project_id=None, user_id=_current_user_id(request), title=body.title)
+    session.add(chat)
+    await session.flush()
+    return chat
+
+
 @router.get("/{chat_id}", response_model=ChatOut)
 async def get_chat(
     chat_id: uuid.UUID,
@@ -64,6 +103,56 @@ async def get_chat(
     session: AsyncSession = Depends(session_dependency),
 ) -> Chat:
     return await _get_chat(session, chat_id, _current_user_id(request))
+
+
+@router.patch("/{chat_id}", response_model=ChatOut)
+async def update_chat(
+    chat_id: uuid.UUID,
+    body: ChatUpdate,
+    request: Request,
+    session: AsyncSession = Depends(session_dependency),
+) -> Chat:
+    """Rename, pin/unpin, or move to a different project -- whichever
+    fields are set. Covers the sidebar's three-dot menu."""
+    if body.title is None and body.pinned is None and body.project_id is None:
+        raise HTTPException(status_code=422, detail="nothing to update")
+
+    user_id = _current_user_id(request)
+    chat = await _get_chat(session, chat_id, user_id)
+
+    if body.project_id is not None and body.project_id != chat.project_id:
+        # Moving to a project the caller doesn't own would either 404 (it
+        # doesn't exist for them) or silently hand the chat to someone
+        # else's project -- reuse the same ownership check project reads
+        # already go through, not a bespoke one.
+        result = await session.execute(
+            select(Project).where(Project.id == body.project_id, Project.user_id == user_id)
+        )
+        if result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=404, detail="project not found")
+        chat.project_id = body.project_id
+
+    if body.title is not None:
+        chat.title = body.title
+    if body.pinned is not None:
+        chat.pinned = body.pinned
+
+    await session.flush()
+    return chat
+
+
+@router.delete("/{chat_id}", status_code=204)
+async def delete_chat(
+    chat_id: uuid.UUID,
+    request: Request,
+    session: AsyncSession = Depends(session_dependency),
+) -> None:
+    """Removes the chat and its transcript. Anything the write gate already
+    extracted into the knowledge graph survives -- Postgres holds what was
+    said, Neo4j holds what was learned, deliberately separate stores, and
+    deleting a conversation shouldn't unlearn a fact that came from it."""
+    chat = await _get_chat(session, chat_id, _current_user_id(request))
+    await session.delete(chat)
 
 
 @router.get("/{chat_id}/messages", response_model=list[MessageOut])
@@ -111,6 +200,7 @@ async def create_message(
         user_id=user_id,
         memory=_memory(request),
         rag=_rag(request),
+        title_model=request.app.state.settings.gate_model,
     )
     # Commit before scheduling, not after. FastAPI runs a background task
     # before the exit code of a dependency that yields, so session_dependency's

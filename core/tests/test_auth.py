@@ -129,3 +129,12 @@ async def test_google_login_503s_when_not_configured(db_client):
     response = await db_client.get("/auth/google/login", follow_redirects=False)
 
     assert response.status_code == 503
+
+
+async def test_auth_config_reports_whether_google_is_set_up(client):
+    """No session needed — the login page reads this before anyone is
+    logged in, to decide whether to render the Google button at all."""
+    response = await client.get("/auth/config")
+
+    assert response.status_code == 200
+    assert response.json() == {"google_oauth_enabled": False}

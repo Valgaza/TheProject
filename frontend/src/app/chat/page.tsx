@@ -6,19 +6,44 @@
  * The four-card domain grid used to live here and made the user choose a
  * pipeline before typing. The orchestrator makes that call now, so the choice
  * is gone; the domains survive as labels on answers, in src/lib/domains.ts.
+ *
+ * A chat created here has no project (2026-09-02) -- POST /chats, not
+ * POST /projects/{id}/chats. The only way to get a chat filed under a
+ * project is to open it from the Projects page (?project=<id> below) or
+ * move an existing chat into one later (the chat menu's "Move to
+ * project"). The project switcher in the sidebar is just a view filter
+ * for "Recent" -- it no longer decides where a new chat lands.
  */
 
-import React, { useState } from "react";
-import { useRouter } from "next/navigation";
+import React, { Suspense, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Composer } from "@/components/composer";
 import { Icon } from "@/components/icons";
 import { SUGGESTED } from "@/lib/domains";
-import { createChat, defaultProject } from "@/lib/api";
+import { createChat, createUnfiledChat } from "@/lib/api";
 import { useProjects } from "@/lib/project-context";
 
 export default function ChatHome() {
+  // useSearchParams opts everything above it out of prerendering unless it
+  // sits under a boundary -- same reason c/[chatId]/page.tsx wraps its own
+  // read of `?q=` this way.
+  return (
+    <Suspense fallback={null}>
+      <ChatHomeInner />
+    </Suspense>
+  );
+}
+
+function ChatHomeInner() {
   const router = useRouter();
-  const { current } = useProjects();
+  const searchParams = useSearchParams();
+  const { projects } = useProjects();
+  // Set only when this page was reached by opening a project (Projects
+  // page's card click passes ?project=<id>) -- bare /chat, from the
+  // sidebar's "New chat" or the landing page, carries none.
+  const projectId = searchParams.get("project");
+  const project = projectId ? projects.find(p => p.id === projectId) : undefined;
+
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -30,13 +55,12 @@ export default function ChatHome() {
     setBusy(true);
     setError(null);
     try {
-      // The current project, so a new chat inherits the memory scope the user
-      // is looking at. defaultProject() only covers a cold start with none.
-      const project = current ?? (await defaultProject());
-      const chat = await createChat(project.id);
+      const chat = projectId ? await createChat(projectId) : await createUnfiledChat();
       // Carry the prompt to the thread rather than sending it here — the reply
       // takes a couple of seconds and it should arrive on the page you're
-      // reading, not on the one you're leaving.
+      // reading, not on the one you're leaving. The chat picks up its real,
+      // model-written title (chat_service.py) and shows up in "Recent" once
+      // that reply lands — see notifyChatsChanged() in c/[chatId]/page.tsx.
       router.push(`/c/${chat.id}?q=${encodeURIComponent(content)}`);
     } catch {
       setBusy(false);
@@ -47,13 +71,17 @@ export default function ChatHome() {
   return (
     <div className="chathome">
       <div className="chathome__hero">
-        <div className="eyebrow">§ Command</div>
+        <div className="eyebrow">
+          {project ? `§ ${project.name}` : "§ Command"}
+        </div>
         <h1 className="display chathome__title">
           Good afternoon.<br />
           <em>What</em> are we making?
         </h1>
         <p className="chathome__sub">
-          Just start typing — Nexus routes the prompt to the right handler on its own.
+          {project
+            ? `Just start typing — this chat will be filed under ${project.name}.`
+            : "Just start typing — Nexus routes the prompt to the right handler on its own."}
         </p>
       </div>
 

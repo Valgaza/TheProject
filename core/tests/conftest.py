@@ -19,6 +19,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from nexus_core.auth import SESSION_COOKIE_NAME, create_session_token
+from nexus_core.chat_title import TITLE_SYSTEM_PROMPT
 from nexus_core.db import create_engine
 from nexus_core.main import app
 from nexus_core.providers.base import Message, Provider
@@ -34,6 +35,11 @@ class FakeProvider(Provider):
 
     def __init__(self) -> None:
         self.chat_calls: list[list[Message]] = []
+        # Tracked separately from chat_calls -- chat_service.py fires a title
+        # generation call (chat_title.generate) alongside the answer call for
+        # a chat's first message, and tests written against chat_calls expect
+        # it to hold only real answer prompts, at stable indices.
+        self.title_calls: list[list[Message]] = []
 
     async def chat(
         self,
@@ -42,6 +48,9 @@ class FakeProvider(Provider):
         model: str | None = None,
         max_tokens: int | None = None,
     ) -> str:
+        if messages and messages[0].get("content") == TITLE_SYSTEM_PROMPT:
+            self.title_calls.append(list(messages))
+            return "Fake Title"
         self.chat_calls.append(list(messages))
         return "fake reply"
 

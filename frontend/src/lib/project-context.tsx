@@ -20,7 +20,15 @@ import React, {
   useMemo,
   useState,
 } from "react";
-import { CHATS_CHANGED, type Project, createProject, listProjects } from "@/lib/api";
+import {
+  CHATS_CHANGED,
+  type Project,
+  createProject,
+  deleteProject,
+  listProjects,
+  updateProject,
+} from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
 
 const STORAGE_KEY = "nexus:current-project";
 
@@ -30,6 +38,11 @@ type ProjectContextValue = {
   loading: boolean;
   select: (projectId: string) => void;
   create: (input: { name: string; description?: string; domain?: string }) => Promise<Project>;
+  /** Rename or pin/unpin. */
+  update: (projectId: string, patch: { name?: string; description?: string; pinned?: boolean }) => Promise<Project>;
+  /** Deletes the project and every chat inside it. If it was the current
+   * one, falls back to another remaining project, or to none. */
+  remove: (projectId: string) => Promise<void>;
   refresh: () => Promise<void>;
 };
 
@@ -53,6 +66,7 @@ function writeStored(id: string): void {
 }
 
 export function ProjectProvider({ children }: { children: React.ReactNode }) {
+  const { user, loading: authLoading } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -75,9 +89,27 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // This provider mounts on every route, including /login, before anyone
+  // is signed in -- so it can't just fetch once on mount (that fetch would
+  // 401, and nothing would ever ask again). Re-running when `user.id`
+  // changes covers the first successful login and switching accounts;
+  // logging out clears the list immediately rather than leaving the
+  // previous person's projects on screen.
   useEffect(() => {
+    if (authLoading) return;
+    if (!user) {
+      setProjects([]);
+      setCurrentId(null);
+      setLoading(false);
+      return;
+    }
     void refresh();
-  }, [refresh]);
+    // `user?.id` rather than `user`: AuthProvider's `refresh` builds a new
+    // object on every call (even re-confirming the same account), which
+    // would refire this effect on every one of those instead of only on an
+    // actual identity change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authLoading, user?.id, refresh]);
 
   const select = useCallback((projectId: string) => {
     setCurrentId(projectId);
@@ -96,6 +128,35 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
     [select]
   );
 
+  const update = useCallback(
+    async (projectId: string, patch: { name?: string; description?: string; pinned?: boolean }) => {
+      const updated = await updateProject(projectId, patch);
+      setProjects(previous => previous.map(p => (p.id === projectId ? updated : p)));
+      return updated;
+    },
+    []
+  );
+
+  const remove = useCallback(async (projectId: string) => {
+    await deleteProject(projectId);
+    // Two synchronous setState calls in the same tick -- React runs their
+    // updaters in the order scheduled, so `remaining` (captured here) is
+    // safely available by the time the second one reads it, without
+    // needing `projects`/`currentId` themselves in this callback's closure.
+    let remaining: Project[] = [];
+    setProjects(previous => {
+      remaining = previous.filter(p => p.id !== projectId);
+      return remaining;
+    });
+    setCurrentId(previous => {
+      if (previous !== projectId) return previous;
+      const fallback = remaining[0]?.id ?? null;
+      if (fallback) writeStored(fallback);
+      return fallback;
+    });
+    window.dispatchEvent(new Event(CHATS_CHANGED));
+  }, []);
+
   const value = useMemo<ProjectContextValue>(
     () => ({
       projects,
@@ -103,9 +164,11 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
       loading,
       select,
       create,
+      update,
+      remove,
       refresh,
     }),
-    [projects, currentId, loading, select, create, refresh]
+    [projects, currentId, loading, select, create, update, remove, refresh]
   );
 
   return <ProjectContext.Provider value={value}>{children}</ProjectContext.Provider>;

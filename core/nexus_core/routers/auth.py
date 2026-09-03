@@ -29,9 +29,17 @@ from ..auth import (
 from ..config import Settings
 from ..db import session_dependency
 from ..models import Profile
-from ..schemas import LoginRequest, ProfileOut, SignupRequest
+from ..schemas import AuthConfigOut, LoginRequest, ProfileOut, SignupRequest
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+@router.get("/config", response_model=AuthConfigOut)
+async def auth_config(request: Request) -> AuthConfigOut:
+    """No session needed -- the login page calls this before anyone is
+    logged in, just to decide whether the Google button is worth showing."""
+    settings: Settings = request.app.state.settings
+    return AuthConfigOut(google_oauth_enabled=settings.google_oauth_enabled)
 
 
 @router.post("/signup", response_model=ProfileOut, status_code=201)

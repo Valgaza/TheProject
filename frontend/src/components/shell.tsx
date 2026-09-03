@@ -1,11 +1,22 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Icon } from "./icons";
-import { CHATS_CHANGED, type Chat, listChats } from "@/lib/api";
+import {
+  CHATS_CHANGED,
+  type Chat,
+  type Project,
+  deleteChat,
+  listChats,
+  listUnfiledChats,
+  logout as apiLogout,
+  notifyChatsChanged,
+  updateChat,
+} from "@/lib/api";
 import { useProjects } from "@/lib/project-context";
+import { useAuth } from "@/lib/auth-context";
 
 /** "/c/abc" -> "c", "/" -> "landing". Only the first segment names a page. */
 const getPageId = (path: string) => {
@@ -22,36 +33,264 @@ function relativeTime(iso: string): string {
   return `${Math.round(hours / 24)}d`;
 }
 
+type MenuView = "main" | "move" | "delete-confirm";
+
+/** The dropdown behind a chat row's "..." button -- rename, pin, move to
+ * project, delete. One panel whose contents swap between three views
+ * (rather than nested flyouts) so it stays one absolutely-positioned
+ * element, same trick the project switcher (.pswitch__menu) already uses. */
+function ChatMenu({
+  chat,
+  projects,
+  onRename,
+  onTogglePin,
+  onMove,
+  onDelete,
+  onClose,
+}: {
+  chat: Chat;
+  projects: Project[];
+  onRename: () => void;
+  onTogglePin: () => void;
+  onMove: (projectId: string) => void;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
+  const [view, setView] = useState<MenuView>("main");
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [onClose]);
+
+  const otherProjects = projects.filter(p => p.id !== chat.project_id);
+
+  return (
+    <div className="chatmenu" ref={ref} onClick={e => e.stopPropagation()}>
+      {view === "main" && (
+        <>
+          <button className="chatmenu__item" onClick={() => { onRename(); onClose(); }}>
+            <Icon name="pencil" size={14} /> Rename
+          </button>
+          <button className="chatmenu__item" onClick={() => { onTogglePin(); onClose(); }}>
+            <Icon name={chat.pinned ? "pinOff" : "pin"} size={14} />
+            {chat.pinned ? "Unpin" : "Pin"} chat
+          </button>
+          <button
+            className="chatmenu__item"
+            onClick={() => setView("move")}
+            disabled={otherProjects.length === 0}
+          >
+            <Icon name="folder" size={14} /> Move to project
+          </button>
+          <div className="chatmenu__sep" />
+          <button
+            className="chatmenu__item chatmenu__item--danger"
+            onClick={() => setView("delete-confirm")}
+          >
+            <Icon name="trash" size={14} /> Delete
+          </button>
+        </>
+      )}
+
+      {view === "move" && (
+        <>
+          <button className="chatmenu__item chatmenu__back" onClick={() => setView("main")}>
+            <Icon name="chev" size={14} style={{ transform: "rotate(180deg)" }} /> Back
+          </button>
+          <div className="chatmenu__sep" />
+          {otherProjects.map(p => (
+            <button
+              key={p.id}
+              className="chatmenu__item"
+              onClick={() => { onMove(p.id); onClose(); }}
+            >
+              <span
+                className="dot"
+                style={{ width: 6, height: 6, borderRadius: 999, background: `var(--d-${p.domain})` }}
+              />
+              <span className="truncate">{p.name}</span>
+            </button>
+          ))}
+        </>
+      )}
+
+      {view === "delete-confirm" && (
+        <div className="chatmenu__confirm">
+          <p>Delete this chat? This can&apos;t be undone.</p>
+          <div className="chatmenu__confirm-actions">
+            <button className="btn" type="button" onClick={() => setView("main")}>
+              Cancel
+            </button>
+            <button
+              className="btn chatmenu__item--danger"
+              type="button"
+              onClick={() => { onDelete(); onClose(); }}
+            >
+              <Icon name="trash" size={13} /> Delete
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ChatRow({
+  chat,
+  active,
+  projects,
+  onNavigate,
+  onChanged,
+  onDeleted,
+}: {
+  chat: Chat;
+  active: boolean;
+  projects: Project[];
+  onNavigate: () => void;
+  /** Rename, pin/unpin, move -- the chat still exists, just refetch. */
+  onChanged: () => void;
+  /** Delete specifically -- the chat is gone, not just changed; the
+   * caller needs to know in case it's the one currently open. */
+  onDeleted: () => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  // Only ever read while renaming (the display span below always renders
+  // chat.title directly) -- so it only needs to be (re-)seeded with the
+  // current title at the moment rename mode starts, not kept in sync via
+  // an effect the rest of the time.
+  const [title, setTitle] = useState(chat.title);
+  const renameRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (renaming) renameRef.current?.select();
+  }, [renaming]);
+
+  const commitRename = async () => {
+    setRenaming(false);
+    const trimmed = title.trim();
+    if (!trimmed || trimmed === chat.title) {
+      setTitle(chat.title);
+      return;
+    }
+    try {
+      await updateChat(chat.id, { title: trimmed });
+      onChanged();
+    } catch {
+      setTitle(chat.title);
+    }
+  };
+
+  return (
+    <div
+      className={`nav-item chat-row ${active ? "is-active" : ""}`}
+      onClick={() => !renaming && onNavigate()}
+    >
+      {chat.pinned && <Icon name="pin" size={11} className="chat-row__pin" />}
+      <span
+        className="dot"
+        style={{ width: 5, height: 5, borderRadius: 999, background: "var(--d-general)", flex: "0 0 5px", opacity: 0.8 }}
+      />
+      {renaming ? (
+        <input
+          ref={renameRef}
+          className="chat-row__rename"
+          value={title}
+          onClick={e => e.stopPropagation()}
+          onChange={e => setTitle(e.target.value)}
+          onBlur={commitRename}
+          onKeyDown={e => {
+            if (e.key === "Enter") { e.preventDefault(); void commitRename(); }
+            if (e.key === "Escape") { setTitle(chat.title); setRenaming(false); }
+          }}
+          autoFocus
+        />
+      ) : (
+        <span className="truncate" style={{ fontSize: 13 }}>{chat.title}</span>
+      )}
+      <span className="count chat-row__time" style={{ fontSize: 10.5 }}>
+        {relativeTime(chat.updated_at)}
+      </span>
+      <button
+        type="button"
+        className={`chat-row__more ${menuOpen ? "is-open" : ""}`}
+        aria-label="Chat options"
+        onClick={e => { e.stopPropagation(); setMenuOpen(o => !o); }}
+      >
+        <Icon name="dots" size={14} />
+      </button>
+      {menuOpen && (
+        <ChatMenu
+          chat={chat}
+          projects={projects}
+          onRename={() => { setTitle(chat.title); setRenaming(true); }}
+          onTogglePin={() => {
+            void updateChat(chat.id, { pinned: !chat.pinned }).then(onChanged);
+          }}
+          onMove={projectId => {
+            void updateChat(chat.id, { project_id: projectId }).then(onChanged);
+          }}
+          onDelete={() => {
+            void deleteChat(chat.id).then(onDeleted);
+          }}
+          onClose={() => setMenuOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
 export const RailNav = () => {
   const pathname = usePathname();
   const router = useRouter();
   const { projects, current, select } = useProjects();
+  const { user, refresh } = useAuth();
   const [switcherOpen, setSwitcherOpen] = useState(false);
+
+  const handleSignOut = async () => {
+    try {
+      await apiLogout();
+    } finally {
+      // RequireAuth (app-shell.tsx) sends the user to /login the moment
+      // useAuth's `user` goes null -- no manual router.push needed here.
+      await refresh();
+    }
+  };
 
   const page = getPageId(pathname);
 
   const main = [
-    { id: "demo",     label: "Live demo",       icon: "bolt",   path: "/demo" },
     { id: "chat",     label: "New chat",         icon: "chat",   path: "/chat" },
-    { id: "projects", label: "Projects",         icon: "folder", count: 1, path: "/projects" },
+    { id: "projects", label: "Projects",         icon: "folder", count: projects.length || undefined, path: "/projects" },
     { id: "graph",    label: "Knowledge graph",  icon: "graph",  path: "/graph" },
-    { id: "rag-demo", label: "RAG Demo",         icon: "flask",  path: "/rag-demo" },
     { id: "settings", label: "Settings",         icon: "cog",    path: "/settings" },
   ];
 
-  // Chats belong to the current project, so the list changes when you switch.
+  // "Recent" is the current project's chats plus every unfiled chat
+  // (chats have no project at all unless created from within one --
+  // app/chat/page.tsx), merged into one recency-sorted list. Unfiled
+  // chats are fetched every time regardless of which project is selected,
+  // since a chat with no project isn't "in" any of them to filter by.
   const [recent, setRecent] = useState<Chat[]>([]);
   const projectId = current?.id;
   useEffect(() => {
     let cancelled = false;
-    if (!projectId) {
-      setRecent([]);
-      return;
-    }
     const load = async () => {
       try {
-        const chats = await listChats(projectId);
-        if (!cancelled) setRecent(chats);
+        const [filed, unfiled] = await Promise.all([
+          projectId ? listChats(projectId) : Promise.resolve([]),
+          listUnfiledChats(),
+        ]);
+        if (cancelled) return;
+        const merged = [...filed, ...unfiled].sort(
+          (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+        );
+        setRecent(merged);
       } catch {
         if (!cancelled) setRecent([]);
       }
@@ -63,6 +302,17 @@ export const RailNav = () => {
       window.removeEventListener(CHATS_CHANGED, load);
     };
   }, [pathname, projectId]);
+
+  const pinnedChats = recent.filter(c => c.pinned);
+  const unpinnedChats = recent.filter(c => !c.pinned);
+
+  const handleChatDeleted = (chatId: string) => {
+    // The one case that can leave the user looking at a page for a chat
+    // that no longer exists -- send them back to a fresh one instead of
+    // leaving a 404'd conversation on screen.
+    if (pathname === `/c/${chatId}`) router.push("/chat");
+    notifyChatsChanged();
+  };
 
   return (
     <aside className="rail">
@@ -137,35 +387,60 @@ export const RailNav = () => {
       </div>
 
       <div className="rail__section" style={{ flex: 1, minHeight: 0 }}>
+        {pinnedChats.length > 0 && (
+          <>
+            <div className="rail__label">Pinned</div>
+            <div className="rail__history" style={{ marginBottom: 12 }}>
+              {pinnedChats.map(chat => (
+                <ChatRow
+                  key={chat.id}
+                  chat={chat}
+                  active={pathname === `/c/${chat.id}`}
+                  projects={projects}
+                  onNavigate={() => router.push(`/c/${chat.id}`)}
+                  onChanged={notifyChatsChanged}
+                  onDeleted={() => handleChatDeleted(chat.id)}
+                />
+              ))}
+            </div>
+          </>
+        )}
         <div className="rail__label">Recent</div>
         <div className="rail__history">
-          {recent.length === 0 && (
+          {unpinnedChats.length === 0 && pinnedChats.length === 0 && (
             <div className="nav-item" style={{ color: "var(--ink-3)", fontSize: 12.5 }}>
               No conversations yet
             </div>
           )}
-          {recent.map(chat => (
-            <div key={chat.id}
-                 className={`nav-item ${pathname === `/c/${chat.id}` ? "is-active" : ""}`}
-                 onClick={() => router.push(`/c/${chat.id}`)}>
-              <span className="dot" style={{
-                width: 5, height: 5, borderRadius: 999,
-                background: "var(--d-general)", flex: "0 0 5px",
-                opacity: 0.8
-              }}/>
-              <span className="truncate" style={{ fontSize: 13 }}>{chat.title}</span>
-              <span className="count" style={{ fontSize: 10.5 }}>{relativeTime(chat.updated_at)}</span>
-            </div>
+          {unpinnedChats.map(chat => (
+            <ChatRow
+              key={chat.id}
+              chat={chat}
+              active={pathname === `/c/${chat.id}`}
+              projects={projects}
+              onNavigate={() => router.push(`/c/${chat.id}`)}
+              onChanged={notifyChatsChanged}
+              onDeleted={() => handleChatDeleted(chat.id)}
+            />
           ))}
         </div>
       </div>
 
       <div className="rail__user">
-        <div className="rail__avatar">N</div>
+        <div className="rail__avatar">{(user?.display_name ?? "?").charAt(0).toUpperCase()}</div>
         <div className="rail__user-meta">
-          <strong>Nexus Local</strong>
-          <span>nexus.local · admin</span>
+          <strong className="truncate">{user?.display_name ?? "…"}</strong>
+          <span className="truncate">{user?.email ?? ""}</span>
         </div>
+        <button
+          type="button"
+          className="rail__signout"
+          title="Sign out"
+          aria-label="Sign out"
+          onClick={handleSignOut}
+        >
+          <Icon name="close" size={13} />
+        </button>
       </div>
     </aside>
   );
@@ -178,12 +453,10 @@ export const TopBar = () => {
   const page = getPageId(pathname);
 
   const labels: Record<string, string[]> = {
-    demo:         ["Demo"],
     chat:         ["Chat", "New conversation"],
     c:            ["Chat", "Conversation"],
     projects:     ["Projects"],
     graph:        ["Knowledge graph"],
-    "rag-demo":   ["RAG Demo", "Knowledge Retrieval Playground"],
     settings:     ["Settings"],
   };
   const trail = labels[page] || [page];

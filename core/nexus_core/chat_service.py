@@ -7,6 +7,7 @@ history and calling the provider.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -16,6 +17,7 @@ from typing import Sequence
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from . import chat_title
 from .memory_client import Fact, MemoryClient
 from .models import Chat, Message
 from .orchestrator import Attachment, Route, select_route
@@ -138,6 +140,7 @@ async def generate_turn(
     memory: MemoryClient | None = None,
     rag: RagClient | None = None,
     attachments: tuple[Attachment, ...] = (),
+    title_model: str | None = None,
 ) -> Turn:
     """Store the user message, answer it, store the answer.
 
@@ -155,8 +158,17 @@ async def generate_turn(
     session.add(user_message)
     await session.flush()
 
-    if chat.title == DEFAULT_CHAT_TITLE:
-        chat.title = _derive_title(content)
+    # Kicked off here, not awaited until after the answer call below, so a
+    # good title costs nothing in wall-clock time: it runs alongside
+    # generation instead of before or after it.
+    is_new_chat = chat.title == DEFAULT_CHAT_TITLE
+    title_task = (
+        asyncio.create_task(
+            chat_title.generate(provider, user_message=content, model=title_model)
+        )
+        if is_new_chat
+        else None
+    )
 
     history = await _load_history(session, chat.id)
 
@@ -202,6 +214,13 @@ async def generate_turn(
             "try again once the provider is reachable."
         )
     latency_ms = round((time.perf_counter() - started) * 1000)
+
+    if title_task is not None:
+        smart_title = await title_task
+        # Falls back to the cheap first-line derivation if the model call
+        # failed or came back empty -- a chat still needs *a* name, even a
+        # bad one, rather than sitting on the placeholder forever.
+        chat.title = smart_title or _derive_title(content)
 
     meta: dict = {
         "route": route.handler,

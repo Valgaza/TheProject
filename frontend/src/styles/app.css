@@ -9,9 +9,10 @@
   color: var(--ink);
 }
 
-/* When on landing, hide rail */
-.app.is-landing { grid-template-columns: 1fr; }
-.app.is-landing .rail { display: none; }
+/* Full-bleed, no rail column — landing and login, nothing that implies a
+   logged-in user with a sidebar to show. */
+.app.is-bare { grid-template-columns: 1fr; }
+.app.is-bare .rail { display: none; }
 
 /* — Sidebar / Rail — */
 .rail {
@@ -118,6 +119,103 @@
   flex: 1;
 }
 
+/* — Chat row: pin indicator, hover-revealed "..." menu, inline rename — */
+.chat-row__pin { flex: 0 0 auto; color: var(--accent); }
+.chat-row__time { transition: opacity var(--dur-2); }
+.chat-row__more {
+  display: none;
+  flex: 0 0 auto;
+  width: 22px; height: 22px;
+  align-items: center; justify-content: center;
+  border: 0; border-radius: 5px;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+  margin-left: auto;
+}
+.chat-row__more:hover { background: var(--line); color: var(--ink); }
+/* Shown on hover/focus, or while its own menu is open (chatmenu-open is
+   set whenever the dropdown is mounted, so the trigger doesn't vanish out
+   from under a menu the user is still using). */
+.chat-row:hover .chat-row__more,
+.chat-row:focus-within .chat-row__more,
+.chat-row .chat-row__more.is-open {
+  display: flex;
+}
+.chat-row:hover .chat-row__time,
+.chat-row:focus-within .chat-row__time {
+  display: none;
+}
+.chat-row__rename {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  padding: 2px 6px;
+  outline: none;
+}
+
+/* — Chat menu dropdown (rename / pin / move / delete) — */
+.chatmenu {
+  position: absolute;
+  top: calc(100% + 4px);
+  /* left/right, not right + min-width: spans the same width as the row
+     it's anchored to (same approach .pswitch__menu already uses below),
+     so it fully covers whatever's underneath instead of leaving a sliver
+     of the next row's text peeking out on the left. */
+  left: 0;
+  right: 0;
+  z-index: 50;
+  /* var(--paper) doesn't exist anywhere in tokens.css -- the real token is
+     --bg-paper. An undefined custom property with no fallback makes the
+     whole background declaration invalid, so this was rendering fully
+     transparent: every dropdown on the rail let whatever was behind it
+     (the next chat row, or the "Recent" section for the project switcher
+     below) show straight through, in both directions -- copied from
+     .pswitch__menu's pre-existing version of the same typo. */
+  background: var(--bg-paper);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px oklch(0 0 0 / 0.14);
+  padding: 4px;
+}
+/* Anchored to a narrow inline wrapper on a project card, not a full-width
+   sidebar row -- left:0;right:0 there would size the menu down to that
+   wrapper's own content width (cramped) instead of a real dropdown width. */
+.chatmenu--card {
+  left: auto;
+  right: 0;
+  width: 230px;
+}
+.chatmenu__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--ink);
+  text-align: left;
+}
+.chatmenu__item:hover { background: var(--veil); }
+.chatmenu__item:disabled { opacity: 0.4; cursor: not-allowed; }
+.chatmenu__item:disabled:hover { background: none; }
+.chatmenu__item--danger { color: oklch(0.5 0.15 25); }
+.chatmenu__item--danger:hover { background: oklch(0.96 0.03 30 / 0.6); }
+.chatmenu__back { color: var(--ink-3); font-size: 12px; }
+.chatmenu__sep { height: 1px; background: var(--line); margin: 4px 2px; }
+.chatmenu__confirm { padding: 10px 8px 6px; }
+.chatmenu__confirm p { margin: 0 0 10px; font-size: 12.5px; color: var(--ink-2); line-height: 1.4; }
+.chatmenu__confirm-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.chatmenu__confirm-actions .btn { height: 30px; padding: 0 12px; font-size: 12.5px; }
+
 .rail__history {
   flex: 1;
   overflow-y: auto;
@@ -141,9 +239,20 @@
   display: grid; place-items: center;
   font: 500 11px/1 var(--font-sans);
 }
-.rail__user-meta { display: flex; flex-direction: column; line-height: 1.2; }
+.rail__user-meta { display: flex; flex-direction: column; line-height: 1.2; flex: 1; min-width: 0; }
 .rail__user-meta strong { font-weight: 500; font-size: 13px; }
 .rail__user-meta span { font-size: 11px; color: var(--ink-3); font-family: var(--font-mono); }
+.rail__signout {
+  display: grid; place-items: center;
+  width: 26px; height: 26px;
+  border: 0; border-radius: 6px;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: background var(--dur-2), color var(--dur-2);
+}
+.rail__signout:hover { background: var(--line); color: var(--ink); }
 
 /* — Main content area — */
 .main {

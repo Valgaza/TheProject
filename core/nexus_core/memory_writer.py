@@ -32,7 +32,7 @@ async def run_write_gate(
     memory: MemoryClient,
     gate_model: str | None,
     chat_id: uuid.UUID,
-    project_id: uuid.UUID,
+    project_id: uuid.UUID | None,
     user_id: uuid.UUID,
     message_id: uuid.UUID,
     user_message: str,
@@ -71,7 +71,17 @@ async def run_write_gate(
             )
             return
 
-        target_project = project_id if decision.scope == "project" else None
+        # An unfiled chat (project_id is None -- created from /chat, never
+        # filed under a project) has nothing for a "project" fact to attach
+        # to. The gate decides scope without knowing whether a project even
+        # exists, so downgrade here rather than silently writing scope
+        # "project" with no project_id, which memory_episodes' own check
+        # constraint would treat as a legitimate row but nothing could ever
+        # actually retrieve by project.
+        scope = decision.scope
+        if scope == "project" and project_id is None:
+            scope = "user"
+        target_project = project_id if scope == "project" else None
 
         # Row first, uuid after. graphiti mints the episode uuid, so it is not
         # knowable until the write returns -- but recording the attempt before
@@ -81,7 +91,7 @@ async def run_write_gate(
             episode = MemoryEpisode(
                 chat_id=chat_id,
                 message_id=message_id,
-                scope=decision.scope,
+                scope=scope,
                 status="pending",
                 reason=decision.reason,
             )
@@ -91,7 +101,7 @@ async def run_write_gate(
 
         result = await memory.ingest(
             decision.statement,
-            scope=decision.scope,
+            scope=scope,
             user_id=user_id,
             project_id=target_project,
         )

@@ -95,13 +95,36 @@ const __TWEAKS_STYLE = `
   .twk-swatch::-moz-color-swatch{border:0;border-radius:5.5px}
 `;
 
+const TWEAKS_STORAGE_KEY = "nexus:appearance-tweaks";
+
 export function useTweaks(defaults: any) {
-  const [values, setValues] = useState(defaults);
+  // Lazy initializer -- runs once, not on every render -- so a stored
+  // choice (accent, font pairing, etc.) survives a reload instead of
+  // resetting to `defaults` every time, which is what made the old
+  // always-open floating panel feel like it "forgot" your pick constantly.
+  const [values, setValues] = useState(() => {
+    try {
+      const stored = window.localStorage.getItem(TWEAKS_STORAGE_KEY);
+      return stored ? { ...defaults, ...JSON.parse(stored) } : defaults;
+    } catch {
+      // Private windows and blocked site data both throw here; fall back
+      // to the defaults rather than fail the whole app over a preference.
+      return defaults;
+    }
+  });
 
   const setTweak = useCallback((keyOrEdits: any, val?: any) => {
     const edits = typeof keyOrEdits === 'object' && keyOrEdits !== null
       ? keyOrEdits : { [keyOrEdits]: val };
-    setValues((prev: any) => ({ ...prev, ...edits }));
+    setValues((prev: any) => {
+      const next = { ...prev, ...edits };
+      try {
+        window.localStorage.setItem(TWEAKS_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // Losing the preference is survivable; failing to render is not.
+      }
+      return next;
+    });
   }, []);
 
   return [values, setTweak];

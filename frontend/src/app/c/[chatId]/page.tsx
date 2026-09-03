@@ -152,40 +152,45 @@ function Thread({ chatId }: { chatId: string }) {
 
   return (
     <div className="convo">
-      <div className="convo__head">
-        <div className="convo__meta">
-          <span className="tag tag--accent">
-            <span className="dot" style={{ background: `var(--d-${domain.id})` }} />
-            {domain.name}
-          </span>
-          <span>{messages.length} messages</span>
-          <span>·</span>
-          <span>{domain.id} pipeline</span>
+      <div className="convo__scroll">
+        <div className="convo__head">
+          <div className="convo__meta">
+            <span className="tag tag--accent">
+              <span className="dot" style={{ background: `var(--d-${domain.id})` }} />
+              {domain.name}
+            </span>
+            <span>{messages.length} messages</span>
+            <span>·</span>
+            <span>{domain.id} pipeline</span>
+          </div>
+          <h1 className="convo__title">{chat?.title ?? "Conversation"}</h1>
         </div>
-        <h1 className="convo__title">{chat?.title ?? "Conversation"}</h1>
+
+        {messages.map(m =>
+          m.role === "user" ? (
+            <UserMessage key={m.id} message={m} />
+          ) : (
+            <AssistantMessage key={m.id} message={m} onViewGraph={() => router.push("/graph")} />
+          )
+        )}
+
+        {busy && <ThinkingMessage />}
+
+        {error && (
+          <div className="msg msg--ai" style={{ color: "var(--d-vision, crimson)" }}>
+            <div className="msg__body">
+              <p>{error}</p>
+            </div>
+          </div>
+        )}
+
+        <div ref={bottomRef} />
       </div>
 
-      {messages.map(m =>
-        m.role === "user" ? (
-          <UserMessage key={m.id} message={m} />
-        ) : (
-          <AssistantMessage key={m.id} message={m} onViewGraph={() => router.push("/graph")} />
-        )
-      )}
-
-      {busy && <ThinkingMessage />}
-
-      {error && (
-        <div className="msg msg--ai" style={{ color: "var(--d-vision, crimson)" }}>
-          <div className="msg__body">
-            <p>{error}</p>
-          </div>
-        </div>
-      )}
-
-      <div ref={bottomRef} />
-
-      <div style={{ marginTop: 32 }}>
+      {/* Outside .convo__scroll on purpose -- a fixed dock, not part of the
+          scrolling history, so it's always in reach instead of scrolling
+          away with a long conversation. */}
+      <div className="convo__composer-dock">
         <Composer
           value={value}
           onChange={setValue}

@@ -15,6 +15,11 @@ from .base import Message, Provider
 
 logger = logging.getLogger(__name__)
 
+# The SDK's own default, used whenever we don't have an override. Duplicated
+# here deliberately -- see the comment in __init__ for why we never pass a
+# bare `None` through to `AsyncOpenAI(base_url=...)`.
+_DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+
 
 class OpenAIProvider(Provider):
     name = "openai"
@@ -28,10 +33,23 @@ class OpenAIProvider(Provider):
         base_url: str | None = None,
         timeout: float = 60.0,
     ) -> None:
+        # Never pass a bare `None` for base_url -- when unset, AsyncOpenAI's
+        # own __init__ falls back to reading os.environ["OPENAI_BASE_URL"]
+        # itself rather than trusting our `None`. If that variable is merely
+        # *present but blank* in the process environment (exactly what
+        # python-dotenv's load_dotenv() does for `OPENAI_BASE_URL=` in
+        # .env -- it sets the OS env var to "", not "unset"), the SDK's own
+        # `if base_url is None` check never catches it, and it silently
+        # builds every request with no host at all (httpx.UnsupportedProtocol
+        # deep inside a retry loop, surfacing as a generic APIConnectionError
+        # with no indication base_url was the cause). Resolving the default
+        # ourselves sidesteps that env-var re-read entirely.
+        resolved_base_url = base_url or _DEFAULT_OPENAI_BASE_URL
+
         # The SDK defaults to 600s with retries. A chat call is answered inline
         # in an HTTP request, so a hung upstream would hang the user's browser
         # for ten minutes; fail in one instead.
-        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+        self._client = AsyncOpenAI(api_key=api_key, base_url=resolved_base_url, timeout=timeout)
         self._chat_model = chat_model
         self._embed_model = embed_model
 

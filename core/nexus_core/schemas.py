@@ -33,6 +33,14 @@ class ProfileOut(BaseModel):
     email: str
 
 
+class AuthConfigOut(BaseModel):
+    """What the login page needs to know before anyone has logged in yet --
+    whether to render the Google button at all. Read with no session, so it
+    carries nothing about who's asking, only what this server supports."""
+
+    google_oauth_enabled: bool
+
+
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
@@ -46,8 +54,19 @@ class ProjectOut(BaseModel):
     name: str
     description: str | None
     domain: str
+    pinned: bool
     created_at: datetime
     updated_at: datetime
+
+
+class ProjectUpdate(BaseModel):
+    """Rename and pin/unpin, as one partial update -- each field left unset
+    leaves that column alone. No move-to-project equivalent here; a project
+    isn't inside anything to move between."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    pinned: bool | None = None
 
 
 class ChatCreate(BaseModel):
@@ -58,10 +77,22 @@ class ChatOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    project_id: uuid.UUID
+    # None for a chat created from /chat directly, not filed under a project.
+    project_id: uuid.UUID | None
     title: str
+    pinned: bool
     created_at: datetime
     updated_at: datetime
+
+
+class ChatUpdate(BaseModel):
+    """Rename, pin/unpin, and move-to-project, all as one partial update --
+    each field left unset leaves that column alone. Nothing required, but
+    an empty body is rejected by the router rather than silently no-op'd."""
+
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    pinned: bool | None = None
+    project_id: uuid.UUID | None = None
 
 
 class MessageCreate(BaseModel):

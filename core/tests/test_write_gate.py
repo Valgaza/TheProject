@@ -300,6 +300,45 @@ async def test_a_user_scope_fact_is_not_filed_under_the_project(db_client, sessi
     assert memory.calls[0]["project_id"] is None
 
 
+async def test_project_scope_is_downgraded_to_user_for_an_unfiled_chat(db_client, session_factory):
+    """The gate decides scope without knowing whether the chat even has a
+    project (2026-09-03: chats can now be unfiled). Deciding "project" on
+    one anyway must not write a memory_episodes row of scope "project"
+    with no project_id -- there'd be nothing that could ever retrieve it
+    by project again."""
+    chat = (await db_client.post("/chats", json={})).json()
+    turn = (
+        await db_client.post(f"/chats/{chat['id']}/messages", json={"content": "hello there"})
+    ).json()
+    memory = FakeMemory(IngestResult(ok=True))
+
+    await run_write_gate(
+        session_factory=session_factory,
+        provider=ScriptedProvider(
+            _gate_json(scope="project", statement="This chat prefers Neo4j.")
+        ),
+        memory=memory,
+        gate_model="gate",
+        chat_id=uuid.UUID(chat["id"]),
+        project_id=None,
+        user_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+        message_id=uuid.UUID(turn["user_message"]["id"]),
+        user_message="we went with Neo4j",
+        assistant_message="noted",
+    )
+
+    assert memory.calls[0]["scope"] == "user"
+    assert memory.calls[0]["project_id"] is None
+
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                select(MemoryEpisode).where(MemoryEpisode.chat_id == uuid.UUID(chat["id"]))
+            )
+        ).scalars().one()
+    assert row.scope == "user"
+
+
 async def test_the_gate_is_told_who_it_is_writing_about():
     """Without a name it writes "The user prefers terse answers", and graphiti
     turns that into an entity literally called "The user"."""
