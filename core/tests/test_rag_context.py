@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 from nexus_core.chat_service import build_prompt, generate_turn
 from nexus_core.orchestrator import select_route
 from nexus_core.rag_client import RagResult, RagSource
+
+USER_ID = uuid.UUID("00000000-0000-0000-0000-0000000000a1")
 
 
 class FakeRag:
@@ -22,10 +26,10 @@ class FakeRag:
         self.boom = boom
         self.queries: list[str] = []
 
-    async def has_documents(self) -> bool:
+    async def has_documents(self, *, user_id, project_id=None) -> bool:
         return self.has_docs
 
-    async def query(self, question: str) -> RagResult | None:
+    async def query(self, question: str, *, user_id, project_id=None) -> RagResult | None:
         self.queries.append(question)
         if self.boom:
             raise RuntimeError("rag is down")
@@ -41,18 +45,18 @@ async def _make_chat(client) -> dict:
 
 
 async def test_routes_to_rag_when_the_project_has_documents():
-    route = await select_route(content="anything", rag=FakeRag(has_docs=True))
+    route = await select_route(content="anything", rag=FakeRag(has_docs=True), user_id=USER_ID)
     assert route.handler == "rag"
 
 
 async def test_routes_to_general_when_rag_is_empty():
-    route = await select_route(content="anything", rag=FakeRag(has_docs=False))
+    route = await select_route(content="anything", rag=FakeRag(has_docs=False), user_id=USER_ID)
     assert route.handler == "general"
     assert "no documents" in route.reason
 
 
 async def test_routes_to_general_when_no_rag_client_is_configured():
-    route = await select_route(content="anything", rag=None)
+    route = await select_route(content="anything", rag=None, user_id=USER_ID)
     assert route.handler == "general"
     assert "no RAG client" in route.reason
 

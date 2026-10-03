@@ -108,6 +108,7 @@ function ChatHomeInner() {
         placeholder="Ask Nexus something — or paste a document, link, or table…"
         busy={busy}
         autoFocus
+        projectId={projectId ?? undefined}
         badge={
           <div className="tag tag--accent">
             <span className="dot" style={{ background: "var(--accent)" }} />

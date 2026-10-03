@@ -170,10 +170,9 @@ supabase/migrations/    the schema, source of truth for what Postgres holds
 tests/                  end-to-end scenarios (opt-in, drives the live stack)
 pipelines/, shared/     empty; the original plan for where RAG and vision
                         would land — see below, that's not where they landed
-RAG/, orchestrator/     the RAG pipeline (RAG/rag_api.py is its HTTP front
-                        door, called by core) and a standalone orchestrator
-                        scaffold — built on a separate branch, merged in
-                        below `pipelines/`'s intended spot
+RAG/                    the RAG pipeline (RAG/rag_api.py is its HTTP front
+                        door, called by core) — built on a separate branch,
+                        merged in below `pipelines/`'s intended spot
 ```
 
 Each service owns its tests: `core/tests/` and `memory/tests/`. `RAG/` owns its
@@ -196,7 +195,6 @@ context folds into the answer.
 | Service | Location | Port | Depends on |
 |---|---|---|---|
 | RAG API | `RAG/rag_api.py`, backed by `RAG/rag_pipeline/` | `8001` | Qdrant |
-| Orchestrator (scaffold, standalone) | `orchestrator/` | `8002` | RAG API, `memory`, SearXNG |
 
 `RAG/rag_api.py` is RAG's own HTTP front door — the only way `core` can
 reach it, since they're separate processes (see
@@ -205,30 +203,21 @@ full "why is this a separate service" writeup; it's not a user-facing
 surface, nothing outside `core` is meant to call it). Fully local — no cloud
 LLM calls anywhere in `RAG/rag_pipeline`.
 
-**Two orchestrators still exist**, doing overlapping jobs: `core`'s
-`select_route()` (above, now doing real work) and the standalone
-`orchestrator/`'s own router (still just a scaffold — its LLM client is a
-stub, nothing calls it in production). Plan is to port `orchestrator/`'s
-useful pieces (its web-search/SearXNG client, its retry logic) into `core`
-and then retire it — see `steps-to-implement-Bhoumish.md` (gitignored, ask
-whoever's working on the orchestrator for the current state).
+There's one orchestrator: `core`'s `select_route()`. A standalone
+`orchestrator/` scaffold existed alongside it for a while, on its own
+process/port, with its own router — but its LLM client was always a stub,
+and nothing in production ever called it. Its two useful pieces, the
+web-search/SearXNG client and its retry logic, were ported into
+`core/nexus_core/web_client.py` and `core/nexus_core/retry.py` on
+2026-09-03, and the scaffold was deleted once nothing depended on it.
 [`.github/IMPORTANT_BUSINESS_LOGIC_FLAGS.md`](.github/IMPORTANT_BUSINESS_LOGIC_FLAGS.md)
 tracks open product/safety decisions the same way `RUNBOOK.md` tracks
 operational ones.
 
 Nothing extra to start: Qdrant and SearXNG are both in the root
 `docker-compose.yml`, and `./start.sh` runs the RAG API alongside `core` and
-`memory`. `RAG/docker-compose.yml` and `orchestrator/docker-compose.yml` were
-folded into the root file on 2026-09-02 and deleted.
-
-The standalone `orchestrator/` scaffold, if you want to poke at it, is the one
-thing still started by hand:
-
-```bash
-cp orchestrator/.env.example orchestrator/.env
-pip install -e "orchestrator"
-uvicorn app.main:app --reload --port 8002 --app-dir orchestrator
-```
+`memory`. `RAG/docker-compose.yml` and the old standalone orchestrator's own
+compose file were folded into the root file on 2026-09-02 and deleted.
 
 The first RAG query after a cold start downloads embedding/reranker models
 from the internet and caches them locally — after that, no internet access is

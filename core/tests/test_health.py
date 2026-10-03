@@ -18,6 +18,7 @@ async def test_health_degrades_when_dependencies_are_unreachable(client):
 
     assert body["memory_service"] == "unreachable"
     assert body["rag_service"] == "unreachable"
+    assert body["web_service"] == "unreachable"
     assert body["database"] == "unreachable"
     assert body["status"] == "degraded"
 

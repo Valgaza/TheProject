@@ -137,6 +137,16 @@ class RagSourceOut(BaseModel):
     heading_path: str = ""
 
 
+class WebSourceOut(BaseModel):
+    """A page SearXNG returned and showed to the model for this turn — same
+    idea as RagSourceOut, but the URL is the whole point: unlike a document
+    chunk, this is something the user could actually go click."""
+
+    title: str
+    url: str
+    snippet: str
+
+
 class TurnOut(BaseModel):
     """Both halves of an exchange.
 
@@ -155,6 +165,10 @@ class TurnOut(BaseModel):
     # What RAG contributed. Empty when the route wasn't "rag", nothing was
     # retrieved, or RAG was unreachable -- same non-fatal contract as memory.
     rag_sources: list[RagSourceOut] = []
+    # What the web contributed. Empty when the message didn't ask for a web
+    # search, nothing came back, or SearXNG was unreachable -- same
+    # non-fatal contract as memory and RAG.
+    web_sources: list[WebSourceOut] = []
 
 
 class MemoryEpisodeOut(BaseModel):

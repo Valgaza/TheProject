@@ -201,6 +201,7 @@ function Thread({ chatId }: { chatId: string }) {
           }}
           placeholder="Continue the conversation…"
           rows={2}
+          projectId={chat?.project_id ?? undefined}
           busy={busy}
           autoFocus
           badge={

@@ -66,6 +66,13 @@ class ChunkMetadata(BaseModel):
     heading_path: str = ""  # e.g. "Chapter 1 > Section 2"
     char_count: int = 0
     extra: dict[str, Any] = Field(default_factory=dict)
+    # Tenant tags, stamped on by IngestionPipeline.ingest() after chunking --
+    # the chunkers themselves stay ignorant of tenancy, they just split text.
+    # "" (not None) is the deliberate sentinel for "no owner"/"no project" on
+    # both fields, matching what QdrantStore.upsert() writes to the payload --
+    # keeps every filter a plain exact-match, no null-handling anywhere.
+    user_id: str = ""
+    project_id: str = ""
 
 
 class Chunk(BaseModel):

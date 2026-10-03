@@ -24,6 +24,7 @@ from .memory_client import MemoryClient
 from .providers import Provider, build_provider
 from .rag_client import RagClient
 from .routers import auth_router, chats_router, projects_router
+from .web_client import WebClient
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class HealthResponse(BaseModel):
     chat_model: str
     memory_service: str
     rag_service: str
+    web_service: str
     database: str
 
 
@@ -49,10 +51,10 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     app.state.provider = provider
     app.state.memory = MemoryClient(http, settings.memory_service_url)
-    # Constructed and available on app.state from here on, same as memory —
-    # not called by anything yet. Wiring it into select_route()/chat_service
-    # is the next step, not this one.
     app.state.rag = RagClient(http, settings.rag_service_url)
+    # Unlike memory/rag, never called automatically -- only when a message
+    # actually asks for a web search (orchestrator.wants_web_search()).
+    app.state.web = WebClient(http, settings.searxng_url)
     app.state.http = http
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)
@@ -160,6 +162,16 @@ async def health(request: Request) -> HealthResponse:
         rag_status = "unreachable"
 
     try:
+        # SearXNG has no dedicated /health -- a plain GET / on a healthy
+        # instance returns its search UI page, which is all this needs to
+        # confirm.
+        response = await http.get(settings.searxng_url, timeout=3.0)
+        web_status = "ok" if response.status_code == 200 else "degraded"
+    except Exception as exc:
+        logger.warning("SearXNG unreachable: %s", exc)
+        web_status = "unreachable"
+
+    try:
         async with request.app.state.session_factory() as session:
             await session.execute(text("select 1"))
         database_status = "ok"
@@ -167,8 +179,9 @@ async def health(request: Request) -> HealthResponse:
         logger.error("Database unreachable: %s", exc)
         database_status = "unreachable"
 
-    # RAG isn't required the way memory/database are — everything above it
-    # already treats it as optional, so it doesn't affect overall `status`.
+    # Neither RAG nor web search is required the way memory/database are —
+    # both are already treated as optional everywhere else, so neither
+    # affects overall `status`.
     healthy = memory_status == "ok" and database_status == "ok"
     return HealthResponse(
         status="ok" if healthy else "degraded",
@@ -176,5 +189,6 @@ async def health(request: Request) -> HealthResponse:
         chat_model=settings.chat_model,
         memory_service=memory_status,
         rag_service=rag_status,
+        web_service=web_status,
         database=database_status,
     )

@@ -33,6 +33,10 @@ type ComposerProps = {
   autoFocus?: boolean;
   /** What answered, if anything has yet — a label, not a control. */
   badge?: React.ReactNode;
+  /** The project this composer's chat belongs to, if any -- tags an upload
+   * so it's scoped to that project instead of just this user personally.
+   * Not the sidebar's selected project; the actual chat's own project_id. */
+  projectId?: string;
 };
 
 export function Composer({
@@ -45,6 +49,7 @@ export function Composer({
   busy = false,
   autoFocus = false,
   badge,
+  projectId,
 }: ComposerProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -65,7 +70,7 @@ export function Composer({
       const id = `${file.name}-${Date.now()}`;
       setUploads(prev => [...prev, { id, name: file.name, status: "uploading" }]);
       try {
-        const result = await uploadDocument(file);
+        const result = await uploadDocument(file, projectId);
         setUploads(prev =>
           prev.map(u =>
             u.id === id

@@ -96,17 +96,17 @@ services:
 
   # ── SearXNG: private web search ──────────────────────────────────────────
   # Self-hosted metasearch, so web queries never reach a third-party search
-  # API. NOT USED BY ANYTHING YET — only the standalone orchestrator/ scaffold
-  # talks to it, and that isn't part of the running system. It starts here
-  # ready for when web search is ported into core. Safe to comment out until
-  # then if you'd rather not run an idle container.
+  # API. Wired into core 2026-09-03 (core/nexus_core/web_client.py) — a turn
+  # only calls it when the message asks to search the web/internet, the one
+  # deliberate exception to everything else in this system working offline.
+  # Config moved here from the now-deleted orchestrator/searxng/ scaffold.
   searxng:
     image: searxng/searxng:latest
     container_name: nexus-searxng
     ports:
       - "8080:8080"
     volumes:
-      - ./orchestrator/searxng:/etc/searxng:rw
+      - ./docker/searxng:/etc/searxng:rw
     environment:
       - SEARXNG_BASE_URL=http://localhost:8080/
     restart: unless-stopped

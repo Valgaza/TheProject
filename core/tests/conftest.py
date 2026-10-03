@@ -71,6 +71,7 @@ class FakeSettings:
     # Hosts that cannot resolve, so the health check exercises its failure path.
     memory_service_url = "http://memory.invalid"
     rag_service_url = "http://rag.invalid"
+    searxng_url = "http://searxng.invalid"
     # A real secret so create_session_token/decode_session_token actually
     # work in tests — doesn't need to match any real deployment's secret,
     # only itself, within one test run.
@@ -129,7 +130,7 @@ def _reset_optional_clients() -> None:
     not error — it silently changes behaviour, which is worse. A test that
     wants one sets it explicitly; a test that doesn't should see none.
     """
-    for attribute in ("memory", "rag"):
+    for attribute in ("memory", "rag", "web"):
         if hasattr(app.state, attribute):
             delattr(app.state, attribute)
 

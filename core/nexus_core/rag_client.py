@@ -13,6 +13,7 @@ one more try before giving up on this source for the turn.
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass
 
 import httpx
@@ -47,20 +48,27 @@ class RagClient:
         self._http = http
         self._base_url = base_url.rstrip("/")
 
-    async def has_documents(self) -> bool:
+    async def has_documents(
+        self, *, user_id: uuid.UUID, project_id: uuid.UUID | None = None
+    ) -> bool:
         """Cheap existence check — no embedding, search, or reranking. This
         is the "cheap deterministic signal" select_route() needs to decide
         whether RAG is even worth calling for a turn, before anything costs
         a real query or a model call.
 
-        NOTE: this is global, not per-user or per-project. RAG/rag_pipeline
-        has no scoping concept yet — one shared collection for everyone,
-        unlike memory's group_id scoping. Fine while there's one client;
-        a real gap the day this serves more than one.
+        Scoped to this user (or project, when given) the same way
+        MemoryClient.search() is — RAG/rag_pipeline gained per-user/project
+        tagging 2026-09-04; a project's documents and a user's own unfiled
+        uploads no longer share one global answer.
         """
         try:
             response = await self._http.get(
-                f"{self._base_url}/api/status", timeout=STATUS_TIMEOUT_SECONDS
+                f"{self._base_url}/api/status",
+                params={
+                    "user_id": str(user_id),
+                    "project_id": str(project_id) if project_id else None,
+                },
+                timeout=STATUS_TIMEOUT_SECONDS,
             )
             response.raise_for_status()
         except Exception as exc:
@@ -70,22 +78,35 @@ class RagClient:
             return True
         return response.json().get("points_count", 0) > 0
 
-    async def query(self, question: str) -> RagResult | None:
-        """Assembled document context for a question. None on any failure —
-        same contract as MemoryClient.search() returning []."""
+    async def query(
+        self,
+        question: str,
+        *,
+        user_id: uuid.UUID,
+        project_id: uuid.UUID | None = None,
+    ) -> RagResult | None:
+        """Assembled document context for a question, scoped to this user's
+        (or project's) own documents. None on any failure — same contract
+        as MemoryClient.search() returning []."""
         try:
             return await with_retry(
-                lambda: self._query_once(question),
+                lambda: self._query_once(question, user_id, project_id),
                 name="rag",
             )
         except Exception as exc:
             logger.warning("RAG query failed, answering without it: %s", exc)
             return None
 
-    async def _query_once(self, question: str) -> RagResult:
+    async def _query_once(
+        self, question: str, user_id: uuid.UUID, project_id: uuid.UUID | None
+    ) -> RagResult:
         response = await self._http.post(
             f"{self._base_url}/api/query",
-            data={"question": question},
+            data={
+                "question": question,
+                "user_id": str(user_id),
+                "project_id": str(project_id) if project_id else None,
+            },
             timeout=QUERY_TIMEOUT_SECONDS,
         )
         response.raise_for_status()

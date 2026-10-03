@@ -31,7 +31,9 @@ from ..schemas import (
     RagSourceOut,
     RouteOut,
     TurnOut,
+    WebSourceOut,
 )
+from ..web_client import WebClient
 
 router = APIRouter(prefix="/chats", tags=["chats"])
 
@@ -63,6 +65,10 @@ def _memory(request: Request) -> MemoryClient | None:
 
 def _rag(request: Request) -> RagClient | None:
     return getattr(request.app.state, "rag", None)
+
+
+def _web(request: Request) -> WebClient | None:
+    return getattr(request.app.state, "web", None)
 
 
 @router.get("", response_model=list[ChatOut])
@@ -200,6 +206,7 @@ async def create_message(
         user_id=user_id,
         memory=_memory(request),
         rag=_rag(request),
+        web=_web(request),
         title_model=request.app.state.settings.gate_model,
     )
     # Commit before scheduling, not after. FastAPI runs a background task
@@ -245,6 +252,10 @@ async def create_message(
                 heading_path=s.heading_path,
             )
             for s in turn.rag_sources
+        ],
+        web_sources=[
+            WebSourceOut(title=s.title, url=s.url, snippet=s.snippet)
+            for s in turn.web_sources
         ],
     )
 

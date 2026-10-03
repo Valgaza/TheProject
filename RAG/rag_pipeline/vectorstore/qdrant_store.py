@@ -136,6 +136,11 @@ class QdrantStore(VectorStore):
                     "total_chunks": chunk.metadata.total_chunks,
                     "heading_path": chunk.metadata.heading_path,
                     "char_count": chunk.metadata.char_count,
+                    # "" sentinel for "no owner"/"no project" (see
+                    # ChunkMetadata) so every scoped read is a plain
+                    # MatchValue, never a null-handling special case.
+                    "user_id": chunk.metadata.user_id,
+                    "project_id": chunk.metadata.project_id,
                 }
                 if chunk.metadata.page_number is not None:
                     payload["page_number"] = chunk.metadata.page_number
@@ -252,9 +257,21 @@ class QdrantStore(VectorStore):
             logger.error("Failed to delete collection: %s", e)
             return False
 
-    def count(self) -> int:
-        """Return the number of points in the collection."""
+    def count(self, filters: dict[str, Any] | None = None) -> int:
+        """Return the number of points in the collection, optionally scoped.
+
+        Unlike get_collection_info() (whole-collection stats, no filter
+        support), Qdrant's own count endpoint takes a real filter -- this is
+        what has_documents()'s per-user/per-project check is built on.
+        """
         try:
+            if filters:
+                result = self._client.count(
+                    collection_name=self._collection_name,
+                    count_filter=self._build_filter(filters),
+                    exact=True,
+                )
+                return result.count
             info = self._client.get_collection(self._collection_name)
             return info.points_count or 0
         except Exception:

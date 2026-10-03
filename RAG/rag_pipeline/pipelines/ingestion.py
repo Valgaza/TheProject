@@ -60,11 +60,24 @@ class IngestionPipeline:
             self._vector_store.ensure_collection(dense_dim=dim)
             self._collection_ready = True
 
-    def ingest(self, file_path: str | Path) -> IngestionStats:
+    def ingest(
+        self,
+        file_path: str | Path,
+        *,
+        user_id: str = "",
+        project_id: str = "",
+    ) -> IngestionStats:
         """Ingest a single file through the full pipeline.
 
         Args:
             file_path: Path to the file to ingest.
+            user_id: Owner of this document, for scoped retrieval later.
+                Defaults to "" (unscoped) so direct pipeline use -- the CLI,
+                this package's own tests -- keeps working unchanged; the real
+                HTTP surface (rag_api.py) always passes a real one.
+            project_id: "" (the default) means "not filed under a project" --
+                the same sentinel QdrantStore's payload and the query-side
+                filters use, so every scope check is a plain exact match.
 
         Returns:
             IngestionStats with processing metrics.
@@ -92,6 +105,11 @@ class IngestionPipeline:
                 chunker = self._recursive_chunker
 
             chunks = chunker.chunk_batch(documents)
+            # Stamped here rather than threaded through the chunkers -- they
+            # split text and don't need to know who's asking for it.
+            for chunk in chunks:
+                chunk.metadata.user_id = user_id
+                chunk.metadata.project_id = project_id
             stats.chunks_created = len(chunks)
             logger.info("Created %d chunks", len(chunks))
 

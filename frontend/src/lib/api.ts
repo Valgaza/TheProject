@@ -317,14 +317,16 @@ export type UploadResult = {
  * directly to :8000 -- not proxied through core. Fire-and-await, not
  * fire-and-forget: the composer shows real progress/failure per file.
  *
- * NOTE: RAG/rag_api.py's /api/ingest takes no project or user id -- every
- * upload lands in one shared, global document pool, not scoped to the
- * project it was uploaded from. Tracked as a known gap ("Per-user RAG
- * scoping" in steps-to-implement-Bhoumish.md), not fixed by this.
+ * Scoped the same way memory's ingest() above is: user_id always (from the
+ * logged-in session), project_id only when this upload happened inside a
+ * project. RAG/rag_api.py trusts whichever ids are passed here, same caveat
+ * as scopeQuery() above -- not closed by this change, tracked separately.
  */
-export async function uploadDocument(file: File): Promise<UploadResult> {
+export async function uploadDocument(file: File, projectId?: string): Promise<UploadResult> {
   const form = new FormData();
   form.append("file", file);
+  form.append("user_id", requireCurrentUserId());
+  if (projectId) form.append("project_id", projectId);
   const response = await fetch(`${RAG_URL}/api/ingest`, { method: "POST", body: form });
   const body = await response.json().catch(() => null);
   if (!response.ok) {

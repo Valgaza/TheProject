@@ -102,6 +102,7 @@ class Settings:
         # ── Service wiring ───────────────────────────────────────────────────
         self.memory_service_url = _optional("MEMORY_SERVICE_URL", "http://localhost:8000")
         self.rag_service_url = _optional("RAG_SERVICE_URL", "http://localhost:8001")
+        self.searxng_url = _optional("SEARXNG_URL", "http://localhost:8080")
         self.port = int(_optional("CORE_PORT", "8100"))
         self.cors_origins = [
             origin.strip()

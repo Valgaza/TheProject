@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import uuid
+
 import httpx
 import pytest
 
 from nexus_core.rag_client import RagClient, RagResult, RagSource
+
+USER_ID = uuid.UUID("00000000-0000-0000-0000-0000000000a1")
 
 
 @pytest.fixture(autouse=True)
@@ -30,7 +34,7 @@ async def test_has_documents_true_when_the_collection_is_non_empty():
     )
     async with httpx.AsyncClient(transport=transport) as http:
         client = RagClient(http, "http://rag.invalid")
-        assert await client.has_documents() is True
+        assert await client.has_documents(user_id=USER_ID) is True
 
 
 async def test_has_documents_false_when_the_collection_is_empty():
@@ -39,7 +43,7 @@ async def test_has_documents_false_when_the_collection_is_empty():
     )
     async with httpx.AsyncClient(transport=transport) as http:
         client = RagClient(http, "http://rag.invalid")
-        assert await client.has_documents() is False
+        assert await client.has_documents(user_id=USER_ID) is False
 
 
 async def test_has_documents_fails_open_when_the_status_check_errors():
@@ -52,7 +56,7 @@ async def test_has_documents_fails_open_when_the_status_check_errors():
     transport = httpx.MockTransport(unreachable)
     async with httpx.AsyncClient(transport=transport) as http:
         client = RagClient(http, "http://rag.invalid")
-        assert await client.has_documents() is True
+        assert await client.has_documents(user_id=USER_ID) is True
 
 
 # ── query ─────────────────────────────────────────────────────────────────────
@@ -73,7 +77,7 @@ async def test_query_parses_the_prompt_and_sources():
     transport = httpx.MockTransport(respond)
     async with httpx.AsyncClient(transport=transport) as http:
         client = RagClient(http, "http://rag.invalid")
-        result = await client.query("what does the handbook say?")
+        result = await client.query("what does the handbook say?", user_id=USER_ID)
 
     assert result == RagResult(
         prompt="Context:\n...",
@@ -88,7 +92,7 @@ async def test_query_returns_none_rather_than_raising():
     transport = httpx.MockTransport(unreachable)
     async with httpx.AsyncClient(transport=transport) as http:
         client = RagClient(http, "http://rag.invalid")
-        assert await client.query("anything") is None
+        assert await client.query("anything", user_id=USER_ID) is None
 
 
 async def test_query_retries_a_server_error_then_succeeds():
@@ -103,7 +107,7 @@ async def test_query_retries_a_server_error_then_succeeds():
     transport = httpx.MockTransport(respond)
     async with httpx.AsyncClient(transport=transport) as http:
         client = RagClient(http, "http://rag.invalid")
-        result = await client.query("anything")
+        result = await client.query("anything", user_id=USER_ID)
 
     assert len(calls) == 3
     assert result.prompt == "ok"
@@ -121,7 +125,7 @@ async def test_query_does_not_retry_a_client_error():
     transport = httpx.MockTransport(respond)
     async with httpx.AsyncClient(transport=transport) as http:
         client = RagClient(http, "http://rag.invalid")
-        result = await client.query("anything")
+        result = await client.query("anything", user_id=USER_ID)
 
     assert len(calls) == 1
     assert result is None

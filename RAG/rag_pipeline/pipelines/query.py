@@ -114,9 +114,18 @@ class QueryPipeline:
         )
 
     def collection_info(self) -> dict[str, Any]:
-        """Cheap collection stats (point count etc.) with no embedding,
-        search, or reranking — useful for callers (like the orchestrator)
-        that just want to know "is there anything in here at all" without
-        paying for a full query.
+        """Cheap whole-collection stats (point count etc.) with no
+        embedding, search, or reranking — no scoping, kept around for
+        debugging the raw collection rather than answering "does this user
+        have anything ingested" (see scoped_point_count for that).
         """
         return self._retriever._vector_store.get_collection_info()
+
+    def scoped_point_count(self, filters: dict[str, Any]) -> int:
+        """How many chunks match this owner/project — the same "cheap
+        deterministic signal, no embedding or search" existence check
+        collection_info() offered, just scoped instead of global. Backs
+        /api/status, which is what core's has_documents() calls before
+        deciding whether RAG is even worth querying for a turn.
+        """
+        return self._retriever._vector_store.count(filters=filters)

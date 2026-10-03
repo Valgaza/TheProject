@@ -20,10 +20,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from . import chat_title
 from .memory_client import Fact, MemoryClient
 from .models import Chat, Message
-from .orchestrator import Attachment, Route, select_route
+from .orchestrator import Attachment, Route, select_route, wants_web_search
 from .providers.base import Message as ProviderMessage
 from .providers.base import Provider
 from .rag_client import RagClient, RagResult, RagSource
+from .web_client import WebClient, WebSource
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ class Turn:
     route: Route
     facts: tuple[Fact, ...] = ()
     rag_sources: tuple[RagSource, ...] = ()
+    web_sources: tuple[WebSource, ...] = ()
 
 
 def _derive_title(content: str) -> str:
@@ -104,25 +106,45 @@ def render_rag_context(rag_result: RagResult) -> str:
     )
 
 
+def render_web_context(sources: Sequence[WebSource]) -> str:
+    """Live web results as a system message, same framing rule as
+    render_memory/render_rag_context: material to use, not instructions,
+    explicitly allowed to be irrelevant. Includes the URL per result so the
+    model can cite what it's drawing from, the one context source here that
+    plausibly needs a citation a person could actually go check."""
+    lines = "\n".join(f"- {s.title} ({s.url}): {s.snippet}" for s in sources)
+    return (
+        "Web search results, relevant to what was just asked:\n"
+        f"{lines}\n\n"
+        "Use them where they answer the question, and cite the URL when you "
+        "do. If none of them are actually relevant, say so rather than "
+        "guessing from them anyway."
+    )
+
+
 def build_prompt(
     history: list[Message],
     facts: Sequence[Fact] = (),
     rag_result: RagResult | None = None,
+    web_sources: Sequence[WebSource] = (),
 ) -> list[ProviderMessage]:
-    """The system prompt, then recalled memory, then retrieved documents, then
-    the conversation.
+    """The system prompt, then recalled memory, then retrieved documents,
+    then live web results, then the conversation.
 
-    Both memory and RAG context go above the transcript so the turn the user
+    All three context sources go above the transcript so the turn the user
     just typed stays the most recent thing in the window, and stays what the
-    model is answering. Memory first (durable, about the person) then RAG
-    (specific to this one question) — broad to narrow, right before the live
-    conversation.
+    model is answering. Memory first (durable, about the person), then RAG
+    (specific to this project's documents), then the web (specific to this
+    one question, and the only source that isn't local) — broad to narrow,
+    right before the live conversation.
     """
     prompt: list[ProviderMessage] = [{"role": "system", "content": SYSTEM_PROMPT}]
     if facts:
         prompt.append({"role": "system", "content": render_memory(facts)})
     if rag_result is not None and rag_result.prompt:
         prompt.append({"role": "system", "content": render_rag_context(rag_result)})
+    if web_sources:
+        prompt.append({"role": "system", "content": render_web_context(web_sources)})
     for message in history:
         if message.role == "system":
             continue
@@ -139,6 +161,7 @@ async def generate_turn(
     user_id: uuid.UUID,
     memory: MemoryClient | None = None,
     rag: RagClient | None = None,
+    web: WebClient | None = None,
     attachments: tuple[Attachment, ...] = (),
     title_model: str | None = None,
 ) -> Turn:
@@ -147,7 +170,13 @@ async def generate_turn(
     Both messages are written even if generation fails — the transcript records
     what was said, and a turn that errored is still something that was said.
     """
-    route = await select_route(content=content, attachments=attachments, rag=rag)
+    route = await select_route(
+        content=content,
+        attachments=attachments,
+        rag=rag,
+        user_id=user_id,
+        project_id=chat.project_id,
+    )
 
     user_message = Message(
         chat_id=chat.id,
@@ -193,14 +222,30 @@ async def generate_turn(
     rag_result: RagResult | None = None
     if route.handler == "rag" and rag is not None:
         try:
-            rag_result = await rag.query(content)
+            rag_result = await rag.query(content, user_id=user_id, project_id=chat.project_id)
         except Exception:
             # rag.query() already catches its own transport failures and
             # returns None; this catches anything else, same reasoning as
             # the memory search above.
             logger.exception("RAG query raised for chat=%s", chat.id)
 
-    prompt = build_prompt(history, facts, rag_result)
+    # Independent of route.handler entirely -- this can fire alongside
+    # "general" or "rag" alike, the way memory search does. Unlike memory
+    # and RAG, it never runs unasked: everything else here works offline,
+    # and web search is the deliberate exception, not a default.
+    web_sources: tuple[WebSource, ...] = ()
+    if web is not None and wants_web_search(content):
+        try:
+            result = await web.search(content)
+            if result:
+                web_sources = result
+        except Exception:
+            # web.search() already catches its own transport failures and
+            # returns None; this catches anything else, same reasoning as
+            # the memory search and RAG query above.
+            logger.exception("Web search raised for chat=%s", chat.id)
+
+    prompt = build_prompt(history, facts, rag_result, web_sources)
 
     started = time.perf_counter()
     error: str | None = None
@@ -242,6 +287,10 @@ async def generate_turn(
             }
             for s in (rag_result.sources if rag_result else ())
         ],
+        "web_sources": [
+            {"title": s.title, "url": s.url, "snippet": s.snippet}
+            for s in web_sources
+        ],
     }
     if error is not None:
         meta["error"] = error
@@ -256,13 +305,14 @@ async def generate_turn(
     await session.flush()
 
     logger.info(
-        "turn chat=%s handler=%s latency_ms=%d history=%d recalled=%d rag_sources=%d%s",
+        "turn chat=%s handler=%s latency_ms=%d history=%d recalled=%d rag_sources=%d web_sources=%d%s",
         chat.id,
         route.handler,
         latency_ms,
         len(history),
         len(facts),
         len(rag_result.sources) if rag_result else 0,
+        len(web_sources),
         " FAILED" if error else "",
     )
     return Turn(
@@ -271,4 +321,5 @@ async def generate_turn(
         route=route,
         facts=tuple(facts),
         rag_sources=rag_result.sources if rag_result else (),
+        web_sources=web_sources,
     )

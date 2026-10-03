@@ -20,7 +20,7 @@ import logging
 import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -117,9 +117,32 @@ class QueryResponse(BaseModel):
 ALLOWED_EXTENSIONS = {".pdf", ".md", ".markdown", ".mdx"}
 
 
+def _scope_filter(user_id: str, project_id: str | None) -> dict[str, str]:
+    """The filter a scoped read should apply.
+
+    A project already belongs to exactly one user (enforced in core's own
+    Postgres schema, not re-checked here), so matching project_id alone is
+    enough once one is given. No project means "this user's own, unfiled
+    uploads" -- user_id plus the "" project_id sentinel, so another user's
+    loose uploads (or this user's project-filed ones) don't leak in.
+    """
+    if project_id:
+        return {"project_id": project_id}
+    return {"user_id": user_id, "project_id": ""}
+
+
 @app.post("/api/ingest", response_model=IngestResponse)
-async def ingest_document(file: UploadFile = File(...)):
-    """Upload and ingest a document into the vector store."""
+async def ingest_document(
+    file: UploadFile = File(...),
+    user_id: str = Form(...),
+    project_id: str | None = Form(None),
+):
+    """Upload and ingest a document into the vector store, tagged with who
+    it belongs to. Every real caller is core (rag_client.py), which always
+    has an authenticated user_id in hand; there's no legitimate unscoped
+    upload through this HTTP surface, unlike IngestionPipeline.ingest()
+    itself, which stays optional for direct/CLI use.
+    """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided.")
 
@@ -141,9 +164,12 @@ async def ingest_document(file: UploadFile = File(...)):
         dest = tmp_path.parent / file.filename
         tmp_path.rename(dest)
 
-        logger.info("Ingesting uploaded file: %s (%d bytes)", file.filename, len(content))
+        logger.info(
+            "Ingesting uploaded file: %s (%d bytes) user_id=%s project_id=%s",
+            file.filename, len(content), user_id, project_id,
+        )
         pipeline = _get_ingest_pipeline()
-        stats = pipeline.ingest(dest)
+        stats = pipeline.ingest(dest, user_id=user_id, project_id=project_id or "")
 
         return IngestResponse(
             success=len(stats.errors) == 0,
@@ -165,14 +191,23 @@ async def ingest_document(file: UploadFile = File(...)):
 
 
 @app.post("/api/query", response_model=QueryResponse)
-async def query_knowledge_base(question: str = Form(...)):
-    """Query the knowledge base and return the assembled prompt."""
+async def query_knowledge_base(
+    question: str = Form(...),
+    user_id: str = Form(...),
+    project_id: str | None = Form(None),
+):
+    """Query the knowledge base and return the assembled prompt, scoped to
+    whichever documents this user (or their current project) actually owns.
+    """
     if not question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
-    logger.info("Query: %s", question[:120])
+    logger.info("Query: %s (user_id=%s project_id=%s)", question[:120], user_id, project_id)
     pipeline = _get_query_pipeline()
-    result = pipeline.query(question=question.strip())
+    result = pipeline.query(
+        question=question.strip(),
+        filters=_scope_filter(user_id, project_id),
+    )
 
     ctx = result.assembled_context
 
@@ -205,10 +240,16 @@ async def health():
 
 
 @app.get("/api/status")
-async def status():
-    """Cheap collection stats (point count etc.) — no embedding, search, or
-    reranking involved. Used by core to check whether there's anything
-    ingested at all before bothering to run a full query.
+async def status(
+    user_id: str = Query(...),
+    project_id: str | None = Query(None),
+):
+    """Cheap, scoped existence check — no embedding, search, or reranking
+    involved. Used by core to decide whether THIS user's (or project's) RAG
+    is worth querying at all before bothering to run a full query. Scoped
+    the same way /api/query is, so has_documents() and query() always agree
+    on what "this project/user has documents" means.
     """
     pipeline = _get_query_pipeline()
-    return pipeline.collection_info()
+    points_count = pipeline.scoped_point_count(_scope_filter(user_id, project_id))
+    return {"points_count": points_count}
