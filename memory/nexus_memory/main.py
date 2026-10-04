@@ -210,12 +210,17 @@ async def lifespan(app: FastAPI):
         # server (real OpenAI itself, once credits exist) would work with
         # either client; a Chat-Completions-only OpenAI-compatible server
         # (Gemini now, quite possibly a local model later too) only works
-        # with this one.
+        # with this one. It also defaults to a 16K token ceiling instead of 8K.
         llm_client=OpenAIGenericClient(
             config=LLMConfig(
                 api_key=cfg.openai_api_key,
                 base_url=cfg.openai_base_url,
                 model=cfg.extraction_model,
+                # Graphiti farms cheaper sub-steps out to small_model. With
+                # one local model serving everything, pointing it at the same
+                # name stops graphiti reaching for an OpenAI default that
+                # isn't installed here.
+                small_model=cfg.extraction_model,
                 max_tokens=4096,
             ),
         ),

@@ -13,3 +13,4 @@ dist/
 steps-to-implement-Bhoumish.md
 PROGRESS_SUMMARY.md
 .claude/
+.ollama-serve.log

@@ -42,6 +42,7 @@ class Settings:
         # of the system is pointed at. graphiti's own LLMConfig and
         # OpenAIEmbedderConfig already accept base_url -- see main.py, which
         # is the only place this needs threading through.
+        # Unset means the real OpenAI; Ollama is http://localhost:11434/v1.
         self.openai_base_url = os.getenv("OPENAI_BASE_URL") or None
 
         # The model graphiti uses to pull entities and relationships out of an
