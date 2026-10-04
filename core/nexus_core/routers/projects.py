@@ -1,8 +1,9 @@
 """Projects, and the chats that live under them.
 
-Auth is deferred, so every project belongs to the single configured demo user.
-When Supabase Auth lands, ``user_id`` comes from the verified token instead of
-settings and these handlers barely change.
+Real auth landed 2026-09-02 — user_id now comes from the session cookie
+(see ../auth.py), not from settings. Exactly the "these handlers barely
+change" the old docstring here predicted: every call site below is
+unchanged, only where _current_user_id gets its answer moved.
 """
 
 from __future__ import annotations
@@ -13,15 +14,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..auth import current_user_id as _current_user_id
 from ..db import session_dependency
 from ..models import Chat, Project
-from ..schemas import ChatCreate, ChatOut, ProjectCreate, ProjectOut
+from ..schemas import ChatCreate, ChatOut, ProjectCreate, ProjectOut, ProjectUpdate
 
 router = APIRouter(prefix="/projects", tags=["projects"])
-
-
-def _current_user_id(request: Request) -> uuid.UUID:
-    return request.app.state.settings.demo_user_id
 
 
 @router.get("", response_model=list[ProjectOut])
@@ -68,6 +66,47 @@ async def get_project(
     session: AsyncSession = Depends(session_dependency),
 ) -> Project:
     return await _get_project(session, project_id, _current_user_id(request))
+
+
+@router.patch("/{project_id}", response_model=ProjectOut)
+async def update_project(
+    project_id: uuid.UUID,
+    body: ProjectUpdate,
+    request: Request,
+    session: AsyncSession = Depends(session_dependency),
+) -> Project:
+    """Rename or pin/unpin -- whichever fields are set. No move, the way
+    chats have one: a project isn't inside anything to move between."""
+    if body.name is None and body.description is None and body.pinned is None:
+        raise HTTPException(status_code=422, detail="nothing to update")
+
+    project = await _get_project(session, project_id, _current_user_id(request))
+    if body.name is not None:
+        project.name = body.name
+    if body.description is not None:
+        project.description = body.description
+    if body.pinned is not None:
+        project.pinned = body.pinned
+
+    await session.flush()
+    return project
+
+
+@router.delete("/{project_id}", status_code=204)
+async def delete_project(
+    project_id: uuid.UUID,
+    request: Request,
+    session: AsyncSession = Depends(session_dependency),
+) -> None:
+    """Removes the project and every chat inside it -- a much bigger blast
+    radius than deleting a single chat, so the frontend needs a confirm
+    step that actually says so. Same rule as chat deletion: anything the
+    write gate already extracted into the knowledge graph survives: Neo4j
+    isn't touched by this at all, and its group_ids are already namespaced
+    by project_id, not implicitly renumbered if this project_id is reused
+    (it never will be -- ids aren't reused)."""
+    project = await _get_project(session, project_id, _current_user_id(request))
+    await session.delete(project)
 
 
 @router.get("/{project_id}/chats", response_model=list[ChatOut])

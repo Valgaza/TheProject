@@ -22,7 +22,7 @@ from graphiti_core.edges import EntityEdge
 from graphiti_core.embedder import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.errors import GroupsEdgesNotFoundError
 from graphiti_core.llm_client.config import LLMConfig
-from graphiti_core.llm_client.openai_client import OpenAIClient
+from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 from graphiti_core.nodes import EntityNode, EpisodeType
 
 from .config import Settings
@@ -197,17 +197,32 @@ async def lifespan(app: FastAPI):
         uri=cfg.neo4j_uri,
         user=cfg.neo4j_username,
         password=cfg.neo4j_password,
-        llm_client=OpenAIClient(
+        # OpenAIGenericClient, not OpenAIClient -- swapped 2026-09-03 when
+        # base_url was made configurable (see config.py). OpenAIClient's
+        # structured extraction goes through OpenAI's newer Responses API
+        # (client.responses.parse), which real OpenAI serves but which
+        # Gemini's OpenAI-compat endpoint returns a bare 404 for (confirmed
+        # live) -- graphiti's own client for exactly this situation, plain
+        # Chat Completions with a json_schema response_format instead,
+        # which Gemini's endpoint does support (also confirmed live). No
+        # "reasoning" param here -- that's Responses-API-specific and
+        # doesn't apply to Chat Completions. A real OpenAI-Responses-API
+        # server (real OpenAI itself, once credits exist) would work with
+        # either client; a Chat-Completions-only OpenAI-compatible server
+        # (Gemini now, quite possibly a local model later too) only works
+        # with this one.
+        llm_client=OpenAIGenericClient(
             config=LLMConfig(
                 api_key=cfg.openai_api_key,
+                base_url=cfg.openai_base_url,
                 model=cfg.extraction_model,
                 max_tokens=4096,
             ),
-            reasoning="low",
         ),
         embedder=OpenAIEmbedder(
             config=OpenAIEmbedderConfig(
                 api_key=cfg.openai_api_key,
+                base_url=cfg.openai_base_url,
                 embedding_model=cfg.embedding_model,
                 # Pinned in code, not left to graphiti's env-read default of
                 # 1024, which silently slices every vector. See config.py.

@@ -1,8 +1,7 @@
 """Route a turn to the handler that should answer it.
 
-This is the seam the other pipelines attach to. Right now there is exactly one
-handler and ``select_route`` always picks it, but the signature is the real one:
-RAG and vision land here as extra branches, not as a rewrite of the caller.
+This is the seam the other pipelines attach to. RAG is the first real branch;
+vision and speech land here the same way once those services exist.
 
 The user never picks a pipeline. They type into one composer and optionally
 attach something; the routing decision is ours to make and ours to explain,
@@ -14,7 +13,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Literal, Sequence, TypedDict
+from typing import TYPE_CHECKING, Literal, Sequence, TypedDict
+
+if TYPE_CHECKING:
+    from .rag_client import RagClient
 
 logger = logging.getLogger(__name__)
 
@@ -41,20 +43,38 @@ class Route:
     reason: str
 
 
-def select_route(
+async def select_route(
     *,
     content: str,
     attachments: Sequence[Attachment] = (),
+    rag: "RagClient | None" = None,
 ) -> Route:
     """Decide which handler answers this turn.
 
     Deliberately not a model call. Cheap deterministic signals — an attached
     image, a project with an indexed corpus — should decide before anything
     reaches a model, and only genuinely ambiguous turns should cost a
-    classification. Today every turn is unambiguous because there is one
-    handler.
+    classification. Async now, unlike the milestone before this one: checking
+    "does this project have RAG documents" is a real network call, not
+    something a plain function can decide on its own.
     """
-    route = Route(handler="general", reason="only the general handler is implemented")
+    if rag is not None:
+        # has_documents() already fails open (returns True) on its own errors —
+        # nothing to catch here. If it says yes, route there; the actual query
+        # (in chat_service) still degrades gracefully if RAG turns out to be
+        # unreachable when it's really called a moment later.
+        if await rag.has_documents():
+            route = Route(handler="rag", reason="project has documents ingested in RAG")
+            logger.info(
+                "route handler=%s reason=%s attachments=%d",
+                route.handler, route.reason, len(attachments),
+            )
+            return route
+        reason = "no documents ingested in RAG"
+    else:
+        reason = "no RAG client configured"
+
+    route = Route(handler="general", reason=reason)
     logger.info(
         "route handler=%s reason=%s attachments=%d",
         route.handler,

@@ -7,15 +7,84 @@
  * value or onChange and whose two buttons both just closed it.
  */
 
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/icons";
 import { DOMAINS, domainById } from "@/lib/domains";
+import { type Project } from "@/lib/api";
 import { useProjects } from "@/lib/project-context";
+
+/** A project card's "..." dropdown -- rename, pin, delete. Same shape and
+ * same CSS classes as the chat row's menu (components/shell.tsx); no
+ * "move to project" here, a project isn't inside anything to move
+ * between. */
+function ProjectMenu({
+  project,
+  onRename,
+  onTogglePin,
+  onDelete,
+  onClose,
+}: {
+  project: Project;
+  onRename: () => void;
+  onTogglePin: () => void;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [onClose]);
+
+  return (
+    <div className="chatmenu chatmenu--card" ref={ref} onClick={e => e.stopPropagation()}>
+      {!confirming ? (
+        <>
+          <button className="chatmenu__item" onClick={() => { onRename(); onClose(); }}>
+            <Icon name="pencil" size={14} /> Rename
+          </button>
+          <button className="chatmenu__item" onClick={() => { onTogglePin(); onClose(); }}>
+            <Icon name={project.pinned ? "pinOff" : "pin"} size={14} />
+            {project.pinned ? "Unpin" : "Pin"} project
+          </button>
+          <div className="chatmenu__sep" />
+          <button className="chatmenu__item chatmenu__item--danger" onClick={() => setConfirming(true)}>
+            <Icon name="trash" size={14} /> Delete
+          </button>
+        </>
+      ) : (
+        <div className="chatmenu__confirm">
+          <p>
+            Delete <strong>{project.name}</strong>? Every chat inside it is deleted too.
+            This can&apos;t be undone.
+          </p>
+          <div className="chatmenu__confirm-actions">
+            <button className="btn" type="button" onClick={() => setConfirming(false)}>
+              Cancel
+            </button>
+            <button
+              className="btn chatmenu__item--danger"
+              type="button"
+              onClick={() => { onDelete(); onClose(); }}
+            >
+              <Icon name="trash" size={13} /> Delete
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function Projects() {
   const router = useRouter();
-  const { projects, current, loading, select, create } = useProjects();
+  const { projects, current, loading, select, create, update, remove } = useProjects();
 
   const [filter, setFilter] = useState("all");
   const [modal, setModal] = useState(false);
@@ -25,11 +94,35 @@ export default function Projects() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+
   const filtered = filter === "all" ? projects : projects.filter(p => p.domain === filter);
+  // Pinned first, recency (already the order `projects` arrives in)
+  // otherwise -- a stable sort, so pinning doesn't reshuffle anything
+  // beyond moving pinned cards to the front as a group.
+  const sorted = [...filtered].sort((a, b) => Number(b.pinned) - Number(a.pinned));
 
   const open = (projectId: string) => {
     select(projectId);
-    router.push("/chat");
+    // ?project=<id> is what tells /chat to file the next chat you start
+    // under this project instead of leaving it unfiled -- see
+    // app/chat/page.tsx. select() above just keeps the sidebar's switcher
+    // and "Recent" filter in sync with where you're headed.
+    router.push(`/chat?project=${projectId}`);
+  };
+
+  const commitRename = async (projectId: string) => {
+    const trimmed = renameValue.trim();
+    setRenamingId(null);
+    if (!trimmed) return;
+    try {
+      await update(projectId, { name: trimmed });
+    } catch {
+      // The card just keeps its old name; nothing else depends on this
+      // succeeding immediately.
+    }
   };
 
   const submit = async () => {
@@ -37,7 +130,7 @@ export default function Projects() {
     setSaving(true);
     setError(null);
     try {
-      await create({
+      const project = await create({
         name: name.trim(),
         description: description.trim() || undefined,
         domain: newDom,
@@ -45,7 +138,9 @@ export default function Projects() {
       setModal(false);
       setName("");
       setDescription("");
-      router.push("/chat");
+      // You just named this project on purpose -- the chat you're about
+      // to start belongs in it, not floating unfiled.
+      router.push(`/chat?project=${project.id}`);
     } catch {
       setError("Couldn't create the project. Is the core service running on :8100?");
     } finally {
@@ -79,12 +174,13 @@ export default function Projects() {
       </div>
 
       <div className="pgrid">
-        {filtered.map(p => {
+        {sorted.map(p => {
           const domain = domainById(p.domain);
+          const renaming = renamingId === p.id;
           return (
             <div key={p.id} className="pcard"
                  style={{ "--d": `var(--d-${domain.id})` } as React.CSSProperties}
-                 onClick={() => open(p.id)}>
+                 onClick={() => !renaming && open(p.id)}>
               <span className="pcard__rule"/>
               <div className="pcard__head">
                 <div className="tag" style={{
@@ -94,11 +190,52 @@ export default function Projects() {
                   <span className="dot"/>
                   {domain.id}
                 </div>
-                <span className="mono" style={{ fontSize: 11, color: "var(--ink-3)" }}>
-                  {current?.id === p.id ? "● current" : "↗ open"}
-                </span>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, position: "relative" }}>
+                  {p.pinned && <Icon name="pin" size={13} style={{ color: "var(--accent)" }} />}
+                  <span className="mono" style={{ fontSize: 11, color: "var(--ink-3)" }}>
+                    {current?.id === p.id ? "● current" : "↗ open"}
+                  </span>
+                  <button
+                    type="button"
+                    className="chat-row__more"
+                    style={{ display: "flex" }}
+                    aria-label="Project options"
+                    onClick={e => { e.stopPropagation(); setMenuOpenId(o => (o === p.id ? null : p.id)); }}
+                  >
+                    <Icon name="dots" size={14} />
+                  </button>
+                  {menuOpenId === p.id && (
+                    <ProjectMenu
+                      project={p}
+                      onRename={() => { setRenameValue(p.name); setRenamingId(p.id); }}
+                      onTogglePin={() => { void update(p.id, { pinned: !p.pinned }); }}
+                      onDelete={() => {
+                        void remove(p.id).then(() => {
+                          if (current?.id === p.id) router.push("/chat");
+                        });
+                      }}
+                      onClose={() => setMenuOpenId(null)}
+                    />
+                  )}
+                </div>
               </div>
-              <h3 className="pcard__name">{p.name}</h3>
+              {renaming ? (
+                <input
+                  className="input"
+                  style={{ marginBottom: 8, fontSize: 22 }}
+                  value={renameValue}
+                  onClick={e => e.stopPropagation()}
+                  onChange={e => setRenameValue(e.target.value)}
+                  onBlur={() => void commitRename(p.id)}
+                  onKeyDown={e => {
+                    if (e.key === "Enter") { e.preventDefault(); void commitRename(p.id); }
+                    if (e.key === "Escape") setRenamingId(null);
+                  }}
+                  autoFocus
+                />
+              ) : (
+                <h3 className="pcard__name">{p.name}</h3>
+              )}
               <p className="pcard__desc">
                 {p.description || "No description yet."}
               </p>

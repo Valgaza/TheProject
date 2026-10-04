@@ -36,8 +36,14 @@ if [[ ! -x "$VENV/uvicorn" ]]; then
   exit 1
 fi
 
-# ── Neo4j ────────────────────────────────────────────────────
-echo "▶  Starting Neo4j..."
+# ── Infrastructure ───────────────────────────────────────────
+# One compose file now starts everything: Postgres (chat transcripts), Neo4j
+# (the graph), Qdrant (document vectors) and SearXNG (private web search).
+# Replaced the Supabase CLI on 2026-09-02 — it started twelve containers for
+# the one Postgres this project actually uses. The schema is applied
+# automatically the first time the Postgres volume is created; see
+# docker/postgres-init.sh.
+echo "▶  Starting infrastructure (Postgres, Neo4j, Qdrant, SearXNG)..."
 docker compose -f "$ROOT/docker-compose.yml" up -d
 
 printf "   Waiting for Neo4j"
@@ -58,18 +64,24 @@ if ! curl -sf "http://localhost:7474/" >/dev/null 2>&1; then
   exit 1
 fi
 
-# ── Supabase ─────────────────────────────────────────────────
-# Not started here: the Supabase CLI owns those containers and `supabase start`
-# is slow and chatty. Checked, though, because the core service is useless
-# without Postgres and the failure is otherwise a wall of asyncpg traceback.
-if ! curl -sf "http://localhost:54321/rest/v1/" >/dev/null 2>&1 \
-   && ! docker ps --format '{{.Names}}' | grep -q '^supabase_db_'; then
-  echo "✗  Supabase is not running. In another terminal:"
-  echo "     supabase start"
-  echo "   First time only, after that:  supabase db reset"
+printf "   Waiting for Postgres"
+# Checked separately from the compose healthcheck, because the core service is
+# useless without Postgres and the failure is otherwise a wall of asyncpg
+# traceback thirty seconds after everything looked fine.
+for _ in $(seq 1 40); do
+  if docker exec nexus-postgres pg_isready -U postgres -q >/dev/null 2>&1; then
+    echo " ready."
+    break
+  fi
+  printf "."
+  sleep 2
+done
+if ! docker exec nexus-postgres pg_isready -U postgres -q >/dev/null 2>&1; then
+  echo ""
+  echo "✗  Postgres did not come up within 80 seconds."
+  echo "   Check: docker logs nexus-postgres"
   exit 1
 fi
-echo "▶  Supabase is up."
 
 # ── Services ─────────────────────────────────────────────────
 pids=()
@@ -80,12 +92,20 @@ cleanup() {
     kill "$pid" 2>/dev/null || true
   done
   wait 2>/dev/null || true
-  echo "   Neo4j is still running. Stop it with: docker compose down"
+  echo "   Containers are still running. Stop them with: docker compose down"
 }
 trap cleanup INT TERM EXIT
 
 echo "▶  memory service  →  http://localhost:8000"
 "$VENV/uvicorn" nexus_memory.main:app --reload --port 8000 &
+pids+=($!)
+
+# RAG's own HTTP front door (formerly controller/main.py). core reaches the
+# RAG pipeline only through this — they are separate processes, so there is no
+# other way in. Added here 2026-09-02; on branches without RAG/ it simply
+# isn't there to start.
+echo "▶  RAG API         →  http://localhost:8001"
+"$VENV/uvicorn" rag_api:app --app-dir "$ROOT/RAG" --reload --port 8001 &
 pids+=($!)
 
 echo "▶  core service    →  http://localhost:8100"
@@ -94,7 +114,7 @@ pids+=($!)
 
 echo ""
 echo "   Frontend:  cd frontend && npm run dev  →  http://localhost:3000"
-echo "   Press Ctrl+C to stop both services."
+echo "   Press Ctrl+C to stop all three services."
 echo "────────────────────────────────────────────────────────"
 
 wait

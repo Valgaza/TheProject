@@ -10,17 +10,25 @@ import os
 from contextlib import asynccontextmanager
 
 import httpx
+from authlib.integrations.starlette_client import OAuth
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import text
+from starlette.middleware.sessions import SessionMiddleware
 
 from .config import Settings
 from .db import create_engine, create_session_factory
 from .logging_config import configure_logging
 from .memory_client import MemoryClient
 from .providers import Provider, build_provider
-from .routers import chats_router, maintenance_router, projects_router
+from .rag_client import RagClient
+from .routers import (
+    auth_router,
+    chats_router,
+    maintenance_router,
+    projects_router,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +38,7 @@ class HealthResponse(BaseModel):
     provider: str
     chat_model: str
     memory_service: str
+    rag_service: str
     database: str
 
 
@@ -45,15 +54,35 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     app.state.provider = provider
     app.state.memory = MemoryClient(http, settings.memory_service_url)
+    # Read by the chat router and handed to generate_turn, which only calls
+    # it when select_route() picked the "rag" handler. Optional throughout:
+    # a failed query degrades the turn, it doesn't fail it.
+    app.state.rag = RagClient(http, settings.rag_service_url)
     app.state.http = http
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)
 
+    # Google OAuth is registered here, not at module level, because it needs
+    # settings — but only actually registered if a client id/secret exist,
+    # so a deployment running email/password only never touches Google at
+    # all, not even to fail at startup.
+    oauth = OAuth()
+    if settings.google_oauth_enabled:
+        oauth.register(
+            name="google",
+            client_id=settings.google_client_id,
+            client_secret=settings.google_client_secret,
+            server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+            client_kwargs={"scope": "openid email profile"},
+        )
+    app.state.oauth = oauth
+
     logger.info(
-        "Core service ready  provider=%s chat_model=%s memory=%s",
+        "Core service ready  provider=%s chat_model=%s memory=%s google_oauth=%s",
         provider.name,
         settings.chat_model,
         settings.memory_service_url,
+        settings.google_oauth_enabled,
     )
     yield
 
@@ -79,8 +108,25 @@ app.add_middleware(
     allow_origins=_cors_origins,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Content-Type"],
+    # Required for the session cookie to travel at all: the frontend (:3000)
+    # and core (:8100) are different origins, and a browser drops cookies on
+    # a cross-origin request unless the server explicitly opts in here. The
+    # CORS spec forbids combining this with allow_origins=["*"] — which is
+    # exactly why _cors_origins was already an explicit list, not "*".
+    allow_credentials=True,
 )
 
+# Also registered before startup, same reason as CORS — Authlib's OAuth
+# client needs somewhere to stash a short-lived nonce between "redirect to
+# Google" and "Google redirects back", and Starlette's SessionMiddleware is
+# that somewhere. Separate from our own session cookie (auth.py) entirely:
+# this one is Authlib's internal bookkeeping, ours is what identifies a
+# logged-in user.
+_jwt_secret = os.getenv("JWT_SECRET")
+if _jwt_secret:
+    app.add_middleware(SessionMiddleware, secret_key=_jwt_secret)
+
+app.include_router(auth_router)
 app.include_router(projects_router)
 app.include_router(chats_router)
 app.include_router(maintenance_router)
@@ -113,6 +159,13 @@ async def health(request: Request) -> HealthResponse:
         memory_status = "unreachable"
 
     try:
+        response = await http.get(f"{settings.rag_service_url}/api/health", timeout=3.0)
+        rag_status = "ok" if response.status_code == 200 else "degraded"
+    except Exception as exc:
+        logger.warning("RAG service unreachable: %s", exc)
+        rag_status = "unreachable"
+
+    try:
         async with request.app.state.session_factory() as session:
             await session.execute(text("select 1"))
         database_status = "ok"
@@ -120,11 +173,14 @@ async def health(request: Request) -> HealthResponse:
         logger.error("Database unreachable: %s", exc)
         database_status = "unreachable"
 
+    # RAG isn't required the way memory/database are — everything above it
+    # already treats it as optional, so it doesn't affect overall `status`.
     healthy = memory_status == "ok" and database_status == "ok"
     return HealthResponse(
         status="ok" if healthy else "degraded",
         provider=provider.name,
         chat_model=settings.chat_model,
         memory_service=memory_status,
+        rag_service=rag_status,
         database=database_status,
     )

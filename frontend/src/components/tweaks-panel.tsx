@@ -95,13 +95,36 @@ const __TWEAKS_STYLE = `
   .twk-swatch::-moz-color-swatch{border:0;border-radius:5.5px}
 `;
 
+const TWEAKS_STORAGE_KEY = "nexus:appearance-tweaks";
+
 export function useTweaks(defaults: any) {
-  const [values, setValues] = useState(defaults);
+  // Lazy initializer -- runs once, not on every render -- so a stored
+  // choice (accent, font pairing, etc.) survives a reload instead of
+  // resetting to `defaults` every time, which is what made the old
+  // always-open floating panel feel like it "forgot" your pick constantly.
+  const [values, setValues] = useState(() => {
+    try {
+      const stored = window.localStorage.getItem(TWEAKS_STORAGE_KEY);
+      return stored ? { ...defaults, ...JSON.parse(stored) } : defaults;
+    } catch {
+      // Private windows and blocked site data both throw here; fall back
+      // to the defaults rather than fail the whole app over a preference.
+      return defaults;
+    }
+  });
 
   const setTweak = useCallback((keyOrEdits: any, val?: any) => {
     const edits = typeof keyOrEdits === 'object' && keyOrEdits !== null
       ? keyOrEdits : { [keyOrEdits]: val };
-    setValues((prev: any) => ({ ...prev, ...edits }));
+    setValues((prev: any) => {
+      const next = { ...prev, ...edits };
+      try {
+        window.localStorage.setItem(TWEAKS_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // Losing the preference is survivable; failing to render is not.
+      }
+      return next;
+    });
   }, []);
 
   return [values, setTweak];
@@ -109,6 +132,7 @@ export function useTweaks(defaults: any) {
 
 export function TweaksPanel({ title = 'Tweaks', children, defaultOpen = true }: any) {
   const [open, setOpen] = useState(defaultOpen);
+  const [offset, setOffset] = useState({ x: 16, y: 16 });
   const dragRef = useRef<HTMLDivElement>(null);
   const offsetRef = useRef({ x: 16, y: 16 });
   const PAD = 16;
@@ -119,10 +143,12 @@ export function TweaksPanel({ title = 'Tweaks', children, defaultOpen = true }: 
     const w = panel.offsetWidth, h = panel.offsetHeight;
     const maxRight = Math.max(PAD, window.innerWidth - w - PAD);
     const maxBottom = Math.max(PAD, window.innerHeight - h - PAD);
-    offsetRef.current = {
+    const nextOffset = {
       x: Math.min(maxRight, Math.max(PAD, offsetRef.current.x)),
       y: Math.min(maxBottom, Math.max(PAD, offsetRef.current.y)),
     };
+    offsetRef.current = nextOffset;
+    setOffset(nextOffset);
     panel.style.right = offsetRef.current.x + 'px';
     panel.style.bottom = offsetRef.current.y + 'px';
   }, []);
@@ -170,7 +196,7 @@ export function TweaksPanel({ title = 'Tweaks', children, defaultOpen = true }: 
     <>
       <style>{__TWEAKS_STYLE}</style>
       <div ref={dragRef} className="twk-panel"
-           style={{ right: offsetRef.current.x, bottom: offsetRef.current.y }}>
+           style={{ right: offset.x, bottom: offset.y }}>
         <div className="twk-hd" onMouseDown={onDragStart}>
           <b>{title}</b>
           <button className="twk-x" aria-label="Close tweaks"
@@ -232,7 +258,10 @@ export function TweakRadio({ label, value, options, onChange }: any) {
   const n = opts.length;
 
   const valueRef = useRef(value);
-  valueRef.current = value;
+
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
 
   const segAt = (clientX: number) => {
     const r = trackRef.current!.getBoundingClientRect();
@@ -244,11 +273,17 @@ export function TweakRadio({ label, value, options, onChange }: any) {
   const onPointerDown = (e: any) => {
     setDragging(true);
     const v0 = segAt(e.clientX);
-    if (v0 !== valueRef.current) onChange(v0);
+    if (v0 !== valueRef.current) {
+      valueRef.current = v0;
+      onChange(v0);
+    }
     const move = (ev: any) => {
       if (!trackRef.current) return;
       const v = segAt(ev.clientX);
-      if (v !== valueRef.current) onChange(v);
+      if (v !== valueRef.current) {
+        valueRef.current = v;
+        onChange(v);
+      }
     };
     const up = () => {
       setDragging(false);

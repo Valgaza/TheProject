@@ -253,7 +253,7 @@ export default function Landing() {
           <a href="#system">System</a>
         </nav>
         <div style={{ display: "flex", gap: 10 }}>
-          <button className="btn btn--ghost" onClick={() => router.push("/chat")}>Sign in</button>
+          <button className="btn btn--ghost" onClick={() => router.push("/login")}>Sign in</button>
           <button className="btn btn--primary" onClick={() => router.push("/chat")}>
             Open Nexus <Icon name="arrow" size={14}/>
           </button>

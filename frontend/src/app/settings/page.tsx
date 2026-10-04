@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useContext, useState } from "react";
+import { TweaksContext, ACCENTS } from "@/components/app-shell";
 
 const Toggle = ({ on, set }: any) => <div className={`toggle ${on ? "is-on" : ""}`} onClick={() => set(!on)}/>;
 const Seg = ({ value, set, options }: any) => (
@@ -12,6 +13,9 @@ const Seg = ({ value, set, options }: any) => (
 );
 
 export default function Settings() {
+  const tweaksCtx = useContext(TweaksContext);
+  const tweaks = tweaksCtx?.tweaks ?? {};
+  const setTweak = tweaksCtx?.setTweak ?? (() => {});
   const [lang, setLang] = useState("en");
   const [theme, setTheme] = useState("light");
   const [stream, setStream] = useState(true);
@@ -143,7 +147,56 @@ export default function Settings() {
 
           <section className="sgroup">
             <h2 className="sgroup__t">Appearance</h2>
-            <p className="sgroup__s">Aesthetic preferences for this device.</p>
+            <p className="sgroup__s">Aesthetic preferences for this device. Saved to this browser, same as everything else on this page.</p>
+
+            <div className="srow">
+              <div>
+                <div className="srow__l">Accent color</div>
+                <div className="srow__d">The highlight color used across buttons, links, and active states.</div>
+              </div>
+              <Seg value={tweaks.accent} set={(v: string) => setTweak("accent", v)} options={
+                Object.keys(ACCENTS).map(k => ({ v: k, l: k[0].toUpperCase() + k.slice(1) }))
+              }/>
+            </div>
+
+            <div className="srow">
+              <div>
+                <div className="srow__l">Typography</div>
+                <div className="srow__d">Which typeface pairing headings and body text use.</div>
+              </div>
+              <select
+                className="input"
+                style={{ width: "auto", minWidth: 220 }}
+                value={tweaks.fontPairing}
+                onChange={e => setTweak("fontPairing", e.target.value)}
+              >
+                <option value="fraunces_inter">Fraunces × Inter Tight</option>
+                <option value="sectra_inter">Sectra-style × Inter</option>
+                <option value="editorial">Editorial × Inter</option>
+                <option value="neue_tiempos">Sans display × Serif body</option>
+                <option value="sohne_only">Söhne-style sans only</option>
+              </select>
+            </div>
+
+            <div className="srow">
+              <div>
+                <div className="srow__l">Landing page background</div>
+                <div className="srow__d">The animated canvas behind the hero text on the signed-out landing page.</div>
+              </div>
+              <Seg value={tweaks.heroBackground} set={(v: string) => setTweak("heroBackground", v)} options={[
+                { v: "particles", l: "Particles" }, { v: "mesh", l: "Mesh" }, { v: "drift", l: "Drift" }, { v: "topo", l: "Topo" }
+              ]}/>
+            </div>
+
+            <div className="srow">
+              <div>
+                <div className="srow__l">Motion intensity</div>
+                <div className="srow__d">How much the landing page's background animation moves.</div>
+              </div>
+              <Seg value={tweaks.animationIntensity} set={(v: string) => setTweak("animationIntensity", v)} options={[
+                { v: "restrained", l: "Restrained" }, { v: "generous", l: "Generous" }, { v: "showcase", l: "Showcase" }
+              ]}/>
+            </div>
 
             <div className="srow">
               <div>
