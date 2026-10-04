@@ -10,6 +10,15 @@ from __future__ import annotations
 
 import pytest
 
+# What core would send. Every request to the app needs it now; see
+# nexus_memory/service_auth.py.
+SERVICE_TOKEN = "test-service-token"
+
+
+@pytest.fixture(autouse=True)
+def _service_token(monkeypatch):
+    monkeypatch.setenv("SERVICE_TOKEN", SERVICE_TOKEN)
+
 
 class FakeWebSocket:
     """Records what was pushed to it, and can be told to fail."""

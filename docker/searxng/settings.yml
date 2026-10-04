@@ -1,0 +1,13 @@
+use_default_settings: true
+
+general:
+  instance_name: "nexus-searxng"
+
+search:
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "2fc6b96f02c425c1199dad26097a7fb0787d9362160f2c1d6bbe67afb2ef9733"
+  limiter: false

@@ -1,11 +1,11 @@
 """Fixtures for the end-to-end scenario suite.
 
-These drive the whole stack -- core, memory, Neo4j, Postgres and a real model --
-so they cost money and minutes, and they are skipped unless you ask for them:
+These drive the whole stack -- core, memory, Neo4j, Postgres and the local
+model -- so they take minutes, and they are skipped unless you ask for them:
 
     RUN_SCENARIOS=1 uv run pytest tests -v -s
 
-Everything else in the repo is unit-level and runs in about two seconds. This
+Everything else in the repo runs without a model, in about a minute. This
 suite exists to answer the questions those cannot: does a fact stated in one
 chat come back in another, does it stay out of a different project, and does
 the write gate keep chit-chat out of the graph.
@@ -31,7 +31,7 @@ POLL_INTERVAL = 2.0
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("RUN_SCENARIOS"),
-    reason="drives the live stack and spends API credit; set RUN_SCENARIOS=1",
+    reason="drives the live stack and the local model; set RUN_SCENARIOS=1",
 )
 
 

@@ -1,7 +1,17 @@
 node_modules/
+# Every env file, at any depth, including backups like .env.bak.* -- only the
+# committed templates are exempt.
 .env
+.env.*
+!.env.example
 .DS_Store
 __pycache__/
 *.pyc
 .venv/
 dist/
+*.egg-info/
+steps-to-implement-Bhoumish.md
+PROGRESS_SUMMARY.md
+.claude/
+.ollama-serve.log
+.pytest_cache/

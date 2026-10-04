@@ -10,17 +10,28 @@ import os
 from contextlib import asynccontextmanager
 
 import httpx
+from authlib.integrations.starlette_client import OAuth
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import text
+from starlette.middleware.sessions import SessionMiddleware
 
 from .config import Settings
 from .db import create_engine, create_session_factory
 from .logging_config import configure_logging
 from .memory_client import MemoryClient
 from .providers import Provider, build_provider
-from .routers import chats_router, maintenance_router, projects_router
+from .rag_client import RagClient
+from .web_client import WebClient
+from .routers import (
+    auth_router,
+    chats_router,
+    documents_router,
+    graph_router,
+    maintenance_router,
+    projects_router,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +41,8 @@ class HealthResponse(BaseModel):
     provider: str
     chat_model: str
     memory_service: str
+    rag_service: str
+    web_service: str
     database: str
 
 
@@ -39,21 +52,47 @@ async def lifespan(app: FastAPI):
 
     settings = Settings()
     provider = build_provider(settings)
-    http = httpx.AsyncClient(timeout=10.0)
+    # Only ever pointed at memory and RAG, which refuse anything without this
+    # header. Google OAuth goes through Authlib's own client, not this one, so
+    # the token never leaves the machine.
+    http = httpx.AsyncClient(
+        timeout=10.0, headers={"X-Service-Token": settings.service_token}
+    )
     engine = create_engine(settings.database_url, echo=settings.database_echo)
 
     app.state.settings = settings
     app.state.provider = provider
     app.state.memory = MemoryClient(http, settings.memory_service_url)
+    # Read by the chat router and handed to generate_turn, which queries it
+    # on every turn; CORE_RAG_MIN_SCORE decides whether the result reaches
+    # the prompt. Optional throughout: a failed query degrades the turn.
+    app.state.rag = RagClient(http, settings.rag_service_url)
     app.state.http = http
+    app.state.web = WebClient(settings.searxng_url)
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)
 
+    # Google OAuth is registered here, not at module level, because it needs
+    # settings — but only actually registered if a client id/secret exist,
+    # so a deployment running email/password only never touches Google at
+    # all, not even to fail at startup.
+    oauth = OAuth()
+    if settings.google_oauth_enabled:
+        oauth.register(
+            name="google",
+            client_id=settings.google_client_id,
+            client_secret=settings.google_client_secret,
+            server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+            client_kwargs={"scope": "openid email profile"},
+        )
+    app.state.oauth = oauth
+
     logger.info(
-        "Core service ready  provider=%s chat_model=%s memory=%s",
+        "Core service ready  provider=%s chat_model=%s memory=%s google_oauth=%s",
         provider.name,
         settings.chat_model,
         settings.memory_service_url,
+        settings.google_oauth_enabled,
     )
     yield
 
@@ -79,10 +118,29 @@ app.add_middleware(
     allow_origins=_cors_origins,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Content-Type"],
+    # Required for the session cookie to travel at all: the frontend (:3000)
+    # and core (:8100) are different origins, and a browser drops cookies on
+    # a cross-origin request unless the server explicitly opts in here. The
+    # CORS spec forbids combining this with allow_origins=["*"] — which is
+    # exactly why _cors_origins was already an explicit list, not "*".
+    allow_credentials=True,
 )
 
+# Also registered before startup, same reason as CORS — Authlib's OAuth
+# client needs somewhere to stash a short-lived nonce between "redirect to
+# Google" and "Google redirects back", and Starlette's SessionMiddleware is
+# that somewhere. Separate from our own session cookie (auth.py) entirely:
+# this one is Authlib's internal bookkeeping, ours is what identifies a
+# logged-in user.
+_jwt_secret = os.getenv("JWT_SECRET")
+if _jwt_secret:
+    app.add_middleware(SessionMiddleware, secret_key=_jwt_secret)
+
+app.include_router(auth_router)
 app.include_router(projects_router)
 app.include_router(chats_router)
+app.include_router(documents_router)
+app.include_router(graph_router)
 app.include_router(maintenance_router)
 
 
@@ -113,6 +171,24 @@ async def health(request: Request) -> HealthResponse:
         memory_status = "unreachable"
 
     try:
+        response = await http.get(f"{settings.rag_service_url}/api/health", timeout=3.0)
+        rag_status = "ok" if response.status_code == 200 else "degraded"
+    except Exception as exc:
+        logger.warning("RAG service unreachable: %s", exc)
+        rag_status = "unreachable"
+
+    try:
+        # A plain client, not app.state.http: that one carries the service
+        # token, which is for memory and RAG only. SearXNG has no /health; a
+        # healthy instance answers GET / with its search page.
+        async with httpx.AsyncClient(timeout=3.0) as plain:
+            response = await plain.get(settings.searxng_url)
+        web_status = "ok" if response.status_code == 200 else "degraded"
+    except Exception as exc:
+        logger.warning("SearXNG unreachable: %s", exc)
+        web_status = "unreachable"
+
+    try:
         async with request.app.state.session_factory() as session:
             await session.execute(text("select 1"))
         database_status = "ok"
@@ -120,11 +196,15 @@ async def health(request: Request) -> HealthResponse:
         logger.error("Database unreachable: %s", exc)
         database_status = "unreachable"
 
+    # RAG and web search aren't required the way memory/database are; both
+    # are optional everywhere else, so neither affects overall `status`.
     healthy = memory_status == "ok" and database_status == "ok"
     return HealthResponse(
         status="ok" if healthy else "degraded",
         provider=provider.name,
         chat_model=settings.chat_model,
         memory_service=memory_status,
+        rag_service=rag_status,
+        web_service=web_status,
         database=database_status,
     )

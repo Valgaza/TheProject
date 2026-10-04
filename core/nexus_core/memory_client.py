@@ -166,3 +166,38 @@ class MemoryClient:
         )
         response.raise_for_status()
         return response.json()
+
+    # ── The graph panel ──────────────────────────────────────────────────────
+    # Proxied for the browser, which no longer reaches memory itself. These
+    # raise rather than degrade: an empty graph and an unreachable service
+    # look identical on screen, and the panel should be able to tell them apart.
+
+    @staticmethod
+    def _view_params(user_id: uuid.UUID, project_id: uuid.UUID | None, view: str) -> dict:
+        params = {"user_id": str(user_id), "view": view}
+        if project_id is not None:
+            params["project_id"] = str(project_id)
+        return params
+
+    async def graph(self, *, user_id: uuid.UUID, project_id: uuid.UUID | None, view: str) -> dict:
+        response = await self._http.get(
+            f"{self._base_url}/graph", params=self._view_params(user_id, project_id, view)
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def delete_graph(
+        self, *, user_id: uuid.UUID, project_id: uuid.UUID | None, view: str
+    ) -> None:
+        response = await self._http.delete(
+            f"{self._base_url}/graph", params=self._view_params(user_id, project_id, view)
+        )
+        response.raise_for_status()
+
+    def graph_socket_url(
+        self, *, user_id: uuid.UUID, project_id: uuid.UUID | None, view: str
+    ) -> str:
+        base = "ws" + self._base_url.removeprefix("http")
+        params = self._view_params(user_id, project_id, view)
+        params.pop("user_id")
+        return f"{base}/ws/graph/{user_id}?{httpx.QueryParams(params)}"

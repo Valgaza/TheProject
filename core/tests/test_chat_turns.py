@@ -10,6 +10,7 @@ from nexus_core.chat_service import (
     _derive_title,
     build_prompt,
 )
+from nexus_core.chat_title import TITLE_SYSTEM_PROMPT
 from nexus_core.orchestrator import select_route
 
 
@@ -20,8 +21,9 @@ async def _make_chat(client, title: str = "New conversation") -> dict:
     return response.json()
 
 
-def test_route_is_general_and_explains_itself():
-    route = select_route(content="anything at all")
+async def test_route_is_general_and_explains_itself():
+    """No rag client passed — same as before RAG existed."""
+    route = await select_route(content="anything at all")
 
     assert route.handler == "general"
     assert route.reason
@@ -87,7 +89,10 @@ async def test_chats_do_not_leak_into_each_other(db_client, provider):
     assert "only in A" not in [m["content"] for m in prompt_for_b]
 
 
-async def test_the_first_message_titles_the_chat(db_client):
+async def test_the_first_message_titles_the_chat(db_client, provider):
+    """The title comes from a real model call (chat_title.generate), not a
+    truncation of the message — FakeProvider's canned "Fake Title" stands in
+    for whatever a real model would return."""
     chat = await _make_chat(db_client)
 
     turn = (
@@ -96,10 +101,34 @@ async def test_the_first_message_titles_the_chat(db_client):
         )
     ).json()
 
+    assert turn["chat_title"] == "Fake Title"
+    assert (await db_client.get(f"/chats/{chat['id']}")).json()["title"] == "Fake Title"
+    # And it's actually the user's message that gets titled, not the answer.
+    assert provider.title_calls[0][-1]["content"] == "Compare vector metrics"
+
+
+async def test_title_generation_failure_falls_back_to_derived_title(db_client, provider):
+    """A dead provider must not leave a chat titled "New conversation"
+    forever — chat_title.generate() returning None (it never raises) falls
+    back to the cheap first-line derivation."""
+    chat = await _make_chat(db_client)
+
+    real_chat = provider.chat
+
+    async def title_call_fails(messages, **kwargs):
+        if messages and messages[0].get("content") == TITLE_SYSTEM_PROMPT:
+            raise RuntimeError("title model is down")
+        return await real_chat(messages, **kwargs)
+
+    provider.chat = title_call_fails
+
+    turn = (
+        await db_client.post(
+            f"/chats/{chat['id']}/messages", json={"content": "Compare vector metrics"}
+        )
+    ).json()
+
     assert turn["chat_title"] == "Compare vector metrics"
-    assert (await db_client.get(f"/chats/{chat['id']}")).json()["title"] == (
-        "Compare vector metrics"
-    )
 
 
 async def test_a_deliberate_title_survives_the_first_message(db_client):

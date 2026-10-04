@@ -1,4 +1,4 @@
-"""ORM models mirroring supabase/migrations/.
+"""ORM models mirroring db/migrations/.
 
 The migrations are the source of truth for the schema; these classes only
 describe it to SQLAlchemy. When you change one, change the other.
@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -40,6 +41,13 @@ class Profile(Base):
 
     id: Mapped[uuid.UUID] = _pk()
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    # Login identity, added 2026-09-02 (see the auth migration). password_hash
+    # is null for a Google-only account, google_id is null for a
+    # password-only one — the database itself requires at least one, via a
+    # CHECK constraint, not application code.
+    email: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    password_hash: Mapped[str | None] = mapped_column(Text)
+    google_id: Mapped[str | None] = mapped_column(Text, unique=True)
     created_at: Mapped[datetime] = _created_at()
 
 
@@ -53,12 +61,17 @@ class Project(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     domain: Mapped[str] = mapped_column(Text, nullable=False, default="general")
+    pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
-    chats: Mapped[list["Chat"]] = relationship(back_populates="project")
+    # passive_deletes=True: same reasoning as Chat.messages below -- trust
+    # the FK's own ON DELETE CASCADE instead of the ORM loading every chat
+    # first and trying to null out project_id, which fails outright since
+    # that column is NOT NULL.
+    chats: Mapped[list["Chat"]] = relationship(back_populates="project", passive_deletes=True)
 
 
 class Chat(Base):
@@ -72,20 +85,34 @@ class Chat(Base):
     __tablename__ = "chats"
 
     id: Mapped[uuid.UUID] = _pk()
+    # Who owns this chat -- independent of project_id, since a chat no
+    # longer has to be filed under a project to exist. Ownership used to
+    # come entirely through project_id -> projects.user_id; that join
+    # breaks the moment project_id can be null, hence this column.
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
     )
+    # Null means unfiled: created from /chat directly, not from within a
+    # project. Set at creation (POST /projects/{id}/chats) or later via
+    # PATCH /chats/{id}'s move-to-project.
     project_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE")
+        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True
     )
     title: Mapped[str] = mapped_column(Text, nullable=False, default="New conversation")
+    pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
     project: Mapped[Project | None] = relationship(back_populates="chats")
-    messages: Mapped[list["Message"]] = relationship(back_populates="chat")
+    # passive_deletes=True: trust the FK's own ON DELETE CASCADE (see the
+    # schema migration) instead of the ORM's default behaviour, which loads
+    # every message first and tries to null out chat_id -- a write that
+    # fails outright, since chat_id is NOT NULL.
+    messages: Mapped[list["Message"]] = relationship(
+        back_populates="chat", passive_deletes=True
+    )
 
 
 class Message(Base):
@@ -109,6 +136,49 @@ class Message(Base):
     )
 
     chat: Mapped[Chat] = relationship(back_populates="messages")
+
+
+class Document(Base):
+    """An uploaded file, and which tier it belongs to.
+
+    ``project_id`` is optional for the same reason it is on ``Chat``: a
+    document outside every project belongs to the user tier and is visible in
+    every conversation, while a document inside one is isolated to it. The
+    two tables agreeing on this shape is what lets the sidebar group files and
+    chats the same way.
+
+    Postgres holds this record; Qdrant holds the chunks, carrying ``id`` in
+    their payload as ``document_id``. Deleting a row here means deleting by
+    that filter there — there is no cascade between the two stores.
+    """
+
+    __tablename__ = "documents"
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('pending', 'ingested', 'failed')",
+            name="documents_status_check",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE")
+    )
+    file_name: Mapped[str] = mapped_column(Text, nullable=False)
+    byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    error: Mapped[str | None] = mapped_column(Text)
+    # Null until the document's topics reach the graph. Distinguishes "never
+    # tried" from "tried and the gate kept nothing".
+    graph_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class MemoryEpisode(Base):

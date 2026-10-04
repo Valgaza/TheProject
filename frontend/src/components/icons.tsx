@@ -16,6 +16,7 @@ export const Icon: React.FC<IconProps> = ({ name, size = 16, className = "", ...
     arrow: <><path d="M5 12h14M13 6l6 6-6 6"/></>,
     arrowU: <><path d="M12 19V5M6 11l6-6 6 6"/></>,
     paper: <><path d="M21.4 11.6 13 20a5.7 5.7 0 1 1-8-8L13.4 3.6a4 4 0 0 1 5.7 5.7L11 17.6a2.3 2.3 0 0 1-3.3-3.3l7-7"/></>,
+    globe: <><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></>,
     mic: <><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></>,
     search: <><circle cx="11" cy="11" r="6"/><path d="M20 20l-3.5-3.5"/></>,
     inbox: <><path d="M3 12h5l1.5 3h5l1.5-3h5M3 12l3-7h12l3 7M3 12v6a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-6"/></>,
@@ -41,6 +42,10 @@ export const Icon: React.FC<IconProps> = ({ name, size = 16, className = "", ...
     cloud: <><path d="M7 18a5 5 0 0 1-1-9.9 7 7 0 0 1 13.5 2A4.5 4.5 0 0 1 18 18H7Z"/></>,
     shield:<><path d="M12 3 4 6v6c0 4.5 3.4 8.5 8 9 4.6-.5 8-4.5 8-9V6l-8-3Z"/></>,
     close: <><path d="M6 6l12 12M18 6 6 18"/></>,
+    dots: <><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></>,
+    pencil: <><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3ZM14 6l4 4"/></>,
+    trash: <><path d="M4 7h16M9 7V4h6v3M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13M10 11v6M14 11v6"/></>,
+    pinOff: <><path d="M12 2v9M12 14a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM4 4l16 16"/></>,
   };
   const path = paths[name] || paths.chat;
   return (

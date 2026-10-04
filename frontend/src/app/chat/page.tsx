@@ -31,6 +31,7 @@ function Start() {
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [web, setWeb] = useState(false);
 
   // A project only when the rail asked for one. Defaulting to whatever project
   // happens to be selected would file passing questions into a body of work,
@@ -49,7 +50,7 @@ function Start() {
       // Carry the prompt to the thread rather than sending it here — the reply
       // takes a couple of seconds and it should arrive on the page you are
       // reading, not the one you are leaving.
-      router.push(`/c/${chat.id}?q=${encodeURIComponent(content)}`);
+      router.push(`/c/${chat.id}?q=${encodeURIComponent(content)}${web ? "&web=1" : ""}`);
     } catch {
       setBusy(false);
       setError("Couldn't reach the core service on :8100. Is it running?");
@@ -75,6 +76,9 @@ function Start() {
           placeholder="Ask Nexus something…"
           busy={busy}
           autoFocus
+          projectId={projectId}
+          web={web}
+          onWebChange={setWeb}
           badge={
             <div className="tag tag--accent">
               <span className="dot" style={{

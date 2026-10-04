@@ -35,6 +35,18 @@ class Settings:
         self.neo4j_username = _require("NEO4J_USERNAME")
         self.neo4j_password = _require("NEO4J_PASSWORD")
         self.openai_api_key = _require("OPENAI_API_KEY")
+        # Shared with core, which sends it on every call. Required so a missing
+        # value fails at startup, not as a 401 on every request afterwards.
+        self.service_token = _require("SERVICE_TOKEN")
+        # Same variable core reads (nexus_core/config.py) -- lets this
+        # service follow core's provider swap (Gemini's OpenAI-compat
+        # endpoint, a local OpenAI-compatible server, ...) instead of being
+        # permanently hardcoded to real OpenAI regardless of what the rest
+        # of the system is pointed at. graphiti's own LLMConfig and
+        # OpenAIEmbedderConfig already accept base_url -- see main.py, which
+        # is the only place this needs threading through.
+        # Unset means the real OpenAI; Ollama is http://localhost:11434/v1.
+        self.openai_base_url = os.getenv("OPENAI_BASE_URL") or None
 
         # The model graphiti uses to pull entities and relationships out of an
         # episode. Not the model that answers the user -- that one is core's.

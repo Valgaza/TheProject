@@ -8,31 +8,34 @@ conversations.
 You never pick a pipeline. You type, or attach a document, or speak, and the
 system works out what to do with it.
 
-Four pipelines are planned: document Q&A over retrieval, OCR and vision,
-conversational speech, and general chat. General chat and the memory layer are
-built; the other two are being developed in parallel and attach to the
-orchestrator seam described below.
+Four kinds of input are planned: documents, images (OCR and vision),
+conversational speech, and general chat. General chat, document Q&A, the memory
+layer and opt-in web search are built and run entirely on local models.
+Vision is being developed separately on `feature/vision-v1`; speech is not built
+yet.
 
 ## How it fits together
 
-Two backend services, deliberately split by what they own:
+```
+                       frontend :3000
+                             │   session cookie
+                             ▼
+        ┌──────────────── core :8100 ─────────────────┐
+        │  auth, chats, projects, documents, routing,  │
+        │  prompt assembly, the memory write gate      │
+        └───┬──────────────┬──────────────┬────────────┘
+            │              │ service token│              only when asked,
+            ▼              ▼              ▼              redacted first
+        Postgres      memory :8000    RAG API :8001  ──▶ SearXNG :8080
+        what was      the graph       documents
+        said          (Neo4j)         (Qdrant)
 
+        All model calls go to one local OpenAI-compatible server (Ollama).
 ```
-                    frontend :3000
-                          │
-                          ▼
-        ┌──── core :8100 ────────────────────┐
-        │  chat, orchestration, providers    │
-        │  owns Postgres                     │
-        └──────┬──────────────────┬──────────┘
-               │                  │
-               ▼                  ▼
-      Postgres (Supabase)   memory :8000
-      what was said          what was learned
-                                  │
-                                  ▼
-                              Neo4j
-```
+
+The browser talks to `core` and nothing else. `memory` and the RAG API refuse
+any request without core's `SERVICE_TOKEN`, so every read of the graph or the
+documents goes through a check of who is signed in.
 
 **Two databases, two jobs.** Postgres stores every message, always. Neo4j stores
 distilled facts, and only when a write gate decides something is worth keeping.
@@ -46,11 +49,11 @@ grows.
 
 ### The orchestrator seam
 
-`core/nexus_core/orchestrator.py` is where the pipelines attach.
-`select_route(content, attachments)` has one branch today and always returns
-`"general"`, but the signature is the real one, including an `Attachment` type
-for the file, image and audio cases. RAG and vision land as extra branches
-rather than as a rewrite of the caller.
+`core/nexus_core/orchestrator.py` decides which handler answers a turn, and is
+where vision and speech will attach. It is deliberately not a model call: cheap
+signals decide. Today it picks between `general` and `web`. Documents are not a
+route: every turn retrieves from them, and a relevance floor decides per turn
+whether anything retrieved reaches the prompt.
 
 ### Memory has two tiers
 
@@ -95,111 +98,132 @@ button; and a tier is swept automatically once it has taken ten new episodes.
 Each step's reasoning is in `memory/nexus_memory/hygiene.py`, alongside the
 measurements that motivated it.
 
+### Documents follow the same tiers
+
+An uploaded file is a Postgres record owned by you and, optionally, a project;
+its chunks live in Qdrant tagged with the tier they belong to. A question inside
+a project reads that project's documents and your universal ones; a question
+outside every project reads only the universal ones. The rule is
+`rag/rag_pipeline/scopes.py`, and it mirrors memory's on purpose. Uploading also
+tells the graph, in at most three facts, what the document is about, so memory
+knows you have something on a topic without holding a lossy copy of it.
+
+### Web search is the one thing that leaves the machine
+
+It runs only when you ask: the composer's globe button, or saying "search the
+web" in words. A model rewrites the message into a generic topic query, then
+your own names, email addresses and long ID-like numbers are stripped from the
+result; if that fails, nothing is sent. The exact query that left is stored on
+the message. Why it works this way: flag 1 in
+[`docs/IMPORTANT_BUSINESS_LOGIC_FLAGS.md`](docs/IMPORTANT_BUSINESS_LOGIC_FLAGS.md).
+
 ## Containers
 
-Thirteen containers across two Docker Compose projects, both named `nexus` so
-Docker Desktop groups them together. Only one of them is ours.
+Four containers, all declared in the root `docker-compose.yml`, all started by
+one `docker compose up -d`.
 
 | Container | Port | What it does |
 |---|---|---|
-| `nexus-neo4j` | 7474, 7687 | The knowledge graph. Browser UI on 7474, bolt on 7687. |
+| `nexus-postgres` | 54322 | Postgres 17. Chats, messages, projects, document records — what was said. |
+| `nexus-neo4j` | 7474, 7687 | The knowledge graph — what was learned. Browser UI on 7474, bolt on 7687. |
+| `nexus-qdrant` | 6333, 6334 | Document vectors, backing `rag/rag_pipeline`. |
+| `nexus-searxng` | 8080 | Private metasearch for web search, so queries never hit a third-party search API. Config in `docker/searxng/`. |
 
-The other twelve come from `supabase start` and are managed by the Supabase CLI,
-not by `docker-compose.yml`:
+Only the databases are containerised. The application code (`core`, `memory`,
+the RAG API, the frontend) runs directly on the host during development, so
+editing a line doesn't mean rebuilding an image. Dockerfiles for those come
+when we deploy.
 
-| Container | Port | What it does |
-|---|---|---|
-| `supabase_db_nexus` | 54322 | Postgres 17. The one that matters — chats, messages, projects. |
-| `supabase_kong_nexus` | 54321 | API gateway; the `SUPABASE_URL` everything else goes through. |
-| `supabase_studio_nexus` | 54323 | Web UI for browsing tables. Useful for watching rows land. |
-| `supabase_rest_nexus` | — | PostgREST. Unused: `core` talks to Postgres directly over SQL. |
-| `supabase_auth_nexus` | — | GoTrue. Unused until auth lands; the schema is already shaped for it. |
-| `supabase_realtime_nexus` | — | Postgres change streams. Unused. |
-| `supabase_storage_nexus` | — | File storage. Unused. |
-| `supabase_inbucket_nexus` | 54324 | Catches outbound email in development. Unused. |
-| `supabase_analytics_nexus` | 54327 | Log aggregation. |
-| `supabase_vector_nexus` | — | Log shipping for the above. |
-| `supabase_pg_meta_nexus` | — | Backs Studio's table browser. |
-| `supabase_edge_runtime_nexus` | — | Deno functions. Not used, and normally sits exited. |
+**Postgres replaced the Supabase CLI on 2026-09-02.** The CLI started twelve
+containers (Auth, Storage, Realtime, Studio, an email catcher, log shipping…)
+for the one Postgres this project actually uses. The schema in
+`db/migrations/` is plain Postgres — no Supabase-specific roles or
+policies — so it applies unchanged to a stock `postgres:17` image, and
+`db/` is the source of truth for it.
 
-Most of that stack is idle. It comes as one unit and the local CLI does not offer
-a smaller version, which is a fair trade for a Postgres that matches production
-and applies migrations the same way.
+> ⚠️ **`docker compose down -v` wipes every database at once** — graph,
+> vectors and chat history together. Plain `docker compose down` (no `-v`)
+> stops the containers and keeps the data.
 
-**`docker compose down` only stops Neo4j.** It scopes to services declared in
-`docker-compose.yml`, and the Supabase containers are the CLI's. Use
-`supabase stop` for those.
+To reset **only** Postgres, re-applying migrations and the seed from scratch:
+
+```bash
+docker compose rm -sf postgres
+docker volume rm nexus_postgres_data
+docker compose up -d postgres
+```
+
+The schema is applied by `docker/postgres-init.sh`, which the `postgres` image
+runs automatically the first time the data volume is created. It loops over
+`db/migrations/*.sql` in filename order, so a new migration added later
+needs no change to the compose file or the script.
+
+To browse tables:
+
+```bash
+docker exec -it nexus-postgres psql -U postgres -d postgres
+```
 
 ## Setup
 
-Needs Docker Desktop, [uv](https://docs.astral.sh/uv/), Node 20.9+ (Next 16
-requires it), and the
-[Supabase CLI](https://supabase.com/docs/guides/local-development).
+Needs Docker Desktop, [uv](https://docs.astral.sh/uv/), [Ollama](https://ollama.com)
+and Node 20.9+ (Next 16 requires it).
 
 ```bash
-cp .env.example .env      # fill in OPENAI_API_KEY and NEO4J_PASSWORD
-uv sync                   # installs both services editable
+cp .env.example .env      # then set NEO4J_PASSWORD, JWT_SECRET and SERVICE_TOKEN
+uv sync                   # core, memory and the RAG pipeline, editable
 cd frontend && npm install && cd ..
-
-supabase start            # first run pulls a lot of images
-supabase db reset         # applies migrations and seeds the demo user
+ollama pull gpt-oss:20b && ollama pull nomic-embed-text
 ```
 
 Then, from the repo root:
 
 ```bash
-./start.sh                     # Neo4j + memory (8000) + core (8100)
+./start.sh                     # Ollama + containers + memory (8000) + RAG API (8001) + core (8100)
 cd frontend && npm run dev     # separate terminal
 ```
 
-Open http://localhost:3000/chat. Ctrl+C stops both Python services and leaves
-Neo4j running.
-
-`start.sh` checks Supabase is up before starting anything, because `core` is
-useless without Postgres and the failure is otherwise a wall of asyncpg
-traceback thirty seconds after everything looked fine.
-
-To run a service by hand, from the repo root:
-
-```bash
-uv run uvicorn nexus_memory.main:app --reload --port 8000
-uv run uvicorn nexus_core.main:app   --reload --port 8100
-```
-
-Through `uv run` or `.venv/bin/uvicorn` — a plain `uvicorn` outside the venv is
-a different interpreter with none of this installed.
+Open http://localhost:3000/chat. Ctrl+C stops the Python services and leaves the
+containers running. To run a service by hand, see [`RUNBOOK.md`](RUNBOOK.md).
 
 ### Local inference
 
-Deferred on purpose. The provider layer
-(`core/nexus_core/providers/`) is the only thing that talks to a model, and
-every model name comes from the environment. Pointing the whole system at an
-OpenAI-compatible local server is `OPENAI_BASE_URL` plus the model names, not a
-refactor.
+Every model call goes through `core/nexus_core/providers/` or graphiti's
+OpenAI-compatible client, pointed by `OPENAI_BASE_URL` at Ollama. One model
+(`gpt-oss:20b`) serves chat, the write gate, titles and graph extraction;
+`nomic-embed-text` embeds for the graph. The RAG pipeline embeds and reranks
+in-process on CPU. Model names are configuration, so swapping a model is an
+`.env` change. How the models fit in memory: `RUNBOOK.md`.
 
 ## Repository layout
 
 ```
-core/nexus_core/        chat, orchestration, providers, the write gate
-memory/nexus_memory/    the graph: scopes, ingest, retrieval, live updates
-frontend/               Next.js 16, hand-written CSS, no UI dependencies
-supabase/migrations/    the schema, source of truth for what Postgres holds
+core/nexus_core/        auth, chats, projects, documents, routing, the write gate
+memory/nexus_memory/    the graph: scopes, ingest, retrieval, maintenance, live updates
+rag/                    the RAG pipeline (rag_pipeline/) and its HTTP service (rag_api.py)
+frontend/               Next.js 16, hand-written CSS
+db/                     Postgres schema (migrations/) and seed, source of truth
+docker/                 Postgres init script and SearXNG config
+docs/                   design notes, open product decisions, history/
 tests/                  end-to-end scenarios (opt-in, drives the live stack)
-pipelines/, shared/     empty; where the RAG and vision work will land
 ```
 
-Each service owns its tests: `core/tests/` and `memory/tests/`.
+Each service owns its tests: `core/tests/`, `memory/tests/`, `rag/tests/`.
 
-The two Python packages are named `nexus_core` and `nexus_memory` rather than
-`app`. They were both `app` once, installed into the same virtualenv, which
-meant `import app` resolved to whichever won and the other was unreachable.
+The Python packages are named `nexus_core`, `nexus_memory` and `rag_pipeline`
+rather than `app`. Two were both `app` once, installed into the same
+virtualenv, which meant `import app` resolved to whichever won and the other
+was unreachable.
 
 ## Tests
 
 ```bash
-uv run pytest                            # ~110 tests, ~2s, no services needed
-RUN_SCENARIOS=1 uv run pytest tests -v   # end-to-end, ~2 min, spends API credit
+uv run pytest                            # core + memory + rag: ~320 tests, about a minute
+RUN_SCENARIOS=1 uv run pytest tests -v   # end-to-end against the live stack and local models
 ```
+
+Database tests need the Postgres container and skip themselves without it. The
+RAG suite loads real embedding and reranking models, which is most of the time.
 
 The scenario suite is the one that answers whether memory works: a fact stated
 in one chat recalled in another, a project fact staying out of other projects, a
@@ -207,11 +231,11 @@ personal fact following you between them, and chit-chat writing nothing.
 
 ## Further reading
 
-[`RUNBOOK.md`](RUNBOOK.md) covers day-to-day operation and the failures that
-cost time in practice — stale Turbopack caches, ports that will not release, and
-memory that looks like it forgot something but is twenty seconds into
-extraction.
-
-`memory/CHECKPOINT_0*.md` are historical records of earlier states. They describe
-a layout that no longer exists and are kept for the reasoning, not the
-instructions.
+- [`RUNBOOK.md`](RUNBOOK.md): day-to-day operation, model memory limits, and
+  the failures that cost time in practice.
+- [`docs/IMPORTANT_BUSINESS_LOGIC_FLAGS.md`](docs/IMPORTANT_BUSINESS_LOGIC_FLAGS.md):
+  open product and safety decisions.
+- [`docs/RAG_API_SERVICE.md`](docs/RAG_API_SERVICE.md): why document retrieval
+  is its own service.
+- `docs/history/CHECKPOINT_0*.md`: records of earlier states, kept for the
+  reasoning rather than the instructions.

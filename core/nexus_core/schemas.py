@@ -6,9 +6,39 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 Role = Literal["user", "assistant", "system"]
+
+
+class SignupRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=200)
+    display_name: str = Field(min_length=1, max_length=200)
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class ProfileOut(BaseModel):
+    """A logged-in user. Never includes password_hash — this is what the
+    frontend gets back, not what's in the database row."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    display_name: str
+    email: str
+
+
+class AuthConfigOut(BaseModel):
+    """What the login page needs to know before anyone has logged in yet --
+    whether to render the Google button at all. Read with no session, so it
+    carries nothing about who's asking, only what this server supports."""
+
+    google_oauth_enabled: bool
 
 
 class ProjectCreate(BaseModel):
@@ -24,8 +54,19 @@ class ProjectOut(BaseModel):
     name: str
     description: str | None
     domain: str
+    pinned: bool
     created_at: datetime
     updated_at: datetime
+
+
+class ProjectUpdate(BaseModel):
+    """Rename and pin/unpin, as one partial update -- each field left unset
+    leaves that column alone. No move-to-project equivalent here; a project
+    isn't inside anything to move between."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    pinned: bool | None = None
 
 
 class ChatCreate(BaseModel):
@@ -39,15 +80,30 @@ class ChatOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    # None for a chat created from /chat directly, not filed under a project.
     project_id: uuid.UUID | None
     title: str
+    pinned: bool
     created_at: datetime
     updated_at: datetime
+
+
+class ChatUpdate(BaseModel):
+    """Rename, pin/unpin, and move-to-project, all as one partial update --
+    each field left unset leaves that column alone. Nothing required, but
+    an empty body is rejected by the router rather than silently no-op'd."""
+
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    pinned: bool | None = None
+    project_id: uuid.UUID | None = None
 
 
 class MessageCreate(BaseModel):
     content: str = Field(min_length=1)
     role: Role = "user"
+    # The composer's web button. Only ever set by the person: web search is
+    # the one handler that sends text off the machine.
+    use_web: bool = False
 
 
 class MessageOut(BaseModel):
@@ -77,6 +133,20 @@ class FactOut(BaseModel):
     kind: str = "relationship"
 
 
+class RagSourceOut(BaseModel):
+    """A document chunk retrieved from RAG and shown to the model for this
+    turn — same idea as FactOut, one level of provenance the UI can render."""
+
+    file_name: str
+    page_number: int | str | None = None
+    chunk_index: int | str | None = None
+    heading_path: str = ""
+    # How strongly the reranker matched this chunk to the question, 0-1.
+    # Surfaced because "why did it cite this?" is the first question anyone
+    # asks about a wrong answer, and the score is the honest answer.
+    rerank_score: float = 0.0
+
+
 class TurnOut(BaseModel):
     """Both halves of an exchange.
 
@@ -92,6 +162,9 @@ class TurnOut(BaseModel):
     # What memory contributed. Empty when nothing was recalled or the memory
     # service was unreachable -- the answer still stands either way.
     recalled: list[FactOut] = []
+    # What RAG contributed. Empty when the route wasn't "rag", nothing was
+    # retrieved, or RAG was unreachable -- same non-fatal contract as memory.
+    rag_sources: list[RagSourceOut] = []
 
 
 class MemoryEpisodeOut(BaseModel):
@@ -139,3 +212,24 @@ class MaintenanceRunOut(BaseModel):
     episodes_at_run: int
     started_at: datetime
     finished_at: datetime | None
+
+
+class DocumentOut(BaseModel):
+    """An uploaded file as the UI sees it.
+
+    ``project_id`` being null is meaningful rather than missing: it is the
+    universal tier, readable from every chat. The same null on ``ChatOut``
+    means the same thing, which is why they render in the same tree.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    project_id: uuid.UUID | None
+    file_name: str
+    byte_size: int
+    chunk_count: int
+    status: str
+    error: str | None
+    graph_synced_at: datetime | None
+    created_at: datetime
