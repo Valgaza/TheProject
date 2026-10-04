@@ -19,11 +19,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import chat_title
 from .memory_client import Fact, MemoryClient
-from .models import Chat, Message
+from .models import Chat, Message, Profile
 from .orchestrator import Attachment, Route, select_route
 from .providers.base import Message as ProviderMessage
 from .providers.base import Provider
 from .rag_client import RagClient, RagResult, RagSource
+from .web_client import WebClient, WebSearch
 
 logger = logging.getLogger(__name__)
 
@@ -104,10 +105,31 @@ def render_rag_context(rag_result: RagResult) -> str:
     )
 
 
+def render_web_context(web: WebSearch) -> str:
+    """Search results as a system message -- or, when the search did not run,
+    an instruction to say so. A model told nothing answers from its training
+    data as if it had looked, which is worse than admitting it could not."""
+    if not web.results:
+        return (
+            "The person asked for a web search, but it did not run "
+            f"({web.error or 'no results'}). Say plainly that you could not "
+            "check the web, then answer from what you know if you can."
+        )
+    lines = "\n\n".join(
+        f"[{i}] {r.title}\n{r.url}\n{r.snippet}" for i, r in enumerate(web.results, 1)
+    )
+    return (
+        f"Web search results for \"{web.query_sent}\":\n\n{lines}\n\n"
+        "Use them where they answer the question and cite them by number, "
+        "e.g. [2]. They are from the open web: weigh them, don't trust them."
+    )
+
+
 def build_prompt(
     history: list[Message],
     facts: Sequence[Fact] = (),
     rag_result: RagResult | None = None,
+    web: WebSearch | None = None,
 ) -> list[ProviderMessage]:
     """The system prompt, then recalled memory, then retrieved documents, then
     the conversation.
@@ -123,6 +145,8 @@ def build_prompt(
         prompt.append({"role": "system", "content": render_memory(facts)})
     if rag_result is not None and rag_result.prompt:
         prompt.append({"role": "system", "content": render_rag_context(rag_result)})
+    if web is not None:
+        prompt.append({"role": "system", "content": render_web_context(web)})
     for message in history:
         if message.role == "system":
             continue
@@ -141,13 +165,18 @@ async def generate_turn(
     rag: RagClient | None = None,
     attachments: tuple[Attachment, ...] = (),
     title_model: str | None = None,
+    rag_min_score: float = 0.5,
+    web: WebClient | None = None,
+    use_web: bool = False,
 ) -> Turn:
     """Store the user message, answer it, store the answer.
 
     Both messages are written even if generation fails — the transcript records
     what was said, and a turn that errored is still something that was said.
     """
-    route = await select_route(content=content, attachments=attachments, rag=rag)
+    route = await select_route(
+        content=content, attachments=attachments, rag=rag, use_web=use_web
+    )
 
     user_message = Message(
         chat_id=chat.id,
@@ -187,20 +216,57 @@ async def generate_turn(
             # answer and never fails one.
             logger.exception("Memory search raised for chat=%s", chat.id)
 
-    # Same rule as memory: RAG being unreachable degrades this answer, it does
-    # not fail the turn. Only called at all when the route said "rag" — the
-    # existence check in select_route() already decided it's worth trying.
+    # Documents are a retrieval tier, not a route -- the same shape as memory
+    # above, and for the same reason. Memory is never routed to: every turn
+    # searches it and a measured cosine floor decides whether anything is
+    # worth injecting. Documents now work identically.
+    #
+    # Routing on "does this project have documents" was the previous design
+    # and it had a defect: once a project held one file, every turn in it
+    # went through retrieval, "thanks" included, and the corpus was pushed in
+    # front of the model whether or not it had anything to say. A threshold
+    # answers that question per turn instead of per project.
+    #
+    # route.handler stays for pipelines that genuinely are different work --
+    # vision and speech, which the orchestrator already anticipates.
     rag_result: RagResult | None = None
-    if route.handler == "rag" and rag is not None:
+    if rag is not None:
         try:
-            rag_result = await rag.query(content)
+            candidate = await rag.query(
+                content, user_id=user_id, project_id=chat.project_id
+            )
+            if candidate is not None and candidate.sources:
+                if candidate.best_score >= rag_min_score:
+                    rag_result = candidate
+                else:
+                    logger.info(
+                        "rag below floor chat=%s best=%.3f floor=%.3f sources=%d",
+                        chat.id, candidate.best_score, rag_min_score,
+                        len(candidate.sources),
+                    )
         except Exception:
             # rag.query() already catches its own transport failures and
             # returns None; this catches anything else, same reasoning as
             # the memory search above.
             logger.exception("RAG query raised for chat=%s", chat.id)
 
-    prompt = build_prompt(history, facts, rag_result)
+    # Only when asked for, and only through the client that redacts: the
+    # query that goes out is the client's rewrite, never the raw message.
+    web_search: WebSearch | None = None
+    if route.handler == "web":
+        if web is None:
+            web_search = WebSearch(query_sent=None, error="web search is not configured")
+        else:
+            profile = await session.get(Profile, user_id)
+            known_names = [n for n in (getattr(profile, "display_name", None),
+                                       getattr(profile, "email", None)) if n]
+            # The cheap model, same as titles and the write gate: rewriting a
+            # question into a topic is small work.
+            web_search = await web.search(
+                content, provider=provider, model=title_model, known_names=known_names
+            )
+
+    prompt = build_prompt(history, facts, rag_result, web_search)
 
     started = time.perf_counter()
     error: str | None = None
@@ -222,9 +288,26 @@ async def generate_turn(
         # bad one, rather than sitting on the placeholder forever.
         chat.title = smart_title or _derive_title(content)
 
+    # The route recorded is what actually happened, not what was predicted
+    # before retrieval ran. "rag" here means documents genuinely informed
+    # this answer -- they cleared the floor and went into the prompt -- which
+    # is the only version of this label a person reading it can act on.
+    effective_route = route
+    # A web turn keeps its label even when documents also helped: it is the
+    # one route that tells the person their words went off the machine.
+    if rag_result is not None and route.handler != "web":
+        effective_route = Route(
+            handler="rag",
+            reason=(
+                f"{len(rag_result.sources)} document "
+                f"{'chunk' if len(rag_result.sources) == 1 else 'chunks'} "
+                f"cleared the relevance floor (best {rag_result.best_score:.2f})"
+            ),
+        )
+
     meta: dict = {
-        "route": route.handler,
-        "route_reason": route.reason,
+        "route": effective_route.handler,
+        "route_reason": effective_route.reason,
         "latency_ms": latency_ms,
         "prompt_messages": len(prompt),
         # What was recalled, so the UI can show it and so a bad answer can be
@@ -239,10 +322,18 @@ async def generate_turn(
                 "page_number": s.page_number,
                 "chunk_index": s.chunk_index,
                 "heading_path": s.heading_path,
+                "rerank_score": round(s.rerank_score, 4),
             }
             for s in (rag_result.sources if rag_result else ())
         ],
     }
+    if web_search is not None:
+        # The exact text that left the machine, so anyone can check it.
+        meta["web"] = {
+            "query_sent": web_search.query_sent,
+            "error": web_search.error,
+            "results": [{"title": r.title, "url": r.url} for r in web_search.results],
+        }
     if error is not None:
         meta["error"] = error
 
@@ -268,7 +359,10 @@ async def generate_turn(
     return Turn(
         user_message=user_message,
         assistant_message=assistant_message,
-        route=route,
+        # effective_route, not route: the API hands this straight to the UI,
+        # and it should say what informed the answer rather than what was
+        # guessed before retrieval ran.
+        route=effective_route,
         facts=tuple(facts),
         rag_sources=rag_result.sources if rag_result else (),
     )

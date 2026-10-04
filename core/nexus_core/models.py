@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -135,6 +136,49 @@ class Message(Base):
     )
 
     chat: Mapped[Chat] = relationship(back_populates="messages")
+
+
+class Document(Base):
+    """An uploaded file, and which tier it belongs to.
+
+    ``project_id`` is optional for the same reason it is on ``Chat``: a
+    document outside every project belongs to the user tier and is visible in
+    every conversation, while a document inside one is isolated to it. The
+    two tables agreeing on this shape is what lets the sidebar group files and
+    chats the same way.
+
+    Postgres holds this record; Qdrant holds the chunks, carrying ``id`` in
+    their payload as ``document_id``. Deleting a row here means deleting by
+    that filter there — there is no cascade between the two stores.
+    """
+
+    __tablename__ = "documents"
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('pending', 'ingested', 'failed')",
+            name="documents_status_check",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE")
+    )
+    file_name: Mapped[str] = mapped_column(Text, nullable=False)
+    byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    error: Mapped[str | None] = mapped_column(Text)
+    # Null until the document's topics reach the graph. Distinguishes "never
+    # tried" from "tried and the gate kept nothing".
+    graph_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class MemoryEpisode(Base):

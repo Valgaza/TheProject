@@ -71,6 +71,10 @@ class FakeSettings:
     # Hosts that cannot resolve, so the health check exercises its failure path.
     memory_service_url = "http://memory.invalid"
     rag_service_url = "http://rag.invalid"
+    # The relevance floor documents must clear to reach the model. Matches
+    # the production default so a test that stubs a score reads the same way
+    # here as it behaves in the app.
+    rag_min_score = 0.5
     # A real secret so create_session_token/decode_session_token actually
     # work in tests — doesn't need to match any real deployment's secret,
     # only itself, within one test run.
@@ -80,6 +84,7 @@ class FakeSettings:
     session_cookie_secure = False
     google_oauth_enabled = False
     frontend_url = "http://localhost:3000"
+    cors_origins = ["http://localhost:3000"]
 
 
 @pytest.fixture
@@ -96,7 +101,7 @@ async def engine():
             await conn.execute(text("select 1"))
     except Exception as exc:
         await eng.dispose()
-        pytest.skip(f"database unavailable ({exc.__class__.__name__}); run `supabase start`")
+        pytest.skip(f"database unavailable ({exc.__class__.__name__}); run `docker compose up -d postgres`")
     yield eng
     await eng.dispose()
 
@@ -129,7 +134,7 @@ def _reset_optional_clients() -> None:
     not error — it silently changes behaviour, which is worse. A test that
     wants one sets it explicitly; a test that doesn't should see none.
     """
-    for attribute in ("memory", "rag"):
+    for attribute in ("memory", "rag", "web"):
         if hasattr(app.state, attribute):
             delattr(app.state, attribute)
 

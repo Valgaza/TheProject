@@ -65,6 +65,10 @@ def _rag(request: Request) -> RagClient | None:
     return getattr(request.app.state, "rag", None)
 
 
+def _settings(request: Request):
+    return request.app.state.settings
+
+
 @router.get("", response_model=list[ChatOut])
 async def list_chats(
     request: Request,
@@ -211,6 +215,9 @@ async def create_message(
         memory=_memory(request),
         rag=_rag(request),
         title_model=request.app.state.settings.gate_model,
+        rag_min_score=_settings(request).rag_min_score,
+        web=getattr(request.app.state, "web", None),
+        use_web=body.use_web,
     )
     # Commit before scheduling, not after. FastAPI runs a background task
     # before the exit code of a dependency that yields, so session_dependency's
@@ -257,6 +264,7 @@ async def create_message(
                 page_number=s.page_number,
                 chunk_index=s.chunk_index,
                 heading_path=s.heading_path,
+                rerank_score=round(s.rerank_score, 4),
             )
             for s in turn.rag_sources
         ],

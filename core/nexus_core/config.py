@@ -100,8 +100,24 @@ class Settings:
         self.session_cookie_secure = _optional("SESSION_COOKIE_SECURE", "0") == "1"
 
         # ── Service wiring ───────────────────────────────────────────────────
+        # How relevant a document chunk has to be before it is put in front
+        # of the model. The reranker applies a sigmoid, so this is a 0-1
+        # probability from a cross-encoder, not a cosine -- do not copy
+        # memory's 0.45 across, the two numbers measure different things.
+        #
+        # This is the floor that lets documents be a retrieval tier rather
+        # than a route: every turn retrieves, and only turns with a genuine
+        # match pay for the context. Provisional at 0.5 -- "more likely
+        # relevant than not" -- and wants the same treatment memory's floor
+        # got: a sweep over real questions, not a round number. Raise it if
+        # the corpus starts answering questions it has nothing to say about.
+        self.rag_min_score = float(_optional("CORE_RAG_MIN_SCORE", "0.5"))
+
         self.memory_service_url = _optional("MEMORY_SERVICE_URL", "http://localhost:8000")
         self.rag_service_url = _optional("RAG_SERVICE_URL", "http://localhost:8001")
+        # Self-hosted SearXNG (docker-compose.yml). The only outbound call in
+        # core; everything sent there is redacted first (web_client.py).
+        self.searxng_url = _optional("SEARXNG_URL", "http://localhost:8080")
         self.port = int(_optional("CORE_PORT", "8100"))
         self.cors_origins = [
             origin.strip()

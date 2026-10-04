@@ -101,6 +101,9 @@ class ChatUpdate(BaseModel):
 class MessageCreate(BaseModel):
     content: str = Field(min_length=1)
     role: Role = "user"
+    # The composer's web button. Only ever set by the person: web search is
+    # the one handler that sends text off the machine.
+    use_web: bool = False
 
 
 class MessageOut(BaseModel):
@@ -138,6 +141,10 @@ class RagSourceOut(BaseModel):
     page_number: int | str | None = None
     chunk_index: int | str | None = None
     heading_path: str = ""
+    # How strongly the reranker matched this chunk to the question, 0-1.
+    # Surfaced because "why did it cite this?" is the first question anyone
+    # asks about a wrong answer, and the score is the honest answer.
+    rerank_score: float = 0.0
 
 
 class TurnOut(BaseModel):
@@ -205,3 +212,24 @@ class MaintenanceRunOut(BaseModel):
     episodes_at_run: int
     started_at: datetime
     finished_at: datetime | None
+
+
+class DocumentOut(BaseModel):
+    """An uploaded file as the UI sees it.
+
+    ``project_id`` being null is meaningful rather than missing: it is the
+    universal tier, readable from every chat. The same null on ``ChatOut``
+    means the same thing, which is why they render in the same tree.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    project_id: uuid.UUID | None
+    file_name: str
+    byte_size: int
+    chunk_count: int
+    status: str
+    error: str | None
+    graph_synced_at: datetime | None
+    created_at: datetime

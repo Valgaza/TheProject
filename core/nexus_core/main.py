@@ -23,9 +23,12 @@ from .logging_config import configure_logging
 from .memory_client import MemoryClient
 from .providers import Provider, build_provider
 from .rag_client import RagClient
+from .web_client import WebClient
 from .routers import (
     auth_router,
     chats_router,
+    documents_router,
+    graph_router,
     maintenance_router,
     projects_router,
 )
@@ -59,6 +62,7 @@ async def lifespan(app: FastAPI):
     # a failed query degrades the turn, it doesn't fail it.
     app.state.rag = RagClient(http, settings.rag_service_url)
     app.state.http = http
+    app.state.web = WebClient(settings.searxng_url)
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)
 
@@ -129,6 +133,8 @@ if _jwt_secret:
 app.include_router(auth_router)
 app.include_router(projects_router)
 app.include_router(chats_router)
+app.include_router(documents_router)
+app.include_router(graph_router)
 app.include_router(maintenance_router)
 
 
