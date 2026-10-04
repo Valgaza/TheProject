@@ -60,3 +60,52 @@ async def test_an_unknown_chat_is_still_404(db_client):
     response = await db_client.get(f"/chats/{uuid.uuid4()}")
 
     assert response.status_code == 404
+
+
+# Carried over from test_unfiled_chats.py, written alongside this file for the
+# same feature on feature/orchestrator. Its three overlapping tests were dropped.
+
+
+async def test_an_unfiled_chat_is_reachable_by_id(db_client):
+    chat = (await db_client.post("/chats", json={})).json()
+
+    response = await db_client.get(f"/chats/{chat['id']}")
+
+    assert response.status_code == 200
+    assert response.json()["project_id"] is None
+
+
+async def test_list_chats_returns_filed_and_unfiled_alike(db_client):
+    """GET /chats is every chat this user has -- the sidebar needs the lot
+    in one call, so it can nest each one under its project."""
+    await db_client.post("/chats", json={"title": "Unfiled one"})
+    project = (await db_client.post("/projects", json={"name": "P"})).json()
+    await db_client.post(f"/projects/{project['id']}/chats", json={"title": "Filed one"})
+
+    response = await db_client.get("/chats")
+
+    assert response.status_code == 200
+    titles = [c["title"] for c in response.json()]
+    assert "Unfiled one" in titles
+    assert "Filed one" in titles
+
+
+async def test_an_unfiled_chat_can_be_moved_into_a_project(db_client):
+    chat = (await db_client.post("/chats", json={})).json()
+    project = (await db_client.post("/projects", json={"name": "P"})).json()
+
+    response = await db_client.patch(f"/chats/{chat['id']}", json={"project_id": project["id"]})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["project_id"] == project["id"]
+
+
+async def test_deleting_a_project_does_not_touch_unfiled_chats(db_client):
+    unfiled = (await db_client.post("/chats", json={"title": "Survives"})).json()
+    project = (await db_client.post("/projects", json={"name": "P"})).json()
+    filed = (await db_client.post(f"/projects/{project['id']}/chats", json={})).json()
+
+    await db_client.delete(f"/projects/{project['id']}")
+
+    assert (await db_client.get(f"/chats/{unfiled['id']}")).status_code == 200
+    assert (await db_client.get(f"/chats/{filed['id']}")).status_code == 404
