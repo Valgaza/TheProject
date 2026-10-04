@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from ..auth import current_user_id as _current_user_id
 from ..db import session_dependency
 from ..memory_client import MemoryClient
 from ..models import Chat, MaintenanceRun, MemoryEpisode, Project
@@ -32,10 +33,6 @@ router = APIRouter(prefix="/maintenance", tags=["maintenance"])
 # a scheduled sweep would do idle work on an app that is off most of the time,
 # and would need a scheduler to do it.
 EPISODES_BETWEEN_SWEEPS = 10
-
-
-def _current_user_id(request: Request) -> uuid.UUID:
-    return request.app.state.settings.demo_user_id
 
 
 async def _record(
