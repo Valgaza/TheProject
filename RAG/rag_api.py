@@ -33,6 +33,7 @@ _ENV_PATH = Path(__file__).resolve().parent / ".env"
 if _ENV_PATH.exists():
     load_dotenv(_ENV_PATH, override=True)
 
+from rag_pipeline.scopes import read_scopes, write_scope
 from rag_pipeline.pipelines.ingestion import IngestionPipeline
 from rag_pipeline.pipelines.query import QueryPipeline
 
@@ -118,8 +119,24 @@ ALLOWED_EXTENSIONS = {".pdf", ".md", ".markdown", ".mdx"}
 
 
 @app.post("/api/ingest", response_model=IngestResponse)
-async def ingest_document(file: UploadFile = File(...)):
-    """Upload and ingest a document into the vector store."""
+async def ingest_document(
+    file: UploadFile = File(...),
+    user_id: str = Form(...),
+    project_id: str | None = Form(None),
+    document_id: str | None = Form(None),
+):
+    """Upload and ingest a document into one tier of the vector store.
+
+    ``user_id`` is required rather than optional. An unowned chunk is
+    invisible to every scoped read, so accepting an upload without an owner
+    would succeed loudly and then retrieve nothing forever -- the worst shape
+    a bug can take. No project means the universal tier, exactly as a chat
+    with no project writes to the user tier.
+
+    ``document_id`` is the Postgres row this file belongs to. It is what
+    makes deletion possible: Postgres owns the record, and this is the only
+    key linking it to the chunks out here.
+    """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided.")
 
@@ -141,9 +158,18 @@ async def ingest_document(file: UploadFile = File(...)):
         dest = tmp_path.parent / file.filename
         tmp_path.rename(dest)
 
-        logger.info("Ingesting uploaded file: %s (%d bytes)", file.filename, len(content))
+        scope_key = write_scope(user_id, project_id)
+        logger.info(
+            "Ingesting %s (%d bytes) into %s",
+            file.filename, len(content), scope_key,
+        )
         pipeline = _get_ingest_pipeline()
-        stats = pipeline.ingest(dest)
+        stats = pipeline.ingest(dest, extra_payload={
+            "user_id": user_id,
+            "project_id": project_id,
+            "document_id": document_id,
+            "scope_key": scope_key,
+        })
 
         return IngestResponse(
             success=len(stats.errors) == 0,
@@ -165,14 +191,30 @@ async def ingest_document(file: UploadFile = File(...)):
 
 
 @app.post("/api/query", response_model=QueryResponse)
-async def query_knowledge_base(question: str = Form(...)):
-    """Query the knowledge base and return the assembled prompt."""
+async def query_knowledge_base(
+    question: str = Form(...),
+    user_id: str = Form(...),
+    project_id: str | None = Form(None),
+):
+    """Query one person's documents, in the tiers this question may read.
+
+    A question inside a project retrieves from that project *and* from the
+    universal tier; a question outside every project retrieves from the
+    universal tier alone. That asymmetry lives in ``read_scopes`` and mirrors
+    the graph's ``read_groups`` -- see the note there before changing either.
+    """
     if not question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
-    logger.info("Query: %s", question[:120])
+    scopes = read_scopes(user_id, project_id)
+    logger.info("Query %r across %s", question[:80], scopes)
     pipeline = _get_query_pipeline()
-    result = pipeline.query(question=question.strip())
+    # A list value becomes Qdrant's MatchAny -- an OR across the tiers -- so
+    # this one filter is the whole access rule.
+    result = pipeline.query(
+        question=question.strip(),
+        filters={"scope_key": scopes},
+    )
 
     ctx = result.assembled_context
 
@@ -205,10 +247,48 @@ async def health():
 
 
 @app.get("/api/status")
-async def status():
-    """Cheap collection stats (point count etc.) — no embedding, search, or
-    reranking involved. Used by core to check whether there's anything
-    ingested at all before bothering to run a full query.
+async def status(user_id: str | None = None, project_id: str | None = None):
+    """Cheap collection stats -- no embedding, search, or reranking.
+
+    With ``user_id`` this counts only the tiers that user's question could
+    read, which is what core needs: "are there documents *here*", not "are
+    there documents anywhere". Without it, the whole-collection view, kept
+    for operators poking at the service directly.
     """
     pipeline = _get_query_pipeline()
-    return pipeline.collection_info()
+    info = pipeline.collection_info()
+    if user_id:
+        scopes = read_scopes(user_id, project_id)
+        info = dict(info)
+        info["scope_keys"] = scopes
+        info["points_count"] = pipeline.count_in_scopes(scopes)
+    return info
+
+
+@app.get("/api/documents/{document_id}/excerpt")
+async def document_excerpt(document_id: str, chars: int = 4000):
+    """The opening of a document, as text.
+
+    For callers that need to know what a file is about -- cataloguing it into
+    a knowledge graph, say -- without re-parsing it. The chunks here have
+    already been through the loader and chunker, so this is the cleaned text,
+    not the raw bytes.
+    """
+    pipeline = _get_query_pipeline()
+    chunks = pipeline.opening_chunks(document_id, limit=6)
+    text = "\n\n".join(c for c in chunks if c)
+    return {"document_id": document_id, "excerpt": text[:chars]}
+
+
+@app.delete("/api/documents/{document_id}")
+async def delete_document(document_id: str):
+    """Remove one document's chunks.
+
+    Postgres owns the record and deletes its own row; this removes what that
+    row pointed at. Nothing cascades between the two stores, so a caller that
+    deletes the row without calling this leaves orphaned chunks that will
+    keep answering questions.
+    """
+    pipeline = _get_query_pipeline()
+    removed = pipeline.delete_document(document_id)
+    return {"document_id": document_id, "chunks_removed": removed}

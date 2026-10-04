@@ -120,3 +120,19 @@ class QueryPipeline:
         paying for a full query.
         """
         return self._retriever._vector_store.get_collection_info()
+
+    def count_in_scopes(self, scope_keys: list[str]) -> int:
+        """How many chunks live in these tiers. No search, no rerank.
+
+        This is the signal that decides whether retrieval is worth running
+        for a turn at all, so it has to stay cheap enough to call every time.
+        """
+        return self._retriever._vector_store.count({"scope_key": scope_keys})
+
+    def opening_chunks(self, document_id: str, limit: int = 4) -> list[str]:
+        """The opening of one document, for callers that need its subject."""
+        return self._retriever._vector_store.opening_chunks(document_id, limit)
+
+    def delete_document(self, document_id: str) -> int:
+        """Remove one document's chunks. Returns how many went."""
+        return self._retriever._vector_store.delete_by_document(document_id)

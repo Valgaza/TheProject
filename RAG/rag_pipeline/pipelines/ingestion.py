@@ -41,7 +41,6 @@ class IngestionPipeline:
         """
         self._embedding_service = embedding_service or FastEmbedService()
         self._vector_store = vector_store or QdrantStore()
-        self._collection_ready = False
 
         # Chunkers (selected per document type)
         self._recursive_chunker = RecursiveChunker(
@@ -54,17 +53,35 @@ class IngestionPipeline:
         )
 
     def _ensure_collection(self) -> None:
-        """Ensure the Qdrant collection exists (lazy, runs once)."""
-        if not self._collection_ready:
-            dim = self._embedding_service.get_dense_dimension()
-            self._vector_store.ensure_collection(dense_dim=dim)
-            self._collection_ready = True
+        """Ensure the Qdrant collection exists.
 
-    def ingest(self, file_path: str | Path) -> IngestionStats:
+        Checked on every ingest, not cached. The cache that used to live here
+        held a "ready" flag for the lifetime of the process, which meant a
+        collection dropped from underneath the service -- a reset, a wiped
+        volume, an operator clearing test data -- was never recreated, and
+        every upload from then on failed with a 404 the user saw as "couldn't
+        be read" until someone restarted the service.
+
+        ensure_collection is already idempotent and costs one cheap listing
+        call against a local Qdrant, against parsing and embedding a whole
+        document. That is not a trade worth a stale flag.
+        """
+        dim = self._embedding_service.get_dense_dimension()
+        self._vector_store.ensure_collection(dense_dim=dim)
+
+    def ingest(
+        self,
+        file_path: str | Path,
+        extra_payload: dict | None = None,
+    ) -> IngestionStats:
         """Ingest a single file through the full pipeline.
 
         Args:
             file_path: Path to the file to ingest.
+            extra_payload: Ownership stamped onto every chunk of this file --
+                ``user_id``, ``project_id``, ``document_id``, ``scope_key``.
+                Without it the chunks are unowned and no scoped read will
+                ever match them, which is the pre-2026-09-03 behaviour.
 
         Returns:
             IngestionStats with processing metrics.
@@ -112,7 +129,7 @@ class IngestionPipeline:
 
             # Step 4: Store
             self._ensure_collection()
-            upserted = self._vector_store.upsert(chunks, embeddings)
+            upserted = self._vector_store.upsert(chunks, embeddings, extra_payload)
             stats.points_upserted = upserted
             logger.info("Upserted %d points", upserted)
 

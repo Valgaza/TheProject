@@ -98,12 +98,19 @@ class QdrantStore(VectorStore):
         self,
         chunks: list[Chunk],
         embeddings: list[EmbeddingResult],
+        extra_payload: dict[str, Any] | None = None,
     ) -> int:
         """Batch upsert chunks with dense + sparse vectors and metadata.
 
         Args:
             chunks: Chunk objects (content + metadata).
             embeddings: Corresponding EmbeddingResult objects.
+            extra_payload: Fields stamped onto every point in this batch --
+                ownership, in practice: ``user_id``, ``project_id``,
+                ``document_id`` and ``scope_key``. Passed here rather than
+                threaded through ChunkMetadata because it is a property of
+                the *upload*, not of any chunk: every chunk of one file
+                carries identical values.
 
         Returns:
             Total number of points upserted.
@@ -139,6 +146,13 @@ class QdrantStore(VectorStore):
                 }
                 if chunk.metadata.page_number is not None:
                     payload["page_number"] = chunk.metadata.page_number
+
+                # Ownership last so it cannot be shadowed by chunk metadata
+                # that happens to share a key name. A chunk silently
+                # overwriting its own scope_key would put a project document
+                # into the universal tier without anything failing.
+                if extra_payload:
+                    payload.update(extra_payload)
 
                 points.append(models.PointStruct(
                     id=chunk.id,
@@ -252,12 +266,76 @@ class QdrantStore(VectorStore):
             logger.error("Failed to delete collection: %s", e)
             return False
 
-    def count(self) -> int:
-        """Return the number of points in the collection."""
+    def count(self, filters: dict[str, Any] | None = None) -> int:
+        """Number of points, optionally within one set of tiers.
+
+        Unfiltered this reads the collection header and costs nothing.
+        Filtered it is a real count request -- still cheap, and far cheaper
+        than the alternative of running a full query just to discover the
+        tier is empty.
+        """
         try:
+            if filters:
+                result = self._client.count(
+                    collection_name=self._collection_name,
+                    count_filter=self._build_filter(filters),
+                    exact=True,
+                )
+                return result.count
             info = self._client.get_collection(self._collection_name)
             return info.points_count or 0
         except Exception:
+            return 0
+
+    def opening_chunks(self, document_id: str, limit: int = 4) -> list[str]:
+        """The first few chunks of one document, in order.
+
+        Exists so a caller can know what a document is *about* without
+        re-parsing the file. The parsing, chunking and cleaning already
+        happened during ingest; this reads the result back rather than
+        making core grow a PDF dependency to redo it.
+
+        scroll(), not search(): there is no query here, and ordering by
+        chunk_index is exactly what "the opening" means.
+        """
+        try:
+            points, _ = self._client.scroll(
+                collection_name=self._collection_name,
+                scroll_filter=self._build_filter({"document_id": document_id}),
+                limit=64,
+                with_payload=True,
+                with_vectors=False,
+            )
+        except Exception:
+            logger.exception("Failed reading opening chunks for %s", document_id)
+            return []
+
+        ordered = sorted(
+            points,
+            key=lambda pt: (pt.payload or {}).get("chunk_index") or 0,
+        )
+        return [
+            (pt.payload or {}).get("content", "")
+            for pt in ordered[:limit]
+        ]
+
+    def delete_by_document(self, document_id: str) -> int:
+        """Remove every chunk of one document. Returns chunks removed.
+
+        Counted before deleting because Qdrant's delete does not report how
+        much it matched, and "we deleted something" is not a useful thing to
+        tell a user staring at a file list.
+        """
+        try:
+            removed = self.count({"document_id": document_id})
+            if removed:
+                self._client.delete(
+                    collection_name=self._collection_name,
+                    points_selector=self._build_filter({"document_id": document_id}),
+                )
+            return removed
+        except Exception:
+            logger.exception("Failed deleting chunks for document %s", document_id)
             return 0
 
     @staticmethod

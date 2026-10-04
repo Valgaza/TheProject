@@ -27,12 +27,15 @@ class VectorStore(ABC):
         self,
         chunks: list[Chunk],
         embeddings: list[EmbeddingResult],
+        extra_payload: dict | None = None,
     ) -> int:
         """Insert or update chunks with their embeddings.
 
         Args:
             chunks: Chunk objects with content and metadata.
             embeddings: Corresponding embedding results (same order/length).
+            extra_payload: Fields stamped onto every point -- ownership and
+                tier, which belong to the upload rather than to any chunk.
 
         Returns:
             Number of points successfully upserted.
