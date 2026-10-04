@@ -10,7 +10,9 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from nexus_core.chat_service import build_prompt
 from nexus_core.orchestrator import select_route
+from nexus_core.rag_client import RagResult, RagSource
 from nexus_core.web_client import WebClient, WebResult, WebSearch, strip_identifiers
 
 
@@ -105,6 +107,26 @@ async def test_no_safe_query_means_nothing_is_sent(reply):
     assert result.query_sent is None and result.error
 
 
+async def test_a_dead_searxng_is_an_error_not_an_exception():
+    """Degrading an answer is acceptable; failing one is not -- the same rule
+    as memory and RAG. Ported from feature/orchestrator's test_web_context.py."""
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("searxng is down", request=request)
+
+    web = WebClient("http://searxng.test", transport=httpx.MockTransport(refuse))
+
+    result = await web.search(
+        "latest raft news",
+        provider=RewritingProvider("raft consensus news"),
+        model=None,
+        known_names=[],
+    )
+
+    assert result.results == ()
+    assert result.query_sent == "raft consensus news"
+    assert "ConnectError" in (result.error or "")
+
+
 # ── Routing ──────────────────────────────────────────────────────────────────
 
 
@@ -112,6 +134,43 @@ async def test_the_web_only_runs_when_asked_for():
     assert (await select_route(content="what's new in raft", use_web=True)).handler == "web"
     assert (await select_route(content="search the web for raft")).handler == "web"
     assert (await select_route(content="what is raft")).handler == "general"
+
+
+@pytest.mark.parametrize("content", [
+    "search the internet for raft",
+    "Search The Web for raft",
+    "can you look it up online?",
+    "look this up online please",
+])
+async def test_every_trigger_phrase_routes_to_the_web(content):
+    assert (await select_route(content=content)).handler == "web"
+
+
+# ── The prompt ───────────────────────────────────────────────────────────────
+
+
+class Row:
+    def __init__(self, role: str, content: str) -> None:
+        self.role, self.content = role, content
+
+
+def test_web_results_sit_after_documents_and_before_the_conversation():
+    prompt = build_prompt(
+        [Row("user", "can I work remote? also search the web for news")],
+        rag_result=RagResult(prompt="Section 3: remote work is permitted."),
+        web=WebSearch(
+            query_sent="company news",
+            results=(WebResult(title="News", url="https://n.example", snippet="Sunny"),),
+        ),
+    )
+
+    assert [m["role"] for m in prompt] == ["system", "system", "system", "user"]
+    assert "remote work is permitted" in prompt[1]["content"]
+    assert "https://n.example" in prompt[2]["content"]
+
+
+def test_no_web_search_means_no_web_message():
+    assert len(build_prompt([Row("user", "hi")])) == 2
 
 
 # ── Through a real turn ──────────────────────────────────────────────────────
@@ -157,6 +216,33 @@ async def test_without_the_button_nothing_goes_to_the_web(db_client):
     await db_client.post(f"/chats/{chat['id']}/messages", json={"content": "what's raft"})
 
     assert web.messages == []
+
+
+class FakeRag:
+    async def query(self, question, *, user_id, project_id) -> RagResult:
+        return RagResult(
+            prompt="Section 3: remote work is permitted.",
+            sources=(RagSource(file_name="handbook.pdf", rerank_score=0.9),),
+        )
+
+
+async def test_documents_and_the_web_can_inform_one_turn(db_client, provider):
+    """The web is a route and documents are a tier, so both can contribute.
+    The label stays "web": it is the one that says words left the machine."""
+    db_client._transport.app.state.rag = FakeRag()
+    db_client._transport.app.state.web = FakeWeb()
+    chat = await _make_chat(db_client)
+
+    body = (await db_client.post(
+        f"/chats/{chat['id']}/messages",
+        json={"content": "can I work remote? and what's raft", "use_web": True},
+    )).json()
+
+    assert body["route"]["handler"] == "web"
+    assert body["rag_sources"]
+    prompt_text = "\n".join(m["content"] for m in provider.chat_calls[-1])
+    assert "remote work is permitted" in prompt_text
+    assert "https://raft.github.io" in prompt_text
 
 
 async def test_an_unconfigured_web_search_tells_the_model_so(db_client, provider):

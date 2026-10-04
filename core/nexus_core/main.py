@@ -42,6 +42,7 @@ class HealthResponse(BaseModel):
     chat_model: str
     memory_service: str
     rag_service: str
+    web_service: str
     database: str
 
 
@@ -177,6 +178,17 @@ async def health(request: Request) -> HealthResponse:
         rag_status = "unreachable"
 
     try:
+        # A plain client, not app.state.http: that one carries the service
+        # token, which is for memory and RAG only. SearXNG has no /health; a
+        # healthy instance answers GET / with its search page.
+        async with httpx.AsyncClient(timeout=3.0) as plain:
+            response = await plain.get(settings.searxng_url)
+        web_status = "ok" if response.status_code == 200 else "degraded"
+    except Exception as exc:
+        logger.warning("SearXNG unreachable: %s", exc)
+        web_status = "unreachable"
+
+    try:
         async with request.app.state.session_factory() as session:
             await session.execute(text("select 1"))
         database_status = "ok"
@@ -184,8 +196,8 @@ async def health(request: Request) -> HealthResponse:
         logger.error("Database unreachable: %s", exc)
         database_status = "unreachable"
 
-    # RAG isn't required the way memory/database are — everything above it
-    # already treats it as optional, so it doesn't affect overall `status`.
+    # RAG and web search aren't required the way memory/database are; both
+    # are optional everywhere else, so neither affects overall `status`.
     healthy = memory_status == "ok" and database_status == "ok"
     return HealthResponse(
         status="ok" if healthy else "degraded",
@@ -193,5 +205,6 @@ async def health(request: Request) -> HealthResponse:
         chat_model=settings.chat_model,
         memory_service=memory_status,
         rag_service=rag_status,
+        web_service=web_status,
         database=database_status,
     )
