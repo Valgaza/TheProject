@@ -245,6 +245,24 @@ async def test_documents_and_the_web_can_inform_one_turn(db_client, provider):
     assert "https://raft.github.io" in prompt_text
 
 
+async def test_a_web_client_that_raises_still_answers(db_client, provider):
+    class ExplodingWeb:
+        async def search(self, message, *, provider, model, known_names) -> WebSearch:
+            raise RuntimeError("searxng is down")
+
+    db_client._transport.app.state.web = ExplodingWeb()
+    chat = await _make_chat(db_client)
+
+    response = await db_client.post(
+        f"/chats/{chat['id']}/messages", json={"content": "latest raft news", "use_web": True}
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["assistant_message"]["metadata"]["web"]["error"]
+    prompt_text = "\n".join(m["content"] for m in provider.chat_calls[-1])
+    assert "could not check the web" in prompt_text
+
+
 async def test_an_unconfigured_web_search_tells_the_model_so(db_client, provider):
     chat = await _make_chat(db_client)
 

@@ -262,9 +262,15 @@ async def generate_turn(
                                        getattr(profile, "email", None)) if n]
             # The cheap model, same as titles and the write gate: rewriting a
             # question into a topic is small work.
-            web_search = await web.search(
-                content, provider=provider, model=title_model, known_names=known_names
-            )
+            try:
+                web_search = await web.search(
+                    content, provider=provider, model=title_model, known_names=known_names
+                )
+            except Exception:
+                # WebClient.search() already turns its own failures into an
+                # error; this catches anything else, same as memory and RAG.
+                logger.exception("Web search raised for chat=%s", chat.id)
+                web_search = WebSearch(query_sent=None, error="web search failed")
 
     prompt = build_prompt(history, facts, rag_result, web_search)
 
