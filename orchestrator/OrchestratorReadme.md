@@ -1,5 +1,11 @@
 # Orchestrator
 
+> **2026-09-26:** nothing calls this service. Routing lives in
+> `core/nexus_core/orchestrator.py`, and web search has been ported into core
+> as a handler (`core/nexus_core/web_client.py`) with the query redaction from
+> flag 1 in `.github/IMPORTANT_BUSINESS_LOGIC_FLAGS.md`. This service still
+> sends raw queries. Kept until its owner agrees it can be removed.
+
 Routes a chat message across the RAG pipeline, knowledge graph, and (optionally) web search, assembles the results into context, and calls the LLM.
 
 ## Run it

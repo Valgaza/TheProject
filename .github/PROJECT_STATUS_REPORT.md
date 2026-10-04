@@ -1,5 +1,12 @@
 # Nexus Project Status Report
 
+> **Superseded (2026-09-26).** A snapshot from 2026-08-09, kept for history.
+> For how to run things now, see `RUNBOOK.md`. Since this was written: answers
+> are generated (core calls the model, with memory and document context); the
+> OpenAI endpoint is configurable, so core and memory can point at Ollama; RAG is
+> scoped per user and project; `/rag-demo` is gone (documents live under
+> Documents and each project page); and the browser only talks to core.
+
 Date: 2026-08-09
 Branch reviewed: `feature/rag-pipeline`
 
