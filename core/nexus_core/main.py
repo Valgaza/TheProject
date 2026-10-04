@@ -63,9 +63,9 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     app.state.provider = provider
     app.state.memory = MemoryClient(http, settings.memory_service_url)
-    # Read by the chat router and handed to generate_turn, which only calls
-    # it when select_route() picked the "rag" handler. Optional throughout:
-    # a failed query degrades the turn, it doesn't fail it.
+    # Read by the chat router and handed to generate_turn, which queries it
+    # on every turn; CORE_RAG_MIN_SCORE decides whether the result reaches
+    # the prompt. Optional throughout: a failed query degrades the turn.
     app.state.rag = RagClient(http, settings.rag_service_url)
     app.state.http = http
     app.state.web = WebClient(settings.searxng_url)
