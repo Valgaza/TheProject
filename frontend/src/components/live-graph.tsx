@@ -112,8 +112,11 @@ export function LiveGraph({ className, view = "all", projectId }: LiveGraphProps
   useEffect(() => {
     let cancelled = false;
 
-    fetch(graphUrl(view, projectId))
-      .then(r => r.json())
+    fetch(graphUrl(view, projectId), { credentials: "include" })
+      .then(r => {
+        if (!r.ok) throw new Error(`graph read ${r.status}`);
+        return r.json();
+      })
       .then((data: ApiGraph) => { if (!cancelled) applyPayload(data); })
       .catch(err => {
         console.error("[graph] fetch failed:", err);
@@ -153,7 +156,8 @@ export function LiveGraph({ className, view = "all", projectId }: LiveGraphProps
       : "this project's memory and your universal memory";
     if (!window.confirm(`Permanently delete ${what}? This cannot be undone.`)) return;
     try {
-      await fetch(graphUrl(view, projectId), { method: "DELETE" });
+      const r = await fetch(graphUrl(view, projectId), { method: "DELETE", credentials: "include" });
+      if (!r.ok) throw new Error(`graph reset ${r.status}`);
     } catch (err) {
       console.error("[graph] reset failed:", err);
     }

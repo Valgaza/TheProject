@@ -16,7 +16,7 @@ import React, {
   useEffect,
   useState,
 } from "react";
-import { ApiError, type Profile, me as fetchMe, setCurrentUserId } from "@/lib/api";
+import { ApiError, type Profile, me as fetchMe } from "@/lib/api";
 
 type AuthContextValue = {
   user: Profile | null;
@@ -38,13 +38,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const profile = await fetchMe();
       setUser(profile);
-      setCurrentUserId(profile.id);
     } catch (err) {
       if (!(err instanceof ApiError && err.status === 401)) {
         console.error("[auth] /auth/me failed:", err);
       }
       setUser(null);
-      setCurrentUserId(null);
     } finally {
       setLoading(false);
     }

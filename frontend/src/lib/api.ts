@@ -3,39 +3,13 @@
  *
  * Three services now. `core` (8100) owns projects, chats and generation;
  * `memory` (8000) owns the knowledge graph; `RAG` (8001) owns document
- * ingestion and retrieval. Everything went through hand-rolled fetches with
+ * ingestion and retrieval, but the browser only ever reaches it through core,
+ * which scopes every file to its owner. Everything went through hand-rolled fetches with
  * the URLs redeclared per file before this.
  */
 
 export const CORE_URL = process.env.NEXT_PUBLIC_CORE_URL ?? "http://localhost:8100";
-export const MEMORY_URL = process.env.NEXT_PUBLIC_MEMORY_URL ?? "http://localhost:8000";
-export const MEMORY_WS_URL = MEMORY_URL.replace(/^http/, "ws");
-export const RAG_URL = process.env.NEXT_PUBLIC_RAG_URL ?? "http://localhost:8001";
-
-/**
- * The logged-in user's id, set once by AuthProvider (lib/auth-context.tsx)
- * after `/auth/me` resolves, and read by everything below that still talks
- * to the memory service directly by user_id (core gets this from the
- * session cookie instead -- see the `core()` helper -- so only the memory
- * calls below need it threaded through explicitly).
- *
- * Module-level rather than a parameter on every call: the alternative is
- * threading a userId prop through every component between AuthProvider and
- * the graph panel, for a value that's really app-wide state, not
- * per-component data.
- */
-let currentUserId: string | null = null;
-
-export function setCurrentUserId(id: string | null): void {
-  currentUserId = id;
-}
-
-function requireCurrentUserId(): string {
-  if (!currentUserId) {
-    throw new Error("no logged-in user -- called before auth resolved, or after logout");
-  }
-  return currentUserId;
-}
+export const CORE_WS_URL = CORE_URL.replace(/^http/, "ws");
 
 // ── Core service ─────────────────────────────────────────────────────────────
 
@@ -75,11 +49,38 @@ export type Message = {
     // Recorded on the assistant message, so a reloaded thread can show what
     // memory contributed just as well as a live one.
     recalled_facts?: RecalledFact[];
+    // Same idea for documents. Stored on the message rather than derived,
+    // because which chunks were retrieved is a fact about that moment and
+    // re-running the query later would answer differently.
+    rag_sources?: RagSource[];
+    // Only on turns that searched the web; query_sent is what left the machine.
+    web?: WebMeta;
   };
   created_at: string;
 };
 
+export type WebMeta = {
+  query_sent: string | null;
+  error: string | null;
+  results: { title: string; url: string }[];
+};
+
 export type Route = { handler: string; reason: string };
+
+/**
+ * A document chunk that informed an answer.
+ *
+ * `rerank_score` is the cross-encoder's 0-1 judgement of how well this chunk
+ * matched the question. It is shown because "why did it cite that?" is the
+ * first thing anyone asks about a wrong answer.
+ */
+export type RagSource = {
+  file_name: string;
+  page_number?: number | string | null;
+  chunk_index?: number | string | null;
+  heading_path?: string;
+  rerank_score?: number;
+};
 
 /** A fact memory supplied for a turn. "kind" says where in the graph it lived. */
 export type RecalledFact = {
@@ -95,6 +96,7 @@ export type Turn = {
   route: Route;
   chat_title: string;
   recalled: RecalledFact[];
+  rag_sources: RagSource[];
 };
 
 export class ApiError extends Error {
@@ -107,9 +109,11 @@ export class ApiError extends Error {
 async function core<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${CORE_URL}${path}`, {
     ...init,
-    // The session lives in an httpOnly cookie -- without this, the browser
-    // never attaches it (or stores one core sets on signup/login), and
-    // every request looks like it came from nobody.
+    // Required, and easy to miss: the frontend (:3000) and core (:8100) are
+    // different origins, and a browser sends no cookies on a cross-origin
+    // request unless asked. Without this every call is anonymous and every
+    // protected route answers 401 -- which is exactly what happened between
+    // real auth landing and this line being added.
     credentials: "include",
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
@@ -224,11 +228,77 @@ export const listMessages = (chatId: string) =>
   core<Message[]>(`/chats/${chatId}/messages`);
 
 /** Send a message and wait for the answer. The reply is the response. */
-export const sendMessage = (chatId: string, content: string) =>
+export const sendMessage = (chatId: string, content: string, { useWeb = false } = {}) =>
   core<Turn>(`/chats/${chatId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, use_web: useWeb }),
   });
+
+export type Document = {
+  id: string;
+  project_id: string | null;
+  file_name: string;
+  byte_size: number;
+  chunk_count: number;
+  status: "pending" | "ingested" | "failed";
+  error: string | null;
+  /** When this file's topics reached the knowledge graph. Null means never. */
+  graph_synced_at: string | null;
+  created_at: string;
+};
+
+/**
+ * This person's files. No argument lists everything; `projectId` narrows to
+ * one project; `loose` narrows to the universal tier -- the files readable
+ * from every conversation.
+ */
+export const listDocuments = ({
+  projectId,
+  loose,
+}: { projectId?: string | null; loose?: boolean } = {}) => {
+  const query = new URLSearchParams();
+  if (projectId) query.set("project_id", projectId);
+  else if (loose) query.set("loose", "true");
+  const suffix = query.toString();
+  return core<Document[]>(`/documents${suffix ? `?${suffix}` : ""}`);
+};
+
+/**
+ * Upload a file into one tier. No project means universal.
+ *
+ * Deliberately not routed through core(): that helper forces a JSON content
+ * type, and a multipart body needs the browser to set its own boundary. Set
+ * Content-Type here by hand and the upload fails in a way that reads like a
+ * server problem.
+ */
+export async function uploadDocument(
+  file: File,
+  projectId?: string | null
+): Promise<Document> {
+  const body = new FormData();
+  body.append("file", file);
+  const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+
+  const response = await fetch(`${CORE_URL}/documents${query}`, {
+    method: "POST",
+    credentials: "include",
+    body,
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, (await response.text()) || response.statusText);
+  }
+  return response.json() as Promise<Document>;
+}
+
+export const deleteDocument = (documentId: string) =>
+  core<void>(`/documents/${documentId}`, { method: "DELETE" });
+
+/** Broadcast that the file list changed, so open views refetch. */
+export const DOCUMENTS_CHANGED = "nexus:documents-changed";
+
+export const notifyDocumentsChanged = () => {
+  window.dispatchEvent(new Event(DOCUMENTS_CHANGED));
+};
 
 /**
  * Broadcast that the chat list changed — a chat was created, or a first message
@@ -288,43 +358,15 @@ const viewQuery = (view: GraphView, projectId?: string) => {
 /**
  * Reads union the user tier with the project tier, when a project is given.
  *
- * NOTE: the memory service takes user_id as a plain query parameter and
- * does not itself check the session cookie -- it trusts whichever id is
- * passed. Using the real logged-in id here (instead of the old hardcoded
- * demo constant) makes each account's graph actually separate, but does not
- * close that gap: anyone who knew another user's id could still pass it
- * here directly. Tightening that is tracked in steps-to-implement-Bhoumish.md,
- * not fixed by this frontend change.
+ * Through core, which takes the user from the session cookie. The browser
+ * never names a user here: memory only answers core, and core only ever asks
+ * about whoever is signed in.
  */
 export const graphUrl = (view: GraphView = "all", projectId?: string) =>
-  `${MEMORY_URL}/graph?user_id=${encodeURIComponent(requireCurrentUserId())}` +
-  `&${viewQuery(view, projectId)}`;
+  `${CORE_URL}/graph?${viewQuery(view, projectId)}`;
 
 export const graphSocketUrl = (view: GraphView = "all", projectId?: string) =>
-  `${MEMORY_WS_URL}/ws/graph/${encodeURIComponent(requireCurrentUserId())}` +
-  `?${viewQuery(view, projectId)}`;
-
-/**
- * Fire-and-forget: the graph updating is not worth failing a chat turn over.
- *
- * Scope is explicit because the memory service refuses to infer it -- a project
- * fact quietly landing in durable user memory is the hardest bug to notice.
- */
-export function ingest(
-  text: string,
-  { scope = "user", projectId }: { scope?: Scope; projectId?: string } = {}
-): void {
-  fetch(`${MEMORY_URL}/ingest`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      text,
-      user_id: requireCurrentUserId(),
-      project_id: projectId ?? null,
-      scope,
-    }),
-  }).catch(err => console.error("[memory] ingest failed:", err));
-}
+  `${CORE_WS_URL}/ws/graph?${viewQuery(view, projectId)}`;
 
 // ── Maintenance ──────────────────────────────────────────────────────────────
 
@@ -377,34 +419,3 @@ export const runMaintenance = (
 
 // ── RAG ──────────────────────────────────────────────────────────────────────
 
-export type UploadResult = {
-  success: boolean;
-  file_name: string;
-  documents_processed: number;
-  chunks_created: number;
-  embeddings_generated: number;
-  points_upserted: number;
-  errors: string[];
-};
-
-/**
- * Called directly on the RAG API (:8001), same as memory's calls above go
- * directly to :8000 -- not proxied through core. Fire-and-await, not
- * fire-and-forget: the composer shows real progress/failure per file.
- *
- * NOTE: RAG/rag_api.py's /api/ingest takes no project or user id -- every
- * upload lands in one shared, global document pool, not scoped to the
- * project it was uploaded from. Tracked as a known gap ("Per-user RAG
- * scoping" in steps-to-implement-Bhoumish.md), not fixed by this.
- */
-export async function uploadDocument(file: File): Promise<UploadResult> {
-  const form = new FormData();
-  form.append("file", file);
-  const response = await fetch(`${RAG_URL}/api/ingest`, { method: "POST", body: form });
-  const body = await response.json().catch(() => null);
-  if (!response.ok) {
-    const detail = body?.detail || response.statusText;
-    throw new ApiError(response.status, typeof detail === "string" ? detail : JSON.stringify(detail));
-  }
-  return body as UploadResult;
-}

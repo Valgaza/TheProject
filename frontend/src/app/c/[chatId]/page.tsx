@@ -11,6 +11,9 @@
 import React, { Suspense, use, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Composer } from "@/components/composer";
+import { CitedSources } from "@/components/cited-sources";
+import { WebSources } from "@/components/web-sources";
+import { RenderedAnswer } from "@/components/rendered-answer";
 import { RecalledFacts } from "@/components/recalled-facts";
 import { Icon } from "@/components/icons";
 import { domainById } from "@/lib/domains";
@@ -48,6 +51,7 @@ function Thread({ chatId }: { chatId: string }) {
   // /chat hands the opening prompt over in the URL so this page owns the send,
   // and the user watches it land here instead of waiting on the previous screen.
   const opening = searchParams.get("q");
+  const openingWeb = searchParams.get("web") === "1";
 
   const [chat, setChat] = useState<Chat | null>(null);
   const [messages, setMessages] = useState<PendingMessage[]>([]);
@@ -55,6 +59,7 @@ function Thread({ chatId }: { chatId: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [web, setWeb] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   // React 18+ runs effects twice in development; without this the opening
@@ -62,7 +67,7 @@ function Thread({ chatId }: { chatId: string }) {
   const sentOpening = useRef(false);
 
   const send = useCallback(
-    async (content: string) => {
+    async (content: string, useWeb = false) => {
       const trimmed = content.trim();
       if (!trimmed) return;
 
@@ -80,7 +85,7 @@ function Thread({ chatId }: { chatId: string }) {
       setMessages(prev => [...prev, optimistic]);
 
       try {
-        const turn = await sendMessage(chatId, trimmed);
+        const turn = await sendMessage(chatId, trimmed, { useWeb });
         // Swap the optimistic row for the stored one; ids and timestamps are
         // the server's to assign.
         setMessages(prev => [
@@ -122,7 +127,7 @@ function Thread({ chatId }: { chatId: string }) {
 
         if (opening && !sentOpening.current && loadedMessages.length === 0) {
           sentOpening.current = true;
-          void send(opening);
+          void send(opening, openingWeb);
         }
       } catch (err) {
         if (cancelled) return;
@@ -139,7 +144,7 @@ function Thread({ chatId }: { chatId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [chatId, opening, send]);
+  }, [chatId, opening, openingWeb, send]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -197,11 +202,17 @@ function Thread({ chatId }: { chatId: string }) {
           onSubmit={() => {
             const content = value;
             setValue("");
-            void send(content);
+            // One message at a time: leaving it on would send every later
+            // message off the machine too, which nobody should do by accident.
+            setWeb(false);
+            void send(content, web);
           }}
           placeholder="Continue the conversation…"
           rows={2}
           busy={busy}
+          projectId={chat?.project_id ?? null}
+          web={web}
+          onWebChange={setWeb}
           autoFocus
           badge={
             <div className="tag tag--accent">
@@ -257,8 +268,10 @@ const AssistantMessage = ({
         )}
       </div>
       <div className="msg__body">
-        <p style={{ whiteSpace: "pre-wrap" }}>{message.content}</p>
+        <RenderedAnswer content={message.content} />
         <RecalledFacts facts={message.metadata.recalled_facts ?? []} />
+        <CitedSources sources={message.metadata.rag_sources ?? []} />
+        <WebSources web={message.metadata.web} />
         <div className="trace">
           <span>PIPELINE TRACE</span>
           <span className="trace__line" />

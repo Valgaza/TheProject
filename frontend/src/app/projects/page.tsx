@@ -104,13 +104,12 @@ export default function Projects() {
   // beyond moving pinned cards to the front as a group.
   const sorted = [...filtered].sort((a, b) => Number(b.pinned) - Number(a.pinned));
 
+  // Opens the project itself rather than a blank composer. A project holds
+  // conversations and documents now, and jumping past both to an empty chat
+  // skipped everything the project actually contains.
   const open = (projectId: string) => {
     select(projectId);
-    // ?project=<id> is what tells /chat to file the next chat you start
-    // under this project instead of leaving it unfiled -- see
-    // app/chat/page.tsx. select() above just keeps the sidebar's switcher
-    // and "Recent" filter in sync with where you're headed.
-    router.push(`/chat?project=${projectId}`);
+    router.push(`/projects/${projectId}`);
   };
 
   const commitRename = async (projectId: string) => {

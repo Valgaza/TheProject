@@ -205,6 +205,7 @@
   transition: background var(--dur-2), color var(--dur-2);
 }
 .ctool:hover { background: var(--bg-deep); color: var(--ink); }
+.ctool.is-on { background: var(--accent-veil); color: var(--accent-deep); }
 .composer__sep {
   width: 1px; height: 18px;
   background: var(--line); margin: 0 8px;
@@ -1224,3 +1225,321 @@
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+
+/* — Documents —
+   One panel, two tiers. It renders inside a project (that project's files)
+   and on its own (the universal ones); the only difference is the note under
+   the heading, because the only difference in the data is one nullable id. */
+.docs {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.docs__head { display: flex; flex-direction: column; gap: 4px; }
+.docs__title {
+  font: 500 17px/1.2 var(--font-display);
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+.docs__note { font-size: 13px; color: var(--ink-3); margin: 0; }
+
+.docs__drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  text-align: center;
+  min-height: 132px;
+  padding: 24px;
+  border: 1.5px dashed var(--line-strong);
+  border-radius: var(--r-4);
+  background: var(--bg-paper);
+  color: var(--ink-3);
+  cursor: pointer;
+  transition: border-color var(--dur-2), background var(--dur-2), color var(--dur-2);
+}
+.docs__drop:hover,
+.docs__drop:focus-visible,
+.docs__drop.is-over {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-veil);
+}
+.docs__drop:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.docs__droptitle { font-size: 14px; color: var(--ink-2); margin: 6px 0 0; }
+.docs__dropsub { font-size: 11px; letter-spacing: 0.04em; margin: 0; }
+
+.docs__error {
+  font-size: 13px;
+  color: var(--d-rag);
+  background: oklch(from var(--d-rag) 0.96 0.03 h);
+  border: 1px solid oklch(from var(--d-rag) 0.88 0.04 h);
+  border-radius: var(--r-3);
+  padding: 8px 12px;
+  margin: 0;
+}
+.docs__empty { font-size: 13.5px; color: var(--ink-3); margin: 0; }
+
+.docs__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+
+/* Rows, not cards. A file list is a list -- giving each row a border, a
+   radius and a shadow would say "separate object" nine times and flatten
+   the one thing that does need emphasis: a file that failed. */
+.doc {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: var(--r-3);
+  background: var(--bg-paper);
+  color: var(--ink-2);
+  font-size: 13.5px;
+  min-width: 0;
+}
+.doc:hover { background: var(--bg-veil); }
+.doc.is-busy { opacity: 0.6; }
+.doc.is-failed { background: oklch(from var(--d-rag) 0.97 0.02 h); }
+
+.doc__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+.doc__state { font-size: 11px; color: var(--ink-3); white-space: nowrap; }
+.doc__state.is-error {
+  color: var(--d-rag);
+  /* An error message is a sentence, not a status word: let it wrap and take
+     the room it needs instead of being clipped to a chip. */
+  white-space: normal;
+  max-width: 46ch;
+  text-align: right;
+  line-height: 1.35;
+}
+
+.doc__graph {
+  font: 400 10px/1 var(--font-mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 3px 6px;
+  border-radius: var(--r-1);
+  background: var(--bg-veil);
+  color: var(--ink-4);
+  white-space: nowrap;
+}
+.doc__graph.is-synced { background: var(--accent-veil); color: var(--accent); }
+
+.doc__remove {
+  border: 0;
+  background: transparent;
+  color: var(--ink-4);
+  cursor: pointer;
+  padding: 3px;
+  border-radius: var(--r-1);
+  display: flex;
+  transition: color var(--dur-2), background var(--dur-2);
+}
+.doc__remove:hover:not(:disabled) { color: var(--d-rag); background: var(--bg-veil); }
+.doc__remove:disabled { opacity: 0.4; cursor: default; }
+
+/* — Universal documents page — */
+.docs-page { max-width: 720px; margin: 0 auto; padding: 48px 40px 120px; }
+.docs-page__head { margin-bottom: 28px; }
+.docs-page__title {
+  font: 360 clamp(30px, 3.4vw, 40px)/1.08 var(--font-display);
+  letter-spacing: -0.02em;
+  margin: 12px 0 10px;
+}
+.docs-page__lede {
+  font-size: 14.5px;
+  color: var(--ink-2);
+  line-height: 1.55;
+  margin: 0;
+  max-width: 56ch;
+}
+
+/* — One project — */
+.project { max-width: 1000px; margin: 0 auto; padding: 48px 40px 120px; }
+.project__head { margin-bottom: 30px; }
+.project__title-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.project__title {
+  font: 360 clamp(30px, 3.4vw, 40px)/1.08 var(--font-display);
+  letter-spacing: -0.02em;
+  margin: 12px 0 0;
+}
+.project__desc {
+  font-size: 14.5px;
+  color: var(--ink-2);
+  margin: 12px 0 0;
+  max-width: 60ch;
+  line-height: 1.55;
+}
+
+/* Two halves of one boundary: what was said here, what can be read here.
+   Collapses rather than shrinks -- a file list at 300px is unusable. */
+.project__cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 44px;
+  align-items: start;
+}
+@media (max-width: 860px) {
+  .project__cols { grid-template-columns: 1fr; gap: 36px; }
+  .project { padding: 36px 22px 90px; }
+  .docs-page { padding: 36px 22px 90px; }
+}
+
+.project__chats { display: flex; flex-direction: column; gap: 14px; align-items: flex-start; min-width: 0; }
+.project__chats .btn { align-self: flex-start; }
+.project__chatlist { list-style: none; margin: 0; padding: 0; width: 100%; display: flex; flex-direction: column; gap: 4px; }
+.project__chat {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: var(--r-3);
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-2);
+}
+.project__chat:hover { background: var(--bg-veil); }
+.project__chatname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
+.project__chatdate { font-size: 11px; color: var(--ink-4); white-space: nowrap; }
+
+/* — Cited passages —
+   Matches .recall deliberately. Memory and documents are two tiers of the
+   same idea, and showing them in two visual languages would suggest the
+   assistant treats them differently. */
+.cited { margin-top: 8px; }
+.cited__toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-3);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.cited__toggle:hover { color: var(--ink-2); }
+.cited__caret { display: inline-block; transition: transform var(--dur-2); font-size: 10px; }
+.cited__caret.is-on, .cited__caret.is-open { transform: rotate(90deg); }
+.cited__count { font-size: 11px; letter-spacing: 0.03em; }
+
+.cited__list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.cited__item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  padding: 5px 8px;
+  border-radius: var(--r-2);
+  background: var(--bg-paper);
+  min-width: 0;
+}
+.cited__file { color: var(--ink); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 42%; }
+.cited__heading { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-3); }
+.cited__where { font-size: 11px; color: var(--ink-4); white-space: nowrap; }
+.cited__score { font-size: 11px; color: var(--accent); white-space: nowrap; }
+
+/* — Rendered answers —
+   Models write markdown whether or not you ask. These styles keep a reply
+   looking like prose in a conversation rather than like a document: the
+   heading scale is compressed, and nothing gets the vertical drama it would
+   earn on a page of its own. */
+.answer > *:first-child { margin-top: 0; }
+.answer > *:last-child { margin-bottom: 0; }
+
+.answer p { margin: 0 0 10px; line-height: 1.62; }
+
+.answer h1,
+.answer h2,
+.answer h3,
+.answer h4 {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.005em;
+  margin: 18px 0 7px;
+  color: var(--ink);
+}
+.answer h1 { font-size: 17px; }
+.answer h2 { font-size: 15.5px; }
+.answer h3,
+.answer h4 { font-size: 14.5px; }
+
+.answer ul,
+.answer ol { margin: 0 0 10px; padding-left: 22px; }
+.answer li { margin-bottom: 4px; line-height: 1.58; }
+.answer li > p { margin: 0; }
+.answer li::marker { color: var(--ink-4); }
+
+.answer strong { font-weight: 600; color: var(--ink); }
+.answer em { font-style: italic; }
+
+.answer a { color: var(--accent); text-underline-offset: 2px; }
+
+.answer code {
+  font: 400 0.88em/1.5 var(--font-mono);
+  background: var(--bg-veil);
+  border: 1px solid var(--line);
+  border-radius: var(--r-1);
+  padding: 0.1em 0.34em;
+}
+.answer pre {
+  /* Code can be arbitrarily wide; it scrolls in its own box so the message
+     column never scrolls sideways. */
+  overflow-x: auto;
+  background: var(--bg-veil);
+  border: 1px solid var(--line);
+  border-radius: var(--r-3);
+  padding: 11px 13px;
+  margin: 0 0 11px;
+}
+.answer pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.answer blockquote {
+  margin: 0 0 11px;
+  padding-left: 13px;
+  border-left: 2px solid var(--line-strong);
+  color: var(--ink-2);
+}
+
+.answer hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
+
+.answer table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+  margin: 0 0 11px;
+  display: block;
+  overflow-x: auto;
+}
+.answer th,
+.answer td {
+  border-bottom: 1px solid var(--line);
+  padding: 6px 10px 6px 0;
+  text-align: left;
+  vertical-align: top;
+}
+.answer th { font-weight: 600; color: var(--ink-3); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.05em; }

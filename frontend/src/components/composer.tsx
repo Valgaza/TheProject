@@ -33,6 +33,13 @@ type ComposerProps = {
   autoFocus?: boolean;
   /** What answered, if anything has yet — a label, not a control. */
   badge?: React.ReactNode;
+  /** Where an attached file is filed. Null or absent puts it in the user's
+   * own tier, readable from every conversation. */
+  projectId?: string | null;
+  /** Whether this message goes to the web too. The toggle only appears when
+   * a page handles it, and the page resets it after each send. */
+  web?: boolean;
+  onWebChange?: (on: boolean) => void;
 };
 
 export function Composer({
@@ -45,6 +52,9 @@ export function Composer({
   busy = false,
   autoFocus = false,
   badge,
+  projectId = null,
+  web = false,
+  onWebChange,
 }: ComposerProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -65,14 +75,16 @@ export function Composer({
       const id = `${file.name}-${Date.now()}`;
       setUploads(prev => [...prev, { id, name: file.name, status: "uploading" }]);
       try {
-        const result = await uploadDocument(file);
+        const doc = await uploadDocument(file, projectId);
         setUploads(prev =>
           prev.map(u =>
             u.id === id
               ? {
                   ...u,
-                  status: "done",
-                  detail: `${result.chunks_created} chunk${result.chunks_created === 1 ? "" : "s"} indexed`,
+                  status: doc.status === "failed" ? "error" : "done",
+                  detail: doc.status === "failed"
+                    ? doc.error ?? "indexing failed"
+                    : `${doc.chunk_count} chunk${doc.chunk_count === 1 ? "" : "s"} indexed`,
                 }
               : u
           )
@@ -165,6 +177,19 @@ export function Composer({
             >
               <Icon name="paper" size={16} />
             </button>
+            {onWebChange && (
+              <button
+                className={`ctool ${web ? "is-on" : ""}`}
+                type="button"
+                aria-pressed={web}
+                title={web
+                  ? "Web search on for this message. Names and ID numbers are stripped from the query first."
+                  : "Search the web for this message"}
+                onClick={() => onWebChange(!web)}
+              >
+                <Icon name="globe" size={16} />
+              </button>
+            )}
             <button className="ctool" type="button" title="Speak" disabled>
               <Icon name="mic" size={16} />
             </button>

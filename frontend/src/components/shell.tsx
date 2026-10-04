@@ -284,9 +284,10 @@ export const RailNav = () => {
   const page = getPageId(pathname);
 
   const main = [
-    { id: "projects", label: "Projects",        icon: "folder", count: projects.length || undefined, path: "/projects" },
-    { id: "graph",    label: "Knowledge graph", icon: "graph",  path: "/graph" },
-    { id: "settings", label: "Settings",        icon: "cog",    path: "/settings" },
+    { id: "projects",  label: "Projects",        icon: "folder", count: projects.length || undefined, path: "/projects" },
+    { id: "documents", label: "Documents",       icon: "paper",  path: "/documents" },
+    { id: "graph",     label: "Knowledge graph", icon: "graph",  path: "/graph" },
+    { id: "settings",  label: "Settings",        icon: "cog",    path: "/settings" },
   ];
 
   // One fetch for every chat, grouped here. The rail used to load chats for the
