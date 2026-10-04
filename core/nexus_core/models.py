@@ -1,4 +1,4 @@
-"""ORM models mirroring supabase/migrations/.
+"""ORM models mirroring db/migrations/.
 
 The migrations are the source of truth for the schema; these classes only
 describe it to SQLAlchemy. When you change one, change the other.

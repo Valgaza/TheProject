@@ -58,11 +58,11 @@ before launching anything, rather than letting the core service fail with a
 wall of asyncpg traceback. Ctrl+C stops the Python services; the containers
 keep running.
 
-The Supabase CLI is no longer used (replaced 2026-09-02) — Postgres is just
-another container in `docker-compose.yml`, and the schema in
-`supabase/migrations/` is applied automatically the first time its volume is
-created. Do **not** run `supabase start`: it would try to bind port 54322 and
-collide with the Postgres container.
+Postgres is just another container in `docker-compose.yml` (it replaced the
+Supabase CLI on 2026-09-02), and the schema in `db/migrations/` is applied
+automatically the first time its volume is created. Do **not** run
+`supabase start`: it would try to bind port 54322 and collide with the
+Postgres container.
 
 To run a service by hand instead:
 

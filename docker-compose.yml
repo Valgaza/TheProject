@@ -34,11 +34,10 @@ services:
       POSTGRES_DB: postgres
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      # Mounted read-only and applied by the init script below. supabase/ is
-      # still the source of truth for the schema, exactly as before — only
-      # the tool that applies it changed.
-      - ./supabase/migrations:/migrations:ro
-      - ./supabase/seed.sql:/seed.sql:ro
+      # Mounted read-only and applied by the init script below. db/ is the
+      # source of truth for the schema.
+      - ./db/migrations:/migrations:ro
+      - ./db/seed.sql:/seed.sql:ro
       - ./docker/postgres-init.sh:/docker-entrypoint-initdb.d/init.sh:ro
     restart: unless-stopped
     healthcheck:

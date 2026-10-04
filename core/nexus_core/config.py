@@ -62,7 +62,7 @@ class Settings:
         self.database_url = _require("DATABASE_URL")
         self.database_echo = _optional("DATABASE_ECHO", "0") == "1"
 
-        # Kept only as the fixed identity seeded by supabase/seed.sql, used in
+        # Kept only as the fixed identity seeded by db/seed.sql, used in
         # tests. Real requests no longer use this — see auth.py; every route
         # now resolves the user from the session cookie, not from settings.
         self.demo_user_id = uuid.UUID(

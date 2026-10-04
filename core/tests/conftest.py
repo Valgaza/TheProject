@@ -4,7 +4,7 @@ The app's lifespan builds a real provider and a real engine, so tests bypass it
 and populate ``app.state`` directly. Model calls are faked; the database is
 real, because the point of these tests is the SQL, the constraints and the
 triggers, none of which a fake would exercise. Database tests skip themselves
-when the local Supabase stack isn't running, so the default suite stays green.
+when the local Postgres container isn't running, so the default suite stays green.
 """
 
 from __future__ import annotations
@@ -162,7 +162,7 @@ async def client(provider: FakeProvider):
 async def db_client(provider: FakeProvider, session_factory):
     """A client backed by the real database, rolled back after each test.
 
-    Pre-authenticated as the seeded demo user (supabase/seed.sql) — every
+    Pre-authenticated as the seeded demo user (db/seed.sql) — every
     protected route now requires a real session, and existing tests were
     written assuming DEMO_USER_ID without ever having to think about login.
     Rather than rewrite every one of them to sign up first, the fixture logs

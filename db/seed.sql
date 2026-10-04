@@ -4,7 +4,7 @@
 --
 -- The demo user has a fixed uuid so the frontend, the group_id scheme, and the
 -- graph data all keep pointing at the same rows across resets. Real auth
--- landed 2026-09-02 (see supabase/migrations/20260902000000_*.sql) -- this
+-- landed 2026-09-02 (see db/migrations/20260902000000_*.sql) -- this
 -- account can now actually log in: email demo@example.com, password
 -- nexus-demo. DEMO_USER_ID in .env still matters for tests, which
 -- authenticate as this exact row rather than going through real signup.

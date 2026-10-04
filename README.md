@@ -115,9 +115,9 @@ when we deploy.
 **Postgres replaced the Supabase CLI on 2026-09-02.** The CLI started twelve
 containers (Auth, Storage, Realtime, Studio, an email catcher, log shipping…)
 for the one Postgres this project actually uses. The schema in
-`supabase/migrations/` is plain Postgres — no Supabase-specific roles or
+`db/migrations/` is plain Postgres — no Supabase-specific roles or
 policies — so it applies unchanged to a stock `postgres:17` image, and
-`supabase/` is still the source of truth for it. What's gone is Studio (the
+`db/` is the source of truth for it. What's gone is Studio (the
 table-browsing web UI) and `supabase db reset`; see below for the replacement.
 
 > ⚠️ **`docker compose down -v` now wipes every database at once** — graph,
@@ -135,7 +135,7 @@ docker compose up -d postgres
 
 The schema is applied by `docker/postgres-init.sh`, which the `postgres` image
 runs automatically the first time the data volume is created. It loops over
-`supabase/migrations/*.sql` in filename order, so a new migration added later
+`db/migrations/*.sql` in filename order, so a new migration added later
 needs no change to the compose file or the script.
 
 To browse tables without Studio:
@@ -196,7 +196,7 @@ refactor.
 core/nexus_core/        chat, orchestration, providers, the write gate
 memory/nexus_memory/    the graph: scopes, ingest, retrieval, live updates
 frontend/               Next.js 16, hand-written CSS, no UI dependencies
-supabase/migrations/    the schema, source of truth for what Postgres holds
+db/migrations/          the schema, source of truth for what Postgres holds
 tests/                  end-to-end scenarios (opt-in, drives the live stack)
 pipelines/, shared/     empty; the original plan for where RAG and vision
                         would land — see below, that's not where they landed

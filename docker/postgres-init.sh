@@ -3,7 +3,7 @@
 #
 # The official postgres image runs anything in /docker-entrypoint-initdb.d/
 # automatically, but ONLY on the very first start, when its data directory is
-# still empty. That is the replacement for `supabase db reset`: this runs once,
+# still empty. That replaced `supabase db reset` (the Supabase CLI): this runs once,
 # when the volume is created, and never again while that volume exists.
 #
 # It deliberately loops over the whole migrations directory rather than naming
