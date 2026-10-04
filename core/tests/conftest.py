@@ -85,6 +85,7 @@ class FakeSettings:
     google_oauth_enabled = False
     frontend_url = "http://localhost:3000"
     cors_origins = ["http://localhost:3000"]
+    service_token = "test-service-token"
 
 
 @pytest.fixture

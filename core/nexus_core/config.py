@@ -115,6 +115,9 @@ class Settings:
 
         self.memory_service_url = _optional("MEMORY_SERVICE_URL", "http://localhost:8000")
         self.rag_service_url = _optional("RAG_SERVICE_URL", "http://localhost:8001")
+        # Shared secret sent to memory and RAG on every call; they refuse
+        # requests without it. Any long random string, the same in all three.
+        self.service_token = _require("SERVICE_TOKEN")
         # Self-hosted SearXNG (docker-compose.yml). The only outbound call in
         # core; everything sent there is redacted first (web_client.py).
         self.searxng_url = _optional("SEARXNG_URL", "http://localhost:8080")

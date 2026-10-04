@@ -17,11 +17,11 @@ Exposes:
 from __future__ import annotations
 
 import logging
+import os
 import tempfile
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # rag_pipeline is a real installed package now (RAG/ is a uv workspace
@@ -32,8 +32,12 @@ from dotenv import load_dotenv
 _ENV_PATH = Path(__file__).resolve().parent / ".env"
 if _ENV_PATH.exists():
     load_dotenv(_ENV_PATH, override=True)
+# The repo-root .env too, without overriding: SERVICE_TOKEN lives there,
+# shared with core and memory, and pydantic's env_file never reaches os.environ.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from rag_pipeline.scopes import read_scopes, write_scope
+from rag_pipeline.service_auth import ServiceTokenMiddleware
 from rag_pipeline.pipelines.ingestion import IngestionPipeline
 from rag_pipeline.pipelines.query import QueryPipeline
 
@@ -48,17 +52,11 @@ app = FastAPI(
     version="0.1.0",
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    # Only relevant if a browser ever calls this directly, which nothing is
-    # meant to do going forward — core (a server, not a browser) is the
-    # intended caller, and CORS doesn't apply to server-to-server calls at
-    # all. Left permissive for now since the frontend's old demo pages still
-    # exist; revisit once those are retired (see steps-to-implement doc).
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# No CORS: core is the only caller, and it is a server. The browser's uploads
+# go through core's /documents, which knows who is uploading and to where.
+app.add_middleware(ServiceTokenMiddleware)
+if not os.environ.get("SERVICE_TOKEN"):
+    logger.error("SERVICE_TOKEN is not set: every request except /api/health will be refused")
 
 # ── Lazy-initialized singletons (avoid cold-start on import) ─────────────
 _ingest_pipeline: IngestionPipeline | None = None

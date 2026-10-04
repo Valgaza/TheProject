@@ -32,7 +32,12 @@ def ingested(monkeypatch) -> list[tuple[str, str, str | None]]:
 async def client():
     # No lifespan: these tests never touch Neo4j.
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        # Acting as core, the only caller memory admits.
+        headers={"X-Service-Token": "test-service-token"},
+    ) as c:
         yield c
 
 

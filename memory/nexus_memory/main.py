@@ -14,7 +14,6 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from graphiti_core import Graphiti
@@ -26,6 +25,7 @@ from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 from graphiti_core.nodes import EntityNode, EpisodeType
 
 from .config import Settings
+from .service_auth import ServiceTokenMiddleware
 from .hygiene import group_lock, is_suppressed, load_suppressed, sweep
 from .logging_config import configure_logging
 from .retrieval import DEFAULT_LIMIT, DEFAULT_MIN_SCORE, build_search_config
@@ -253,12 +253,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Nexus Memory Service", version="0.2.0", lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
-    allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["Content-Type"],
-)
+# No CORS: no browser calls this service any more. Core proxies the graph
+# reads and the socket after checking the session, and this middleware turns
+# away anything that didn't come through core.
+app.add_middleware(ServiceTokenMiddleware)
 
 
 # ── Models ────────────────────────────────────────────────────────────────────

@@ -51,7 +51,12 @@ async def lifespan(app: FastAPI):
 
     settings = Settings()
     provider = build_provider(settings)
-    http = httpx.AsyncClient(timeout=10.0)
+    # Only ever pointed at memory and RAG, which refuse anything without this
+    # header. Google OAuth goes through Authlib's own client, not this one, so
+    # the token never leaves the machine.
+    http = httpx.AsyncClient(
+        timeout=10.0, headers={"X-Service-Token": settings.service_token}
+    )
     engine = create_engine(settings.database_url, echo=settings.database_echo)
 
     app.state.settings = settings
