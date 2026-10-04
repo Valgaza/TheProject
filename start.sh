@@ -152,10 +152,10 @@ pids+=($!)
 
 # RAG's own HTTP front door (formerly controller/main.py). core reaches the
 # RAG pipeline only through this — they are separate processes, so there is no
-# other way in. Added here 2026-09-02; on branches without RAG/ it simply
+# other way in. Added here 2026-09-02; on branches without rag/ it simply
 # isn't there to start.
 echo "▶  RAG API         →  http://localhost:8001"
-"$VENV/uvicorn" rag_api:app --app-dir "$ROOT/RAG" --reload --port 8001 &
+"$VENV/uvicorn" rag_api:app --app-dir "$ROOT/rag" --reload --port 8001 &
 pids+=($!)
 
 echo "▶  core service    →  http://localhost:8100"

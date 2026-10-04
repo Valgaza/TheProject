@@ -70,7 +70,7 @@ services:
       start_period: 30s
 
   # ── Qdrant: the document vectors ─────────────────────────────────────────
-  # Backs RAG/rag_pipeline. Moved here from RAG/docker-compose.yml.
+  # Backs rag/rag_pipeline. Moved here from rag/docker-compose.yml.
   qdrant:
     image: qdrant/qdrant:latest
     container_name: nexus-qdrant
@@ -84,7 +84,7 @@ services:
     restart: unless-stopped
     healthcheck:
       # The qdrant image ships no curl, wget, nc or python — the curl-based
-      # check inherited from RAG/docker-compose.yml always failed, so the
+      # check inherited from rag/docker-compose.yml always failed, so the
       # container sat "unhealthy" while serving requests perfectly well.
       # bash IS present, and its /dev/tcp is a builtin rather than a program,
       # so this speaks HTTP with no external tools at all.
@@ -118,7 +118,7 @@ volumes:
   neo4j_logs:
     name: nexus_neo4j_logs
   qdrant_storage:
-    # Renamed from rag_qdrant_storage (the old RAG/docker-compose.yml name)
+    # Renamed from rag_qdrant_storage (the old rag/docker-compose.yml name)
     # once that volume was confirmed empty — nothing to preserve, and the
     # old name kept triggering a "created for project rag" warning.
     name: nexus_qdrant_storage

@@ -13,7 +13,7 @@ the file to trust.
 | Qdrant | 6333 / 6334 | Document vectors for RAG. One Docker container. |
 | SearXNG | 8080 | Private metasearch. `core`'s web handler is its only caller. |
 | `nexus_memory` | 8000 | Owns the graph: ingest, search, live updates. Answers `core` only. |
-| RAG API | 8001 | `RAG/rag_api.py` — the only way `core` reaches the RAG pipeline. Answers `core` only. |
+| RAG API | 8001 | `rag/rag_api.py` — the only way `core` reaches the RAG pipeline. Answers `core` only. |
 | Ollama | 11434 | Local inference. Serves both chat and embeddings. |
 | `nexus_core` | 8100 | Owns chat, the orchestrator, providers, and Postgres. |
 | Frontend | 3000 | Next.js. |
@@ -68,7 +68,7 @@ To run a service by hand instead:
 
 ```bash
 uv run uvicorn nexus_memory.main:app --reload --port 8000
-uv run uvicorn rag_api:app --app-dir RAG --reload --port 8001
+uv run uvicorn rag_api:app --app-dir rag --reload --port 8001
 uv run uvicorn nexus_core.main:app   --reload --port 8100
 ```
 
@@ -207,7 +207,7 @@ A document belongs to exactly one tier, decided by where it was uploaded:
 | `/documents` | universal | every chat, in every project |
 | a project page | that project | that project's chats only |
 
-The rule is `RAG/rag_pipeline/scopes.py`, and it deliberately mirrors the
+The rule is `rag/rag_pipeline/scopes.py`, and it deliberately mirrors the
 graph's `memory/nexus_memory/scopes.py`. A project question reads its own
 documents *and* the universal ones; a loose question reads the universal ones
 alone. Two projects never see each other. If you change one of those files,

@@ -104,7 +104,7 @@ one `docker compose up -d`.
 |---|---|---|
 | `nexus-postgres` | 54322 | Postgres 17. Chats, messages, projects — what was said. |
 | `nexus-neo4j` | 7474, 7687 | The knowledge graph — what was learned. Browser UI on 7474, bolt on 7687. |
-| `nexus-qdrant` | 6333, 6334 | Document vectors, backing `RAG/rag_pipeline`. |
+| `nexus-qdrant` | 6333, 6334 | Document vectors, backing `rag/rag_pipeline`. |
 | `nexus-searxng` | 8080 | Private metasearch, so web queries never hit a third-party search API. Not used by anything yet — see the RAG/orchestrator section below. |
 
 Only the databases are containerised. The application code (`core`, `memory`,
@@ -175,7 +175,7 @@ To run a service by hand, from the repo root:
 
 ```bash
 uv run uvicorn nexus_memory.main:app --reload --port 8000
-uv run uvicorn rag_api:app --app-dir RAG --reload --port 8001
+uv run uvicorn rag_api:app --app-dir rag --reload --port 8001
 uv run uvicorn nexus_core.main:app   --reload --port 8100
 ```
 
@@ -200,14 +200,14 @@ db/migrations/          the schema, source of truth for what Postgres holds
 tests/                  end-to-end scenarios (opt-in, drives the live stack)
 pipelines/, shared/     empty; the original plan for where RAG and vision
                         would land — see below, that's not where they landed
-RAG/, orchestrator/     the RAG pipeline (RAG/rag_api.py is its HTTP front
+rag/, orchestrator/     the RAG pipeline (rag/rag_api.py is its HTTP front
                         door, called by core) and a standalone orchestrator
                         scaffold — built on a separate branch, merged in
                         below `pipelines/`'s intended spot
 ```
 
-Each service owns its tests: `core/tests/` and `memory/tests/`. `RAG/` owns its
-own (`RAG/tests/`).
+Each service owns its tests: `core/tests/` and `memory/tests/`. `rag/` owns its
+own (`rag/tests/`).
 
 The two Python packages are named `nexus_core` and `nexus_memory` rather than
 `app`. They were both `app` once, installed into the same virtualenv, which
@@ -215,7 +215,7 @@ meant `import app` resolved to whichever won and the other was unreachable.
 
 ## RAG pipeline — merged 2026-08-31, wired into `core` 2026-09-01
 
-`RAG/` was built on `feature/rag-pipeline`, in parallel with everything
+`rag/` was built on `feature/rag-pipeline`, in parallel with everything
 above, and landed here through a git merge rather than through the
 `pipelines/`/`shared/` seam this README describes. It's now a real `uv`
 workspace member (same `uv sync`, same shared `.venv` as `core`/`memory` —
@@ -225,15 +225,15 @@ context folds into the answer.
 
 | Service | Location | Port | Depends on |
 |---|---|---|---|
-| RAG API | `RAG/rag_api.py`, backed by `RAG/rag_pipeline/` | `8001` | Qdrant |
+| RAG API | `rag/rag_api.py`, backed by `rag/rag_pipeline/` | `8001` | Qdrant |
 | Orchestrator (scaffold, standalone) | `orchestrator/` | `8002` | RAG API, `memory`, SearXNG |
 
-`RAG/rag_api.py` is RAG's own HTTP front door — the only way `core` can
+`rag/rag_api.py` is RAG's own HTTP front door — the only way `core` can
 reach it, since they're separate processes (see
 [`.github/CONTROLLER_SERVICE.md`](.github/CONTROLLER_SERVICE.md) for the
 full "why is this a separate service" writeup; it's not a user-facing
 surface, nothing outside `core` is meant to call it). Fully local — no cloud
-LLM calls anywhere in `RAG/rag_pipeline`.
+LLM calls anywhere in `rag/rag_pipeline`.
 
 **Two orchestrators still exist**, doing overlapping jobs: `core`'s
 `select_route()` (above, now doing real work) and the standalone
@@ -248,7 +248,7 @@ operational ones.
 
 Nothing extra to start: Qdrant and SearXNG are both in the root
 `docker-compose.yml`, and `./start.sh` runs the RAG API alongside `core` and
-`memory`. `RAG/docker-compose.yml` and `orchestrator/docker-compose.yml` were
+`memory`. `rag/docker-compose.yml` and `orchestrator/docker-compose.yml` were
 folded into the root file on 2026-09-02 and deleted.
 
 The standalone `orchestrator/` scaffold, if you want to poke at it, is the one
@@ -269,7 +269,7 @@ needed to use the pipeline.
 ```bash
 uv run pytest                            # core + memory: ~110 tests, ~2s, no services needed
 RUN_SCENARIOS=1 uv run pytest tests -v   # end-to-end, ~2 min, spends API credit
-uv run pytest RAG/tests                  # RAG pipeline's own suite
+uv run pytest rag/tests                  # RAG pipeline's own suite
 ```
 
 The scenario suite is the one that answers whether memory works: a fact stated

@@ -24,7 +24,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
-# rag_pipeline is a real installed package now (RAG/ is a uv workspace
+# rag_pipeline is a real installed package now (rag/ is a uv workspace
 # member) — no sys.path manipulation needed to import it, unlike when this
 # file lived in a separate controller/ folder outside the RAG package.
 from dotenv import load_dotenv

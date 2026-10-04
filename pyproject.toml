@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [tool.uv.workspace]
-members = ["memory", "core", "RAG"]
+members = ["memory", "core", "rag"]
 
 [tool.uv.sources]
 nexus-core = { workspace = true }
@@ -30,13 +30,13 @@ dev = [
 asyncio_mode = "auto"
 # `tests/` holds the end-to-end scenarios. They skip themselves unless
 # RUN_SCENARIOS=1, so the default run stays fast and free.
-# RAG/tests joined the default run on 2026-09-03. It costs ~17s -- it loads a
+# rag/tests joined the default run on 2026-09-03. It costs ~17s -- it loads a
 # real embedding model and a real cross-encoder -- against ~3s for everything
-# else, and that is worth paying: RAG/tests/test_scopes.py is where the
+# else, and that is worth paying: rag/tests/test_scopes.py is where the
 # document isolation guarantee lives, and a guarantee nobody runs is a
 # guarantee that quietly stops holding. The slow part is model loading, not
 # the assertions.
-testpaths = ["core/tests", "memory/tests", "RAG/tests", "tests"]
+testpaths = ["core/tests", "memory/tests", "rag/tests", "tests"]
 # No pythonpath: both services are installed as distinct top-level packages
 # (nexus_core, nexus_memory). They used to both be called `app`, which meant
 # `import app` resolved to whichever .pth file won and left the memory service

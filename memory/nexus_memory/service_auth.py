@@ -9,7 +9,7 @@ shared secret is refused before it reaches a route.
 Pure ASGI rather than ``@app.middleware("http")`` because the graph socket
 needs the same check, and HTTP middleware never sees websocket scopes.
 
-RAG/rag_pipeline/service_auth.py is a copy of this for the RAG API. The two
+rag/rag_pipeline/service_auth.py is a copy of this for the RAG API. The two
 services share no package, and forty lines is cheaper than inventing one.
 """
 
