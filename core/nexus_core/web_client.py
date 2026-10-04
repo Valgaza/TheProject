@@ -2,7 +2,7 @@
 
 A web search is the one place where what someone typed leaves the machine, so
 this module is where "client data stays here" is either kept or broken. Flag 1
-in .github/IMPORTANT_BUSINESS_LOGIC_FLAGS.md settled where redaction lives --
+in docs/IMPORTANT_BUSINESS_LOGIC_FLAGS.md settled where redaction lives --
 here, inside the client, so no caller can forget it -- and left the mechanism
 open. This uses both of the ones discussed there, in order:
 

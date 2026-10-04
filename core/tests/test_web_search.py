@@ -1,6 +1,6 @@
 """Web search: the one path where text leaves the machine.
 
-Flag 1 in .github/IMPORTANT_BUSINESS_LOGIC_FLAGS.md is the reason these exist.
+Flag 1 in docs/IMPORTANT_BUSINESS_LOGIC_FLAGS.md is the reason these exist.
 A test query like "AI news" never contains anything sensitive, so it can never
 catch a leak; these use the doctor's query the flag was written about.
 """

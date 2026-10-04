@@ -230,7 +230,7 @@ context folds into the answer.
 
 `rag/rag_api.py` is RAG's own HTTP front door — the only way `core` can
 reach it, since they're separate processes (see
-[`.github/CONTROLLER_SERVICE.md`](.github/CONTROLLER_SERVICE.md) for the
+[`docs/RAG_API_SERVICE.md`](docs/RAG_API_SERVICE.md) for the
 full "why is this a separate service" writeup; it's not a user-facing
 surface, nothing outside `core` is meant to call it). Fully local — no cloud
 LLM calls anywhere in `rag/rag_pipeline`.
@@ -242,7 +242,7 @@ stub, nothing calls it in production). Plan is to port `orchestrator/`'s
 useful pieces (its web-search/SearXNG client, its retry logic) into `core`
 and then retire it — see `steps-to-implement-Bhoumish.md` (gitignored, ask
 whoever's working on the orchestrator for the current state).
-[`.github/IMPORTANT_BUSINESS_LOGIC_FLAGS.md`](.github/IMPORTANT_BUSINESS_LOGIC_FLAGS.md)
+[`docs/IMPORTANT_BUSINESS_LOGIC_FLAGS.md`](docs/IMPORTANT_BUSINESS_LOGIC_FLAGS.md)
 tracks open product/safety decisions the same way `RUNBOOK.md` tracks
 operational ones.
 
@@ -283,6 +283,6 @@ cost time in practice — stale Turbopack caches, ports that will not release, a
 memory that looks like it forgot something but is twenty seconds into
 extraction.
 
-`memory/CHECKPOINT_0*.md` are historical records of earlier states. They describe
+`docs/history/CHECKPOINT_0*.md` are historical records of earlier states. They describe
 a layout that no longer exists and are kept for the reasoning, not the
 instructions.

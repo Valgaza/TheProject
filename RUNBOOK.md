@@ -1,6 +1,6 @@
 # Nexus — running it locally
 
-Current as of 2026-09-26 (document tiers, service tokens, web search in core). `memory/CHECKPOINT_0*.md` are historical
+Current as of 2026-09-26 (document tiers, service tokens, web search in core). `docs/history/CHECKPOINT_0*.md` are historical
 records of earlier states and describe a layout that no longer exists; this is
 the file to trust.
 
@@ -196,7 +196,7 @@ SearXNG is never what you typed. A model rewrites it as a generic topic, then
 `core/nexus_core/web_client.py` strips your name, your email, and anything with
 five or more digits. If the rewrite fails, nothing is sent. Each web answer
 shows the exact query that left the machine. See flag 1 in
-`.github/IMPORTANT_BUSINESS_LOGIC_FLAGS.md`.
+`docs/IMPORTANT_BUSINESS_LOGIC_FLAGS.md`.
 
 ## Documents and their tiers
 

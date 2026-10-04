@@ -4,7 +4,7 @@ RAG API — HTTP interface to the RAG pipeline.
 Called by core (core/nexus_core/rag_client.py) over the network — core and
 this service are separate processes, so this is the only way core can reach
 rag_pipeline. Not a user-facing surface; nobody outside core is meant to call
-this directly. See .github/CONTROLLER_SERVICE.md for the fuller "why is this
+this directly. See docs/RAG_API_SERVICE.md for the fuller "why is this
 a separate service" writeup.
 
 Exposes:
