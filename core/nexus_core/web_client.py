@@ -34,8 +34,8 @@ from .providers.base import Provider
 
 logger = logging.getLogger(__name__)
 
-# Phrases that mean "go to the web" when typed, matching the old orchestrator's
-# trigger (orchestrator/app/router.py) so both behave the same while both exist.
+# Phrases that mean "go to the web" when typed. Inherited from the standalone
+# orchestrator scaffold's router, deleted 2026-10-04.
 WEB_TRIGGER = re.compile(
     r"search the internet|search the web|look (it|this) up online", re.IGNORECASE
 )

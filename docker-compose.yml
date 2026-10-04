@@ -6,7 +6,7 @@
 # Dockerfiles for those come later, when we deploy to EC2.
 #
 # Merged 2026-09-02 from three separate compose files (root/Neo4j,
-# RAG/Qdrant, orchestrator/SearXNG) so one `docker compose up -d` starts
+# RAG's Qdrant, web search's SearXNG) so one `docker compose up -d` starts
 # everything, and so this file is close to what actually gets deployed.
 #
 # ⚠️  `docker compose down -v` now deletes EVERY volume below — your graph,

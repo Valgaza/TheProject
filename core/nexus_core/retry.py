@@ -1,6 +1,6 @@
 """Retrying a transient failure instead of giving up after one try.
 
-Ported over from the orchestrator/ scaffold built on feature/rag-pipeline,
+Ported over from the orchestrator scaffold built on feature/rag-pipeline (since deleted),
 which built this before core/ existed. Written generically (no RAG-specific
 assumptions) so any future client here — vision, speech — can reuse it rather
 than each writing its own copy.

@@ -1,6 +1,6 @@
 # Nexus — running it locally
 
-Current as of 2026-09-26 (document tiers, service tokens, web search in core). `docs/history/CHECKPOINT_0*.md` are historical
+Current as of 2026-10-04 (repo layout: `rag/`, `db/`, `docs/`; `orchestrator/` removed). `docs/history/CHECKPOINT_0*.md` are historical
 records of earlier states and describe a layout that no longer exists; this is
 the file to trust.
 
@@ -253,13 +253,14 @@ anything on consensus?"; retrieval answers everything else.
 ## Tests
 
 ```bash
-uv run pytest                  # ~310 tests, ~15s. Only Postgres needed;
+uv run pytest                  # ~320 tests, about a minute (the RAG suite
+                               # loads real models). Only Postgres needed;
                                # database-backed ones skip if it is down
                                # (docker compose up -d postgres)
 
 RUN_SCENARIOS=1 uv run pytest tests -v
-                               # end-to-end scenarios: needs all services up,
-                               # spends API credit, takes ~2 minutes
+                               # end-to-end scenarios: needs all services up
+                               # and the local model, takes several minutes
 ```
 
 The scenario suite is the one that answers whether memory actually works:
@@ -289,6 +290,20 @@ docker compose up -d postgres     # re-applies migrations + seed.sql
 ```
 
 ## Things that will bite you
+
+**After pulling the 2026-10-04 cleanup, recreate two containers and one
+install.** `supabase/` became `db/` and SearXNG's config moved from
+`orchestrator/searxng/` to `docker/searxng/`. A container keeps the bind
+mount it was created with, and `restart: unless-stopped` brings it back on
+the old path, where Docker quietly recreates the directory (SearXNG even
+writes a default config there, with JSON output off, so web search returns
+nothing). Data volumes are untouched by this:
+
+```bash
+docker compose up -d postgres searxng          # recreated on the new mounts
+uv sync --reinstall-package rag-pipeline        # editable install now at rag/
+```
+
 
 **"Required environment variable 'OPENAI_API_KEY' is not set" — but it IS set
 in the root `.env`.** A stray `.env` in a subdirectory is shadowing it. Bare

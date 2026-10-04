@@ -17,6 +17,7 @@ from fastapi import (
 from pydantic import BaseModel, Field
 
 from graphiti_core import Graphiti
+from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
 from graphiti_core.edges import EntityEdge
 from graphiti_core.embedder import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.errors import GroupsEdgesNotFoundError
@@ -233,6 +234,18 @@ async def lifespan(app: FastAPI):
                 # 1024, which silently slices every vector. See config.py.
                 embedding_dim=cfg.embedding_dim,
             )
+        ),
+        # Never called: the search recipe ranks with RRF (retrieval.py), and
+        # the cross-encoder recipes cost one model call per passage. Passed
+        # explicitly because leaving it out makes graphiti build one aimed at
+        # api.openai.com with gpt-4.1-nano -- harmless while unused, but the
+        # wrong thing to find in a local-only system.
+        cross_encoder=OpenAIRerankerClient(
+            config=LLMConfig(
+                api_key=cfg.openai_api_key,
+                base_url=cfg.openai_base_url,
+                model=cfg.extraction_model,
+            ),
         ),
     )
     await _graphiti.build_indices_and_constraints()
