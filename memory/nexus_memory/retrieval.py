@@ -77,7 +77,18 @@ DEFAULT_LIMIT = 8
 # one costs a few tokens in a context window that is nowhere near full, and the
 # prompt already tells the model to ignore what does not apply. That balance
 # will shift as the graph grows; re-run the sweep when it does.
-DEFAULT_MIN_SCORE = 0.45
+#
+# Re-measured 2026-10-04 for EmbeddingGemma (the MLX runtime's embedding
+# model), which spreads cosine differently from nomic-embed-text. Raw cosine
+# between questions and the facts that answer them: 0.47-0.58; against
+# unrelated facts: at most 0.31. The floor belongs in that gap. The sweep
+# itself (scripts/floor_sweep.py) came out flat from 0.25 to 0.65 -- 4 hit, 2
+# missed, 2 noisy -- because graphiti fuses this cosine search with BM25,
+# which has no floor and carries most hits (and both noisy results) at this
+# corpus size. 0.65, the sweep's "knee", would quietly switch the semantic
+# half off; 0.40 keeps it for oblique questions and still excludes unrelated
+# matches.
+DEFAULT_MIN_SCORE = 0.40
 
 
 def _recipe(min_score: float) -> SearchConfig:

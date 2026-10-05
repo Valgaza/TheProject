@@ -14,6 +14,8 @@ import os
 
 from dotenv import load_dotenv
 
+from .retrieval import DEFAULT_MIN_SCORE
+
 load_dotenv()
 
 
@@ -62,4 +64,4 @@ class Settings:
 
         # Cosine floor for retrieval, measured rather than guessed. See
         # retrieval.py for the sweep this number came from.
-        self.search_min_score = float(_optional("MEMORY_SEARCH_MIN_SCORE", "0.45"))
+        self.search_min_score = float(_optional("MEMORY_SEARCH_MIN_SCORE", str(DEFAULT_MIN_SCORE)))

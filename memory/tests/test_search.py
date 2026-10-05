@@ -219,6 +219,18 @@ async def test_the_default_limit_applies(client, monkeypatch):
     assert fake.calls[0]["config"].limit == DEFAULT_LIMIT
 
 
+async def test_a_tuning_floor_overrides_the_configured_one(client, monkeypatch):
+    """scripts/floor_sweep.py measures the floor per request; nothing else
+    sends min_score, so ordinary reads keep the configured value."""
+    fake = _install(monkeypatch, [])
+
+    await client.post("/search", json={"query": "x", "user_id": str(ALICE), "min_score": 0.7})
+    await client.post("/search", json={"query": "x", "user_id": str(ALICE)})
+
+    assert fake.calls[0]["config"].edge_config.sim_min_score == 0.7
+    assert fake.calls[1]["config"].edge_config.sim_min_score != 0.7
+
+
 async def test_a_blank_query_is_refused(client, monkeypatch):
     fake = _install(monkeypatch, [])
 

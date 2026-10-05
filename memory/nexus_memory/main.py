@@ -387,6 +387,10 @@ class SearchRequest(BaseModel):
     user_id: uuid.UUID
     project_id: uuid.UUID | None = None
     limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=50)
+    # Overrides MEMORY_SEARCH_MIN_SCORE for this one search. For tuning only
+    # (scripts/floor_sweep.py re-measures the floor when the embedding model
+    # changes); core never sends it, so normal reads use the configured floor.
+    min_score: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class FactOut(BaseModel):
@@ -611,7 +615,9 @@ async def search(req: SearchRequest, request: Request):
         query=req.query,
         config=build_search_config(
             req.limit,
-            getattr(request.app.state, "search_min_score", DEFAULT_MIN_SCORE),
+            req.min_score
+            if req.min_score is not None
+            else getattr(request.app.state, "search_min_score", DEFAULT_MIN_SCORE),
         ),
         group_ids=groups,
     )
