@@ -1011,6 +1011,21 @@ wheels = [
 ]
 
 [[package]]
+name = "laya-mlx"
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "huggingface-hub" },
+    { name = "mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
+    { name = "numpy" },
+    { name = "tokenizers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b6/b1/7c936f1a379172cf3bed7f4d9e65d0da825f009223439800c8cf91feaa59/laya_mlx-0.3.0.tar.gz", hash = "sha256:9c8049df049c920ab4d8b4a9aae44e99d9e00085a692523b6bc82849512e5914", size = 73367, upload-time = "2026-10-02T03:20:37.446Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/48/84/f347d19c3d22e00a67e945f466b1319f784d66244d4dca4741bc9b433904/laya_mlx-0.3.0-py3-none-any.whl", hash = "sha256:6f3be5f292440d80c1c8fb8810ef5e82159a15295bd9894df7e574de325b49c3", size = 83526, upload-time = "2026-10-02T03:20:36.534Z" },
+]
+
+[[package]]
 name = "llguidance"
 version = "1.9.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1556,6 +1571,7 @@ version = "0.1.0"
 source = { editable = "runtime" }
 dependencies = [
     { name = "fastapi" },
+    { name = "laya-mlx" },
     { name = "mlx" },
     { name = "mlx-embeddings" },
     { name = "mlx-lm" },
@@ -1575,6 +1591,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
+    { name = "laya-mlx", specifier = ">=0.3.0" },
     { name = "mlx", specifier = ">=0.32.0" },
     { name = "mlx-embeddings", specifier = ">=0.1.0" },
     { name = "mlx-lm", specifier = ">=0.32.0" },
