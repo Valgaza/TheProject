@@ -77,6 +77,11 @@ class Settings:
         self.session_idle_seconds = int(_optional("RUNTIME_SESSION_IDLE_SECONDS", "300"))
 
         self.default_max_tokens = int(_optional("RUNTIME_DEFAULT_MAX_TOKENS", "4096"))
+        # A ceiling on what any caller may ask for. graphiti asks for 16384 on
+        # every extraction call; a model that loops inside its JSON (seen with
+        # Qwen3.5-9B, 2026-10-04) then holds the GPU for minutes. Real
+        # extractions stay well under 2k tokens.
+        self.max_tokens_cap = int(_optional("RUNTIME_MAX_TOKENS", "4096"))
 
         # Reused KV for each conversation's shared prefix (system prompt plus
         # history), so a follow-up turn only processes what is new.

@@ -95,7 +95,8 @@ def _params(body: ChatRequest, settings) -> GenParams:
     effort = (body.reasoning_effort or "").lower()
     thinking = settings.enable_thinking if not effort else effort in ("medium", "high")
     return GenParams(
-        max_tokens=body.max_completion_tokens or body.max_tokens or settings.default_max_tokens,
+        max_tokens=min(body.max_completion_tokens or body.max_tokens or settings.default_max_tokens,
+                       settings.max_tokens_cap),
         # 0.7 rather than OpenAI's 1.0: these are small local models, and at
         # 1.0 they wander. Callers that care pass their own.
         temperature=0.7 if body.temperature is None else body.temperature,
