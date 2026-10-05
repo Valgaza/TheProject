@@ -17,12 +17,18 @@ import asyncio
 import os
 import uuid
 
+from pathlib import Path
+
+import asyncpg
 import httpx
 import pytest
+from dotenv import dotenv_values
 
 CORE_URL = os.getenv("CORE_URL", "http://localhost:8100")
 MEMORY_URL = os.getenv("MEMORY_URL", "http://localhost:8000")
-DEMO_USER_ID = os.getenv("DEMO_USER_ID", "00000000-0000-0000-0000-000000000001")
+ENV = {**dotenv_values(Path(__file__).resolve().parents[1] / ".env"), **os.environ}
+RUNTIME_URL = (ENV.get("OPENAI_BASE_URL") or "http://localhost:8003/v1").removesuffix("/v1")
+WEBSEARCH_URL = ENV.get("WEBSEARCH_URL") or "http://localhost:8004"
 
 # graphiti's extraction is 12-30s per episode, and the gate adds a model call in
 # front of it. Generous, because a flaky timeout here reads as a product bug.
@@ -42,6 +48,12 @@ def anyio_backend():
 
 @pytest.fixture
 async def client():
+    """A signed-in throwaway user, removed afterwards with everything it made.
+
+    Core requires a session for every route, so the suite signs up rather than
+    borrowing the demo account: a fresh user also starts with an empty user
+    tier by construction.
+    """
     async with httpx.AsyncClient(timeout=180.0) as c:
         for url in (f"{CORE_URL}/health", f"{MEMORY_URL}/health"):
             try:
@@ -50,20 +62,38 @@ async def client():
                 pytest.skip(f"{url} unreachable ({exc.__class__.__name__})")
             if response.json().get("status") not in ("ok", "degraded"):
                 pytest.skip(f"{url} reports {response.json()}")
-        yield c
+        user = (await c.post(f"{CORE_URL}/auth/signup", json={
+            "email": f"scenario-{uuid.uuid4().hex[:12]}@example.com",
+            "password": uuid.uuid4().hex, "display_name": "Scenario",
+        })).raise_for_status().json()
+        c.user_id = user["id"]
+        try:
+            yield c
+        finally:
+            await _remove_user(c, user["id"])
+
+
+async def _remove_user(c: httpx.AsyncClient, user_id: str) -> None:
+    for doc in (await c.get(f"{CORE_URL}/documents")).json():
+        await c.delete(f"{CORE_URL}/documents/{doc['id']}")
+    for project in (await c.get(f"{CORE_URL}/projects")).json():
+        await c.delete(f"{CORE_URL}/graph", params={"view": "project", "project_id": project["id"]})
+    await c.delete(f"{CORE_URL}/graph", params={"view": "user"})
+    for chat in (await c.get(f"{CORE_URL}/chats")).json():
+        await c.delete(f"{CORE_URL}/chats/{chat['id']}")
+    for project in (await c.get(f"{CORE_URL}/projects")).json():
+        await c.delete(f"{CORE_URL}/projects/{project['id']}")
+    db = await asyncpg.connect(ENV["DATABASE_URL"])
+    try:
+        await db.execute("delete from profiles where id = $1", uuid.UUID(user_id))
+    finally:
+        await db.close()
 
 
 @pytest.fixture
 async def clean_user(client: httpx.AsyncClient):
-    """Start from an empty user tier.
-
-    Project tiers are left alone: every scenario makes its own project, so they
-    are empty by construction, and wiping every project would destroy whatever
-    the developer was looking at.
-    """
-    await client.delete(f"{MEMORY_URL}/graph", params={"user_id": DEMO_USER_ID})
-    yield DEMO_USER_ID
-    await client.delete(f"{MEMORY_URL}/graph", params={"user_id": DEMO_USER_ID})
+    """The signed-in user's id. Its user tier is empty: the user is new."""
+    yield client.user_id
 
 
 class Conversation:
