@@ -30,7 +30,8 @@ yet.
         what was      the graph       documents
         said          (Neo4j)         (Qdrant)
 
-        All model calls go to one local OpenAI-compatible server (Ollama).
+        Every model runs in runtime :8003 (MLX), an OpenAI-compatible API
+        that core and memory call with the same service token.
 ```
 
 The browser talks to `core` and nothing else. `memory` and the RAG API refuse
@@ -166,20 +167,19 @@ docker exec -it nexus-postgres psql -U postgres -d postgres
 
 ## Setup
 
-Needs Docker Desktop, [uv](https://docs.astral.sh/uv/), [Ollama](https://ollama.com)
-and Node 20.9+ (Next 16 requires it).
+Needs an Apple-silicon Mac, Docker Desktop, [uv](https://docs.astral.sh/uv/) and
+Node 20.9+ (Next 16 requires it).
 
 ```bash
 cp .env.example .env      # then set NEO4J_PASSWORD, JWT_SECRET and SERVICE_TOKEN
-uv sync                   # core, memory and the RAG pipeline, editable
+uv sync                   # core, memory, the RAG pipeline and the MLX runtime, editable
 cd frontend && npm install && cd ..
-ollama pull gpt-oss:20b && ollama pull nomic-embed-text
 ```
 
 Then, from the repo root:
 
 ```bash
-./start.sh                     # Ollama + containers + memory (8000) + RAG API (8001) + core (8100)
+./start.sh                     # runtime (8003) + containers + memory (8000) + RAG API (8001) + core (8100)
 cd frontend && npm run dev     # separate terminal
 ```
 
@@ -189,11 +189,14 @@ containers running. To run a service by hand, see [`RUNBOOK.md`](RUNBOOK.md).
 ### Local inference
 
 Every model call goes through `core/nexus_core/providers/` or graphiti's
-OpenAI-compatible client, pointed by `OPENAI_BASE_URL` at Ollama. One model
-(`gpt-oss:20b`) serves chat, the write gate, titles and graph extraction;
-`nomic-embed-text` embeds for the graph. The RAG pipeline embeds and reranks
-in-process on CPU. Model names are configuration, so swapping a model is an
-`.env` change. How the models fit in memory: `RUNBOOK.md`.
+OpenAI-compatible client, pointed by `OPENAI_BASE_URL` at the runtime
+(`runtime/`), which runs every model on Apple's MLX in one process. One chat
+model serves answers, the write gate, titles and graph extraction, and an
+embedding model embeds for the graph; the runtime schedules them by urgency so
+background extraction never delays a reply. The RAG pipeline embeds and
+reranks in-process on CPU. Model names are configuration (Hugging Face ids of
+MLX conversions), downloaded on first start. Ollama remains a documented
+fallback. How the models fit in memory and how they are chosen: `RUNBOOK.md`.
 
 ## Repository layout
 
@@ -201,14 +204,17 @@ in-process on CPU. Model names are configuration, so swapping a model is an
 core/nexus_core/        auth, chats, projects, documents, routing, the write gate
 memory/nexus_memory/    the graph: scopes, ingest, retrieval, maintenance, live updates
 rag/                    the RAG pipeline (rag_pipeline/) and its HTTP service (rag_api.py)
+runtime/nexus_runtime/  every local model on MLX: scheduler, chat, embeddings, residency
 frontend/               Next.js 16, hand-written CSS
 db/                     Postgres schema (migrations/) and seed, source of truth
 docker/                 Postgres init script and SearXNG config
 docs/                   design notes, open product decisions, history/
+scripts/                extraction check, floor sweep, graph re-embed
 tests/                  end-to-end scenarios (opt-in, drives the live stack)
 ```
 
-Each service owns its tests: `core/tests/`, `memory/tests/`, `rag/tests/`.
+Each service owns its tests: `core/tests/`, `memory/tests/`, `rag/tests/`,
+`runtime/tests/`.
 
 The Python packages are named `nexus_core`, `nexus_memory` and `rag_pipeline`
 rather than `app`. Two were both `app` once, installed into the same
@@ -218,7 +224,8 @@ was unreachable.
 ## Tests
 
 ```bash
-uv run pytest                            # core + memory + rag: ~320 tests, about a minute
+uv run pytest                            # core + memory + rag + runtime, about a minute
+RUN_MLX=1 uv run pytest runtime/tests    # the runtime on real (small) MLX models
 RUN_SCENARIOS=1 uv run pytest tests -v   # end-to-end against the live stack and local models
 ```
 

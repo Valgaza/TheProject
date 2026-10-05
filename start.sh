@@ -36,55 +36,85 @@ if [[ ! -x "$VENV/uvicorn" ]]; then
   exit 1
 fi
 
-if ! command -v ollama &>/dev/null; then
-  echo "✗  Ollama not found — inference runs locally now. Install it with:"
-  echo "   brew install ollama"
-  exit 1
-fi
+# ── Cleanup for everything started below ─────────────────────
+# Set before anything starts: the runtime launches ahead of the containers so
+# its models load while they boot, and Ctrl+C must stop it too.
+pids=()
+cleanup() {
+  echo ""
+  echo "── Stopping services ───────────────────────────────────"
+  # ${pids[@]+...}: macOS bash 3.2 treats an empty array as unbound under set -u.
+  for pid in ${pids[@]+"${pids[@]}"}; do
+    kill "$pid" 2>/dev/null || true
+  done
+  wait 2>/dev/null || true
+  echo "   Containers are still running. Stop them with: docker compose down"
+}
+trap cleanup INT TERM EXIT
 
 # ── Local inference ──────────────────────────────────────────
-# Ollama serves both the chat/gate/extraction model and the embedding model
-# over one OpenAI-compatible endpoint, which is what OPENAI_BASE_URL points
-# at. Started here rather than left to `brew services` so the two tuning
-# flags below actually apply: without them the KV cache is fp16, and on a
-# 24 GB machine that is the difference between a long conversation fitting
-# in the GPU wired limit and the model being evicted mid-turn.
-if curl -sf "http://localhost:11434/api/version" >/dev/null 2>&1; then
-  echo "▶  Ollama already running  →  http://localhost:11434"
-else
-  echo "▶  Starting Ollama         →  http://localhost:11434"
-  # 16K context, not Ollama's VRAM-derived default of 4096. A turn here
-  # carries chat history, recalled facts and an assembled RAG prompt at
-  # once, and 4096 truncates that silently. Measured: 16K costs nothing
-  # extra in resident size with a q8 KV cache -- still 12 GB, still 100%
-  # GPU.
-  OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 \
-  OLLAMA_CONTEXT_LENGTH=16384 ollama serve \
-    >"$ROOT/.ollama-serve.log" 2>&1 &
-  printf "   Waiting for Ollama"
-  for _ in $(seq 1 30); do
-    if curl -sf "http://localhost:11434/api/version" >/dev/null 2>&1; then
-      echo " ready."
-      break
-    fi
-    printf "."
-    sleep 1
-  done
-  if ! curl -sf "http://localhost:11434/api/version" >/dev/null 2>&1; then
-    echo ""
-    echo "✗  Ollama did not come up. Check: $ROOT/.ollama-serve.log"
-    exit 1
-  fi
-fi
+# OPENAI_BASE_URL in .env decides the engine. The default is the MLX runtime
+# (runtime/, :8003); pointing it at Ollama's :11434 is the fallback.
+INFERENCE_URL="$(grep -E '^OPENAI_BASE_URL=' "$ROOT/.env" | tail -1 | cut -d= -f2- | tr -d '"' || true)"
 
-# Fail here rather than three services later with an opaque 404 from the
-# model endpoint, which is what a missing pull actually looks like.
-for model in "${CORE_CHAT_MODEL:-gpt-oss:20b}" "${MEMORY_EMBEDDING_MODEL:-nomic-embed-text}"; do
-  if ! ollama list 2>/dev/null | awk '{print $1}' | grep -qx "${model%:latest}\(:latest\)\?"; then
-    echo "✗  Model '$model' is not pulled. Run: ollama pull $model"
+if [[ "$INFERENCE_URL" == *":11434"* ]]; then
+  if ! command -v ollama &>/dev/null; then
+    echo "✗  .env points at Ollama, but it is not installed: brew install ollama"
     exit 1
   fi
-done
+  # ── Local inference ──────────────────────────────────────────
+  # Ollama serves both the chat/gate/extraction model and the embedding model
+  # over one OpenAI-compatible endpoint, which is what OPENAI_BASE_URL points
+  # at. Started here rather than left to `brew services` so the two tuning
+  # flags below actually apply: without them the KV cache is fp16, and on a
+  # 24 GB machine that is the difference between a long conversation fitting
+  # in the GPU wired limit and the model being evicted mid-turn.
+  if curl -sf "http://localhost:11434/api/version" >/dev/null 2>&1; then
+    echo "▶  Ollama already running  →  http://localhost:11434"
+  else
+    echo "▶  Starting Ollama         →  http://localhost:11434"
+    # 16K context, not Ollama's VRAM-derived default of 4096. A turn here
+    # carries chat history, recalled facts and an assembled RAG prompt at
+    # once, and 4096 truncates that silently. Measured: 16K costs nothing
+    # extra in resident size with a q8 KV cache -- still 12 GB, still 100%
+    # GPU.
+    OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 \
+    OLLAMA_CONTEXT_LENGTH=16384 ollama serve \
+      >"$ROOT/.ollama-serve.log" 2>&1 &
+    printf "   Waiting for Ollama"
+    for _ in $(seq 1 30); do
+      if curl -sf "http://localhost:11434/api/version" >/dev/null 2>&1; then
+        echo " ready."
+        break
+      fi
+      printf "."
+      sleep 1
+    done
+    if ! curl -sf "http://localhost:11434/api/version" >/dev/null 2>&1; then
+      echo ""
+      echo "✗  Ollama did not come up. Check: $ROOT/.ollama-serve.log"
+      exit 1
+    fi
+  fi
+
+  # Fail here rather than three services later with an opaque 404 from the
+  # model endpoint, which is what a missing pull actually looks like.
+  for model in "${CORE_CHAT_MODEL:-gpt-oss:20b}" "${MEMORY_EMBEDDING_MODEL:-nomic-embed-text}"; do
+    if ! ollama list 2>/dev/null | awk '{print $1}' | grep -qx "${model%:latest}\(:latest\)\?"; then
+      echo "✗  Model '$model' is not pulled. Run: ollama pull $model"
+      exit 1
+    fi
+  done
+
+else
+  # No --reload: a reload would throw away and reload several GB of weights.
+  # Models load in the background; /health says "loading" until they are in
+  # memory and warmed, and is waited on below, after the containers.
+  echo "▶  runtime (MLX)   →  http://localhost:8003"
+  "$VENV/uvicorn" nexus_runtime.main:app --port 8003 &
+  RUNTIME_PID=$!
+  pids+=($RUNTIME_PID)
+fi
 
 # ── Infrastructure ───────────────────────────────────────────
 # One compose file now starts everything: Postgres (chat transcripts), Neo4j
@@ -133,18 +163,32 @@ if ! docker exec nexus-postgres pg_isready -U postgres -q >/dev/null 2>&1; then
   exit 1
 fi
 
-# ── Services ─────────────────────────────────────────────────
-pids=()
-cleanup() {
-  echo ""
-  echo "── Stopping services ───────────────────────────────────"
-  for pid in "${pids[@]}"; do
-    kill "$pid" 2>/dev/null || true
+if [[ -n "${RUNTIME_PID:-}" ]]; then
+  printf "   Waiting for the runtime's models"
+  # Generous: the first start downloads the models. Later starts load from
+  # disk in seconds. Fails fast if the runtime process itself dies.
+  for _ in $(seq 1 600); do
+    if curl -sf "http://localhost:8003/health" 2>/dev/null | grep -q '"status":"ok"'; then
+      echo " ready."
+      break
+    fi
+    if ! kill -0 "$RUNTIME_PID" 2>/dev/null; then
+      echo ""
+      echo "✗  The runtime exited. Its log is above."
+      exit 1
+    fi
+    printf "."
+    sleep 3
   done
-  wait 2>/dev/null || true
-  echo "   Containers are still running. Stop them with: docker compose down"
-}
-trap cleanup INT TERM EXIT
+  if ! curl -sf "http://localhost:8003/health" 2>/dev/null | grep -q '"status":"ok"'; then
+    echo ""
+    echo "✗  The runtime did not finish loading within 30 minutes."
+    echo "   Check: curl -s localhost:8003/health"
+    exit 1
+  fi
+fi
+
+# ── Services ─────────────────────────────────────────────────
 
 echo "▶  memory service  →  http://localhost:8000"
 "$VENV/uvicorn" nexus_memory.main:app --reload --port 8000 &
@@ -164,7 +208,7 @@ pids+=($!)
 
 echo ""
 echo "   Frontend:  cd frontend && npm run dev  →  http://localhost:3000"
-echo "   Press Ctrl+C to stop all three services."
+echo "   Press Ctrl+C to stop the services."
 echo "────────────────────────────────────────────────────────"
 
 wait
