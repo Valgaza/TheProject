@@ -59,6 +59,11 @@ export type Message = {
     rag_sources?: RagSource[];
     // Only on turns that searched the web; query_sent is what left the machine.
     web?: WebMeta;
+    // A spoken turn: its own timings (first_audio_ms is from the end of the
+    // person's speech to the first sound back).
+    voice?: Record<string, number | string>;
+    // Cut off by the person; the content is only what they heard.
+    interrupted?: boolean;
   };
   created_at: string;
 };

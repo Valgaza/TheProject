@@ -1543,3 +1543,28 @@
   vertical-align: top;
 }
 .answer th { font-weight: 600; color: var(--ink-3); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.05em; }
+
+/* ── Voice ─────────────────────────────────────────────────────────────── */
+.voicebar {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-4, 14px);
+  background: var(--bg-paper);
+}
+.voicebar__orb {
+  flex: 0 0 auto;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--ink-3, var(--line-strong));
+  transition: background 160ms var(--ease-out), transform 160ms var(--ease-out);
+}
+.voicebar--listening .voicebar__orb { background: var(--d-speech); opacity: 0.55; }
+.voicebar--hearing .voicebar__orb { background: var(--d-speech); transform: scale(1.35); animation: voicePulse 900ms var(--ease-in-out) infinite; }
+.voicebar--thinking .voicebar__orb { background: var(--accent); animation: voicePulse 1400ms var(--ease-in-out) infinite; }
+.voicebar--speaking .voicebar__orb { background: var(--accent); transform: scale(1.2); }
+.voicebar__text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: var(--t-body-s); }
+.voicebar__heard { color: var(--ink-3, var(--ink-2)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@keyframes voicePulse { 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) {
+  .voicebar__orb { animation: none !important; transition: none; }
+}
