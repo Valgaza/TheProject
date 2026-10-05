@@ -28,7 +28,9 @@ from graphiti_core.nodes import EntityNode, EpisodeType
 
 from .config import Settings
 from .service_auth import ServiceTokenMiddleware
-from .hygiene import group_lock, is_suppressed, load_suppressed, sweep
+from .hygiene import (
+    group_lock, is_retired, is_suppressed, load_retired, load_suppressed, retire, sweep,
+)
 from .logging_config import configure_logging
 from .retrieval import DEFAULT_LIMIT, DEFAULT_MIN_SCORE, build_search_config
 from .scopes import Scope, View, read_groups, scope_of, view_groups, write_group
@@ -111,6 +113,11 @@ async def _build_graph_response(groups: list[str]) -> "GraphResponse":
     except GroupsEdgesNotFoundError:
         # The node call returns [] for an empty group; the edge call raises.
         edges = []
+    # What the person has since changed is history, not the picture of now.
+    nodes = [n for n in nodes if not is_retired(n.uuid)]
+    shown = {n.uuid for n in nodes}
+    edges = [e for e in edges if not is_retired(e.uuid)
+             and e.source_node_uuid in shown and e.target_node_uuid in shown]
     return GraphResponse(
         group_ids=groups,
         nodes=[
@@ -262,12 +269,14 @@ async def lifespan(app: FastAPI):
     # The suppression set lives in memory, so it has to be read back after a
     # restart or previously-hidden duplicate episodes reappear in search.
     suppressed = await load_suppressed(_graphiti.driver)
+    retired = await load_retired(_graphiti.driver)
     logger.info(
-        "Memory service ready  embed=%s dim=%d extract=%s suppressed_episodes=%d",
+        "Memory service ready  embed=%s dim=%d extract=%s suppressed_episodes=%d retired=%d",
         cfg.embedding_model,
         cfg.embedding_dim,
         cfg.extraction_model,
         suppressed,
+        retired,
     )
     yield
     await _graphiti.close()
@@ -549,6 +558,35 @@ async def delete_graph(
             await manager.send(subscription, payload)
 
 
+class RetireRequest(BaseModel):
+    user_id: uuid.UUID
+    project_id: uuid.UUID | None = None
+    # The facts' text exactly as /search returned it. Matched by text, not id:
+    # see hygiene.retire.
+    facts: list[str] = Field(default_factory=list, max_length=20)
+
+
+class RetireResponse(BaseModel):
+    retired: list[str]
+
+
+@app.post("/retire", response_model=RetireResponse)
+async def retire_facts(req: RetireRequest):
+    """Stop returning facts the person has since changed.
+
+    Kept in the graph as history, gone from search and from the graph view.
+    Only items inside this user's tiers (and this project's) are touched.
+    """
+    graphiti = _require_graphiti()
+    groups = read_groups(req.user_id, req.project_id)
+    retired = await retire(graphiti.driver, req.facts, groups) if req.facts else []
+    logger.info("retired %d items for %d facts in groups=%s", len(retired), len(req.facts), groups)
+    if retired:
+        for group_id in groups:
+            await _broadcast_write(group_id)
+    return RetireResponse(retired=retired)
+
+
 @app.post("/maintenance", response_model=MaintenanceResponse)
 async def maintenance(req: MaintenanceRequest):
     """Tidy the graph behind one view. Reports without changing unless asked.
@@ -640,7 +678,7 @@ async def search(req: SearchRequest, request: Request):
         # is SQLite" after it became Neo4j makes the assistant confidently
         # stale.
         for edge in results.edges
-        if edge.invalid_at is None and edge.expired_at is None
+        if edge.invalid_at is None and edge.expired_at is None and not is_retired(edge.uuid)
     ] + [
         FactOut(
             id=node.uuid,
@@ -655,7 +693,7 @@ async def search(req: SearchRequest, request: Request):
             valid_at=getattr(node, "created_at", None),
         )
         for node in results.nodes
-        if node.summary
+        if node.summary and not is_retired(node.uuid)
     ] + [
         # Last in the candidate list, so an edge or a node summary wins the
         # dedupe over the raw episode it was extracted from. Episodes are here
@@ -673,7 +711,7 @@ async def search(req: SearchRequest, request: Request):
         # A duplicate episode is filtered here rather than in the query:
         # graphiti's EpisodicNode is a fixed model, so the property the sweep
         # sets on the node never reaches these results.
-        if episode.content and not is_suppressed(episode.uuid)
+        if episode.content and not is_suppressed(episode.uuid) and not is_retired(episode.uuid)
     ]
 
     facts = _dedupe(candidates)[: req.limit]

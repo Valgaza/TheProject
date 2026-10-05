@@ -132,6 +132,23 @@ def _by_tier(facts: Sequence[GateFact], project_id: uuid.UUID | None, chat_id) -
     return tiers
 
 
+async def _retire(session_factory, memory: MemoryClient, decision_id: uuid.UUID,
+                  facts: Sequence, user_id: uuid.UUID, project_id: uuid.UUID | None) -> None:
+    """Retire what a change of mind replaced, and record it on the turn."""
+    if not facts:
+        return
+    items = await memory.retire([f.fact for f in facts], user_id=user_id, project_id=project_id)
+    logger.info("gate retired %d graph items for %d replaced facts: %s", len(items), len(facts),
+                [f.fact[:60] for f in facts])
+    if not items:
+        return
+    async with session_factory() as session:
+        record = await session.get(GateDecisionRecord, decision_id)
+        if record is not None:
+            record.retired = [{"fact": f.fact, "id": f.id} for f in facts] + [{"items": items}]
+            await session.commit()
+
+
 async def process_decision(
     *,
     session_factory: async_sessionmaker,
@@ -169,6 +186,14 @@ async def process_decision(
         user_message, assistant_message = record.user_message, record.assistant_message
         recalled = list(record.recalled_facts or [])
 
+    # What memory holds on this subject now, with ids: the gate must not
+    # restate any of it, and names the ones a change of mind makes untrue so
+    # they can be retired. Searched here rather than taken from the turn's
+    # recall, which has no ids and predates any turn queued ahead of this one.
+    # Falls back to that recall (without ids, so nothing can be retired).
+    known = await memory.search(user_message, user_id=user_id, project_id=project_id)
+    known_texts = [f.fact for f in known] if known else recalled
+
     started = time.perf_counter()
     laya = None
     laya_state = {"person_said": user_message, "assistant_replied": assistant_message[:400]}
@@ -186,7 +211,7 @@ async def process_decision(
             user_message=user_message,
             assistant_message=assistant_message,
             subject_name=subject_name,
-            known_facts=recalled,
+            known_facts=known_texts,
             model=gate_model,
         )
         decided_by = "prefilter" if decision.reason.startswith(PREFILTER_PREFIX) else "llm"
@@ -233,9 +258,15 @@ async def process_decision(
             ))
         await session.commit()
 
+    # What this turn made untrue, by id. Only from the searched facts: the
+    # fallback recall has no ids to retire by.
+    superseded = [known[n - 1] for n in decision.replaces if known and n <= len(known)]
+
     if not decision.persist:
         logger.info("gate declined chat=%s by=%s gate_ms=%d reason=%s",
                     chat_id, decided_by, gate_ms, decision.reason)
+        # "I no longer use Neo4j": nothing new to write, but something to retire.
+        await _retire(session_factory, memory, decision_id, superseded, user_id, project_id)
         return
     logger.info("gate accepted chat=%s gate_ms=%d facts=%d episodes=%d",
                 chat_id, gate_ms, len(decision.facts), len(episodes))
@@ -250,6 +281,11 @@ async def process_decision(
         )
         if ok:
             written.add((scope, project_id if scope == "project" else None))
+
+    # After the new fact is in, never before: a question asked in between
+    # should find the old value rather than nothing. And only if it landed.
+    if written:
+        await _retire(session_factory, memory, decision_id, superseded, user_id, project_id)
 
     async with session_factory() as session:
         record = await session.get(GateDecisionRecord, decision_id)

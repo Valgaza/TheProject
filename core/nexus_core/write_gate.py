@@ -86,15 +86,17 @@ GATE_SCHEMA: dict = {
                 "required": ["statement", "scope"],
             },
         },
+        "replaces": {"type": "array", "maxItems": 6, "items": {"type": "integer"}},
     },
-    "required": ["reason", "persist", "facts"],
+    "required": ["reason", "persist", "facts", "replaces"],
 }
 
 GATE_SYSTEM_PROMPT = """\
 You decide what a personal assistant should remember from a conversation turn.
 
 Return ONLY a JSON object, no prose and no code fence:
-{"reason": string, "persist": bool, "facts": [{"statement": string, "scope": "user"|"project"}]}
+{"reason": string, "persist": bool, "facts": [{"statement": string, "scope": "user"|"project"}],
+ "replaces": [number]}
 
 ONLY the person's own message is a source of facts. The assistant's reply is
 given to you as context, so you can resolve references the person's message
@@ -102,10 +104,10 @@ leaves dangling -- never as something to learn from. If the only new information
 in this turn came out of the assistant's mouth, persist nothing. An assistant
 repeating back a fact it was told earlier is not the person stating it again.
 
-Facts already in memory are listed below when there are any. Never restate one.
-A rephrasing of something already known is a duplicate, not a new fact. A
-change of mind is not a duplicate: when the person replaces, reverses or
-corrects something already known ("scrap that, we switched to Postgres"),
+Facts already in memory are listed below, numbered, when there are any. Never
+restate one. A rephrasing of something already known is a duplicate, not a new
+fact. A change of mind is not a duplicate: when the person replaces, reverses
+or corrects something already known ("scrap that, we switched to Postgres"),
 persist the new state as a fact, saying what it replaced.
 
 Persist something only when it will still be useful weeks from now. Durable
@@ -138,6 +140,12 @@ scope, set per fact:
   technology choices, architecture decisions, deadlines, its specific problems.
 When a fact would be equally true in a different project, it is "user".
 
+replaces: the numbers of the facts already in memory that this message makes
+untrue -- the old value of something the person has just changed. Every listed
+line that states the old value, since the same fact can be listed more than
+once in different words. Empty unless the person changed something: a new fact
+that sits alongside an old one replaces nothing.
+
 reason: first, a short phrase explaining the decision, for a human reading the
 logs.
 """
@@ -161,10 +169,14 @@ class GateDecision:
     persist: bool
     reason: str
     facts: tuple[GateFact, ...] = ()
+    # 1-based positions in the known facts the gate was shown, of those this
+    # turn made untrue. Read even when nothing new is persisted: "I no longer
+    # use Neo4j" retires a fact without adding one.
+    replaces: tuple[int, ...] = ()
 
     @classmethod
-    def skip(cls, reason: str) -> "GateDecision":
-        return cls(persist=False, reason=reason)
+    def skip(cls, reason: str, replaces: tuple[int, ...] = ()) -> "GateDecision":
+        return cls(persist=False, reason=reason, replaces=replaces)
 
 
 # Whole-message pleasantries. Deliberately an exact-match list rather than a
@@ -259,12 +271,13 @@ def _parse(raw: str) -> GateDecision:
         return GateDecision.skip(f"gate returned unparseable output: {raw[:120]!r}")
 
     reason = str(data.get("reason", ""))
+    replaces = tuple(n for n in (data.get("replaces") or []) if isinstance(n, int) and n > 0)
     if not data.get("persist"):
-        return GateDecision.skip(reason or "gate declined")
+        return GateDecision.skip(reason or "gate declined", replaces)
 
     entries = data.get("facts")
     if not isinstance(entries, list):
-        return GateDecision.skip("gate said persist but gave no facts list")
+        return GateDecision.skip("gate said persist but gave no facts list", replaces)
 
     facts: list[GateFact] = []
     for entry in entries:
@@ -288,7 +301,7 @@ def _parse(raw: str) -> GateDecision:
         facts.append(GateFact(statement=statement, scope=scope))
 
     if not facts:
-        return GateDecision.skip(f"gate said persist but gave no usable facts ({reason})")
+        return GateDecision.skip(f"gate said persist but gave no usable facts ({reason})", replaces)
 
     if len(facts) > MAX_FACTS_PER_TURN:
         logger.info(
@@ -298,7 +311,7 @@ def _parse(raw: str) -> GateDecision:
         )
         facts = facts[:MAX_FACTS_PER_TURN]
 
-    return GateDecision(persist=True, reason=reason, facts=tuple(facts))
+    return GateDecision(persist=True, reason=reason, facts=tuple(facts), replaces=replaces)
 
 
 async def decide(
@@ -321,8 +334,8 @@ async def decide(
 
     sections = [f"The person is named: {subject_name}"]
     if known_facts:
-        already = "\n".join(f"- {f}" for f in known_facts)
-        sections.append(f"Already in memory, do not restate:\n{already}")
+        already = "\n".join(f"[{n}] {f}" for n, f in enumerate(known_facts, 1))
+        sections.append(f"Already in memory, numbered; do not restate:\n{already}")
     sections.append(f"{subject_name} said:\n{user_message}")
     sections.append(f"The assistant replied (context only, not a source):\n{assistant_message}")
 
@@ -354,16 +367,17 @@ async def decide(
             logger.info("gate restated a recalled fact; dropped  %s", note)
         if not surviving:
             return GateDecision.skip(
-                f"every proposed fact was already in memory ({decision.reason})"
+                f"every proposed fact was already in memory ({decision.reason})", decision.replaces
             )
         decision = GateDecision(
-            persist=True, reason=decision.reason, facts=surviving
+            persist=True, reason=decision.reason, facts=surviving, replaces=decision.replaces
         )
 
     logger.info(
-        "gate persist=%s reason=%s facts=%s",
+        "gate persist=%s reason=%s facts=%s replaces=%s",
         decision.persist,
         decision.reason,
         [(f.scope, f.statement[:70]) for f in decision.facts],
+        list(decision.replaces),
     )
     return decision

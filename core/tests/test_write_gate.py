@@ -15,6 +15,7 @@ from nexus_core.models import MemoryEpisode
 from nexus_core.write_gate import (
     GateDecision,
     GateFact,
+    _parse,
     decide,
     drop_known,
     looks_trivial,
@@ -170,9 +171,18 @@ async def test_the_gate_sees_both_halves_of_the_turn():
 
 
 class FakeMemory:
-    def __init__(self, result: IngestResult) -> None:
+    def __init__(self, result: IngestResult, known=()) -> None:
         self.result = result
         self.calls: list[dict] = []
+        self.known = list(known)  # what a search finds
+        self.retired: list[list[str]] = []
+
+    async def search(self, query, *, user_id, project_id=None, limit=None):
+        return self.known
+
+    async def retire(self, facts, *, user_id, project_id):
+        self.retired.append(list(facts))
+        return [f"item-{n}" for n, _ in enumerate(facts)]
 
     async def ingest(self, statement, *, scope, user_id, project_id):
         self.calls.append(
@@ -547,8 +557,8 @@ async def test_recalled_facts_are_named_in_the_prompt():
     )
 
     prompt = provider.calls[0][1]["content"]
-    assert "Already in memory, do not restate" in prompt
-    assert "Aarya uses Neo4j as the graph store." in prompt
+    assert "Already in memory, numbered; do not restate" in prompt
+    assert "[1] Aarya uses Neo4j as the graph store." in prompt
 
 
 async def test_restating_a_recalled_fact_persists_nothing():
@@ -649,3 +659,58 @@ async def test_the_gate_decides_at_temperature_zero():
     await decide(provider, user_message="I'm a final year B.Tech student", assistant_message="ok",
                  subject_name="Aarya")
     assert provider.temperatures == [0.0]
+
+
+# ── A change of mind retires what it replaced ────────────────────────────────
+
+
+def test_the_gate_names_what_a_correction_replaces():
+    decision = _parse(_gate_json("The deadline is the 21st of November.", "project", replaces=[1, 3]))
+    assert decision.replaces == (1, 3)
+    # Even with nothing new to keep: "I no longer use Neo4j".
+    retraction = _parse(json.dumps({"persist": False, "reason": "dropped Neo4j", "facts": [],
+                                    "replaces": [2]}))
+    assert retraction.persist is False and retraction.replaces == (2,)
+
+
+async def _change_of_mind(db_client, session_factory, gate_reply: str, known):
+    from nexus_core.memory_client import Fact
+    from nexus_core.models import GateDecisionRecord
+
+    project_id, chat_id = await _seed_chat(db_client)
+    turn = (await db_client.post(f"/chats/{chat_id}/messages",
+                                 json={"content": "The deadline has changed to the 21st"})).json()
+    memory = FakeMemory(IngestResult(ok=True, group_id="p_x"),
+                        known=[Fact(id=i, fact=t, scope="project") for i, t in known])
+    await run_write_gate(
+        session_factory=session_factory, provider=ScriptedProvider(gate_reply), memory=memory,
+        gate_model="gate", chat_id=uuid.UUID(chat_id), project_id=uuid.UUID(project_id),
+        user_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+        message_id=uuid.UUID(turn["user_message"]["id"]),
+        user_message="The deadline has changed to the 21st", assistant_message="Updated.",
+    )
+    async with session_factory() as session:
+        record = (await session.execute(select(GateDecisionRecord).where(
+            GateDecisionRecord.chat_id == uuid.UUID(chat_id)))).scalars().one()
+    return memory, record
+
+
+async def test_a_correction_retires_the_old_fact_after_writing_the_new(db_client, session_factory):
+    memory, record = await _change_of_mind(
+        db_client, session_factory,
+        _gate_json("The project deadline is the 21st of November.", "project", replaces=[1]),
+        known=[("n14", "The project deadline is the 14th of November."), ("n-name", "Aarya is a student.")],
+    )
+    assert [c["statement"] for c in memory.calls] == ["The project deadline is the 21st of November."]
+    assert memory.retired == [["The project deadline is the 14th of November."]]
+    assert record.retired == [{"fact": "The project deadline is the 14th of November.", "id": "n14"},
+                              {"items": ["item-0"]}]
+
+
+async def test_a_number_outside_the_list_retires_nothing(db_client, session_factory):
+    memory, record = await _change_of_mind(
+        db_client, session_factory,
+        _gate_json("The project deadline is the 21st of November.", "project", replaces=[7]),
+        known=[("n14", "The project deadline is the 14th of November.")],
+    )
+    assert memory.retired == [] and record.retired == []

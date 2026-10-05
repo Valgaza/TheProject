@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import httpx
@@ -114,6 +115,27 @@ class MemoryClient:
             )
             for item in body.get("facts", [])
         ]
+
+    async def retire(
+        self, facts: Sequence[str], *, user_id: uuid.UUID, project_id: uuid.UUID | None,
+    ) -> list[str]:
+        """Stop memory returning facts the person has since changed, given
+        their text as search returned it. Returns the graph items retired; an
+        unreachable service retires nothing."""
+        if not facts:
+            return []
+        try:
+            response = await self._http.post(
+                f"{self._base_url}/retire",
+                json={"facts": list(facts), "user_id": str(user_id),
+                      "project_id": str(project_id) if project_id else None},
+                timeout=SEARCH_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            logger.warning("Memory retire failed: %s", exc)
+            return []
+        return list(response.json().get("retired", []))
 
     async def ingest(
         self,
