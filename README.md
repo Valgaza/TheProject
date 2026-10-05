@@ -10,28 +10,29 @@ system works out what to do with it.
 
 Four kinds of input are planned: documents, images (OCR and vision),
 conversational speech, and general chat. General chat, document Q&A, the memory
-layer and opt-in web search are built and run entirely on local models.
-Vision is being developed separately on `feature/vision-v1`; speech is not built
-yet.
+layer, opt-in web search and hands-free voice are built and run entirely on
+local models. Vision is being developed separately on `feature/vision-v1`.
 
 ## How it fits together
 
 ```
                        frontend :3000
-                             │   session cookie
+                             │   session cookie; voice over a websocket
                              ▼
         ┌──────────────── core :8100 ─────────────────┐
         │  auth, chats, projects, documents, routing,  │
-        │  prompt assembly, the memory write gate      │
-        └───┬──────────────┬──────────────┬────────────┘
-            │              │ service token│              only when asked,
-            ▼              ▼              ▼              redacted first
-        Postgres      memory :8000    RAG API :8001  ──▶ SearXNG :8080
-        what was      the graph       documents
-        said          (Neo4j)         (Qdrant)
+        │  prompt assembly, the memory write queue,    │
+        │  voice sessions (turn-taking, barge-in)      │
+        └───┬──────────────┬──────────────┬───────┬────┘
+            │              │ service token│       │      only when asked
+            ▼              ▼              ▼       ▼
+        Postgres      memory :8000    RAG API   websearch :8004 ─▶ SearXNG
+        what was      the graph       :8001     redacts, checks,   (no host
+        said          (Neo4j)         (Qdrant)  audits             port)
 
-        Every model runs in runtime :8003 (MLX), an OpenAI-compatible API
-        that core and memory call with the same service token.
+        Every model runs in runtime :8003 (MLX): the chat LLM, embeddings,
+        the decision model (Laya), speech-to-text and text-to-speech, behind
+        one priority queue so a live answer always goes first.
 ```
 
 The browser talks to `core` and nothing else. `memory` and the RAG API refuse
@@ -111,16 +112,33 @@ knows you have something on a topic without holding a lossy copy of it.
 
 ### Web search is the one thing that leaves the machine
 
-It runs only when you ask: the composer's globe button, or saying "search the
-web" in words. A model rewrites the message into a generic topic query, then
-your own names, email addresses and long ID-like numbers are stripped from the
-result; if that fails, nothing is sent. The exact query that left is stored on
-the message. Why it works this way: flag 1 in
+It runs only when you ask: the composer's globe button, or saying so in words.
+Core hands the message to the websearch container, the only component with a
+route to SearXNG. There a model rewrites it into a generic topic query, your
+own names, email addresses and long ID-like numbers are stripped from the
+result, and the decision model checks it no longer identifies anyone; if any
+step fails, nothing is sent. Every query that leaves is written to an audit
+log, and shown on the message. Why it works this way: flag 1 in
 [`docs/IMPORTANT_BUSINESS_LOGIC_FLAGS.md`](docs/IMPORTANT_BUSINESS_LOGIC_FLAGS.md).
+
+### Talking to it
+
+The mic button opens a hands-free conversation in the same chat: speak, pause,
+and the answer is spoken back a sentence at a time while the rest is still
+being written. Talk over it and it stops, keeping only what you heard. Voice
+turns are ordinary messages, with the same memory, documents and web.
+
+### Decisions that do not need an LLM
+
+Several choices in a turn are classifications: is this worth remembering, is
+it asking for the web, has the speaker finished, was that an interruption.
+Laya, a small decision model in the runtime, answers them in milliseconds.
+Each one runs in shadow first, logged beside the existing logic, and goes live
+only after measuring well on hand-labelled examples (`RUNBOOK.md`).
 
 ## Containers
 
-Four containers, all declared in the root `docker-compose.yml`, all started by
+Five containers, all declared in the root `docker-compose.yml`, all started by
 one `docker compose up -d`.
 
 | Container | Port | What it does |
@@ -128,12 +146,14 @@ one `docker compose up -d`.
 | `nexus-postgres` | 54322 | Postgres 17. Chats, messages, projects, document records — what was said. |
 | `nexus-neo4j` | 7474, 7687 | The knowledge graph — what was learned. Browser UI on 7474, bolt on 7687. |
 | `nexus-qdrant` | 6333, 6334 | Document vectors, backing `rag/rag_pipeline`. |
-| `nexus-searxng` | 8080 | Private metasearch for web search, so queries never hit a third-party search API. Config in `docker/searxng/`. |
+| `nexus-searxng` | none | Private metasearch, so queries never hit a third-party search API. No host port. Config in `docker/searxng/`. |
+| `nexus-websearch` | 8004 (localhost) | `websearch/`: the only caller of SearXNG. Redacts, checks and audits every query. |
 
-Only the databases are containerised. The application code (`core`, `memory`,
-the RAG API, the frontend) runs directly on the host during development, so
-editing a line doesn't mean rebuilding an image. Dockerfiles for those come
-when we deploy.
+The databases are containerised, and so is websearch, so that the one path to
+the internet sits on its own network beside SearXNG. The rest of the
+application code (`core`, `memory`, the RAG API, the runtime, the frontend)
+runs directly on the host during development, so editing a line doesn't mean
+rebuilding an image; the runtime has to, since MLX needs the Mac's GPU.
 
 **Postgres replaced the Supabase CLI on 2026-09-02.** The CLI started twelve
 containers (Auth, Storage, Realtime, Studio, an email catcher, log shipping…)
@@ -201,20 +221,22 @@ fallback. How the models fit in memory and how they are chosen: `RUNBOOK.md`.
 ## Repository layout
 
 ```
-core/nexus_core/        auth, chats, projects, documents, routing, the write gate
+core/nexus_core/        auth, chats, projects, documents, routing, the write gate, voice
 memory/nexus_memory/    the graph: scopes, ingest, retrieval, maintenance, live updates
 rag/                    the RAG pipeline (rag_pipeline/) and its HTTP service (rag_api.py)
-runtime/nexus_runtime/  every local model on MLX: scheduler, chat, embeddings, residency
+runtime/nexus_runtime/  every local model on MLX: scheduler, chat, embeddings, Laya, speech, residency
+websearch/              the one path to the internet: redaction, checks, audit log (a container)
 frontend/               Next.js 16, hand-written CSS
 db/                     Postgres schema (migrations/) and seed, source of truth
 docker/                 Postgres init script and SearXNG config
-docs/                   design notes, open product decisions, history/
-scripts/                extraction check, floor sweep, graph re-embed
+docs/                   design notes, benchmarks/, history/ -- kept locally, not in git
+scripts/                benchmarks (text, voice), extraction check, floor sweep, graph re-embed,
+                        Laya data and fine-tuning (laya/)
 tests/                  end-to-end scenarios (opt-in, drives the live stack)
 ```
 
 Each service owns its tests: `core/tests/`, `memory/tests/`, `rag/tests/`,
-`runtime/tests/`.
+`runtime/tests/`, `websearch/tests/`.
 
 The Python packages are named `nexus_core`, `nexus_memory` and `rag_pipeline`
 rather than `app`. Two were both `app` once, installed into the same
@@ -224,7 +246,7 @@ was unreachable.
 ## Tests
 
 ```bash
-uv run pytest                            # core + memory + rag + runtime, about a minute
+uv run pytest                            # every service: ~350 tests, about a minute
 RUN_MLX=1 uv run pytest runtime/tests    # the runtime on real (small) MLX models
 RUN_SCENARIOS=1 uv run pytest tests -v   # end-to-end against the live stack and local models
 ```
