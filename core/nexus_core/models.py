@@ -210,6 +210,59 @@ class MemoryEpisode(Base):
     # Why the gate decided what it did; the field you read when tuning it.
     reason: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
+    # The episode text exactly as sent to the graph: every fact the gate kept
+    # for this tier in one turn. Stored so a pending row can be retried after
+    # a restart.
+    body: Mapped[str | None] = mapped_column(Text)
+    decision_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("gate_decisions.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class GateDecisionRecord(Base):
+    """One turn awaiting, or past, the write gate.
+
+    The durable queue the write worker drains (write_queue.py) and the record
+    of every decision, declines included -- the training data for replacing
+    the gate's model call with a decision model.
+    """
+
+    __tablename__ = "gate_decisions"
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('pending', 'running', 'done', 'failed')",
+            name="gate_decisions_status_check",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _pk()
+    chat_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chats.id", ondelete="CASCADE"), nullable=False
+    )
+    message_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("messages.id", ondelete="SET NULL")
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE")
+    )
+    user_message: Mapped[str] = mapped_column(Text, nullable=False)
+    assistant_message: Mapped[str] = mapped_column(Text, nullable=False)
+    recalled_facts: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    persist: Mapped[bool | None] = mapped_column(Boolean)
+    facts: Mapped[list | None] = mapped_column(JSONB)
+    reason: Mapped[str | None] = mapped_column(Text)
+    decided_by: Mapped[str | None] = mapped_column(String)
+    gate_ms: Mapped[int | None] = mapped_column(Integer)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

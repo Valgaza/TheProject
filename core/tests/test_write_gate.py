@@ -255,8 +255,10 @@ async def test_a_failed_ingest_is_recorded_as_failed(db_client, session_factory)
 
 
 async def test_a_declined_turn_writes_no_row_at_all(db_client, session_factory):
-    """Rejections are the common case by design. A table growing a row per
-    "thanks" is a table nobody will read; the log line is the audit trail."""
+    """A declined turn reaches the graph in no form, so it leaves no episode
+    row. (The decision itself is kept, in gate_decisions -- see
+    test_write_queue.py -- because declines are the training data for a
+    decision model, not because anything was written.)"""
     project_id, chat_id = await _seed_chat(db_client)
     turn = (
         await db_client.post(f"/chats/{chat_id}/messages", json={"content": "hello there"})
@@ -618,6 +620,7 @@ async def test_a_recall_turn_leaves_no_provenance_row(db_client, session_factory
 
     assert rows == []
     assert memory.calls == []
+
 
 
 async def test_the_gate_asks_for_its_schema():

@@ -6,18 +6,20 @@ answer. Retrieval joins that sequence in phase 4.
 
 from __future__ import annotations
 
+import logging
 import uuid
+from contextlib import nullcontext
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import current_user_id as _current_user_id
-from ..chat_service import generate_turn
+from ..chat_service import Turn, generate_turn
 from ..db import session_dependency
 from ..models import Chat, MemoryEpisode, Message, Project
 from ..memory_client import MemoryClient
-from ..memory_writer import run_write_gate
+from ..memory_writer import enqueue_turn
 from ..providers.base import Provider
 from ..rag_client import RagClient
 from ..schemas import (
@@ -184,30 +186,11 @@ async def list_messages(
     return list(result.scalars())
 
 
-@router.post("/{chat_id}/messages", response_model=TurnOut, status_code=201)
-async def create_message(
-    chat_id: uuid.UUID,
-    body: MessageCreate,
-    request: Request,
-    background_tasks: BackgroundTasks,
-    session: AsyncSession = Depends(session_dependency),
-) -> TurnOut:
-    """Send a message and get the answer to it.
+logger = logging.getLogger(__name__)
 
-    Synchronous on purpose: the reply is the response. Phase 5's memory write
-    is what moves to the background, because that one takes 15-30s and the user
-    should never wait on it.
-    """
-    if body.role != "user":
-        raise HTTPException(
-            status_code=422,
-            detail="only user messages can be posted; the assistant turn is generated",
-        )
 
-    user_id = _current_user_id(request)
-    chat = await _get_chat(session, chat_id, user_id)
-    turn = await generate_turn(
-        session,
+def _turn_kwargs(request: Request, chat: Chat, body: MessageCreate, user_id: uuid.UUID) -> dict:
+    return dict(
         chat=chat,
         content=body.content,
         provider=_provider(request),
@@ -219,36 +202,45 @@ async def create_message(
         web=getattr(request.app.state, "web", None),
         use_web=body.use_web,
     )
-    # Commit before scheduling, not after. FastAPI runs a background task
-    # before the exit code of a dependency that yields, so session_dependency's
-    # commit lands *after* the task -- the task would look up a message_id that
-    # is not in the table yet and the provenance insert would fail on its
-    # foreign key. Committing here makes the ordering explicit instead of
-    # depending on framework internals.
-    await session.commit()
 
-    # Memory forms after the answer is sent, never in front of it: graphiti's
-    # extraction takes 12-30s and nobody should wait on it to read their reply.
-    memory = _memory(request)
-    if memory is not None:
-        background_tasks.add_task(
-            run_write_gate,
-            session_factory=request.app.state.session_factory,
-            provider=_provider(request),
-            memory=memory,
-            gate_model=request.app.state.settings.gate_model,
-            chat_id=chat.id,
-            project_id=chat.project_id,
-            user_id=user_id,
-            message_id=turn.user_message.id,
-            user_message=body.content,
-            assistant_message=turn.assistant_message.content,
-            # What memory already supplied for this turn. The gate refuses to
-            # restate any of it, which is what stops recall from making a fact
-            # louder every time it is recalled.
-            recalled_facts=[f.fact for f in turn.facts],
-        )
 
+def _live(request: Request):
+    """Mark this request as live work, so the memory write queue waits."""
+    activity = getattr(request.app.state, "activity", None)
+    return activity.live() if activity is not None else nullcontext()
+
+
+def _queue_for_memory(request: Request, session: AsyncSession, chat: Chat, turn: Turn, user_id) -> None:
+    """Queue the finished turn for the write gate, in the turn's transaction.
+
+    Memory forms after the answer, never in front of it: the gate and
+    graphiti's extraction run on the write queue (write_queue.py), which
+    only starts them once nothing live is happening.
+    """
+    if _memory(request) is None:
+        return
+    enqueue_turn(
+        session,
+        chat_id=chat.id,
+        project_id=chat.project_id,
+        user_id=user_id,
+        message_id=turn.user_message.id,
+        user_message=turn.user_message.content,
+        assistant_message=turn.assistant_message.content,
+        # What memory already supplied for this turn. The gate refuses to
+        # restate any of it, which is what stops recall from making a fact
+        # louder every time it is recalled.
+        recalled_facts=[f.fact for f in turn.facts],
+    )
+
+
+def _wake_queue(request: Request) -> None:
+    queue = getattr(request.app.state, "write_queue", None)
+    if queue is not None:
+        queue.wake()
+
+
+def _turn_out(turn: Turn, chat: Chat) -> TurnOut:
     return TurnOut(
         user_message=MessageOut.model_validate(turn.user_message),
         assistant_message=MessageOut.model_validate(turn.assistant_message),
@@ -269,6 +261,37 @@ async def create_message(
             for s in turn.rag_sources
         ],
     )
+
+
+def _validate_post(body: MessageCreate) -> None:
+    if body.role != "user":
+        raise HTTPException(
+            status_code=422,
+            detail="only user messages can be posted; the assistant turn is generated",
+        )
+
+
+@router.post("/{chat_id}/messages", response_model=TurnOut, status_code=201)
+async def create_message(
+    chat_id: uuid.UUID,
+    body: MessageCreate,
+    request: Request,
+    session: AsyncSession = Depends(session_dependency),
+) -> TurnOut:
+    """Send a message and get the answer to it.
+
+    The memory write that follows is queued, not run here: graphiti's
+    extraction takes seconds and nobody should wait on it to read their reply.
+    """
+    _validate_post(body)
+    user_id = _current_user_id(request)
+    chat = await _get_chat(session, chat_id, user_id)
+    async with _live(request):
+        turn = await generate_turn(session, **_turn_kwargs(request, chat, body, user_id))
+    _queue_for_memory(request, session, chat, turn, user_id)
+    await session.commit()
+    _wake_queue(request)
+    return _turn_out(turn, chat)
 
 
 @router.get("/{chat_id}/memory-episodes", response_model=list[MemoryEpisodeOut])
