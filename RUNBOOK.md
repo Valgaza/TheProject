@@ -144,9 +144,9 @@ else:
 | `MEMORY_EXTRACTION_MODEL` | same |
 | `MEMORY_EMBEDDING_MODEL` | `mlx-community/embeddinggemma-300m-4bit` (768-d) |
 
-The chat model is chosen by benchmark (`scripts/extraction_check.py` for graph
-quality, `tests/test_scenarios.py` for behaviour); the record goes in
-`docs/benchmarks/`. The runtime turns Qwen3's
+The chat model is chosen by benchmark (`scripts/bench.py` for latency,
+`scripts/extraction_check.py` for graph quality, `tests/test_scenarios.py` for
+behaviour); the record goes in `docs/benchmarks/`. The runtime turns Qwen3's
 thinking off by default (`RUNTIME_ENABLE_THINKING=0`): thinking tokens are
 latency nobody sees.
 

@@ -1458,6 +1458,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "psutil" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
 ]
@@ -1472,6 +1473,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "psutil", specifier = ">=7" },
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", specifier = ">=0.24.0" },
 ]
