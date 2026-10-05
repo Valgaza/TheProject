@@ -251,3 +251,31 @@ async def test_no_rag_client_configured_behaves_like_general_chat(db_client):
     body = response.json()
     assert body["route"]["handler"] == "general"
     assert body["rag_sources"] == []
+
+
+async def test_every_stage_of_a_turn_is_timed(db_client):
+    """meta.timings is what the benchmark reads and what a slow turn is
+    debugged from, so each stage that ran has to be there."""
+    db_client._transport.app.state.rag = FakeRag(
+        result=RagResult(
+            prompt="Section 3: remote work is permitted.",
+            sources=(RagSource(file_name="handbook.pdf", rerank_score=0.9),),
+            elapsed_seconds=0.25,
+        ),
+    )
+    chat = await _make_chat(db_client)
+
+    turn = (
+        await db_client.post(
+            f"/chats/{chat['id']}/messages", json={"content": "can I work remote?"}
+        )
+    ).json()
+
+    timings = turn["assistant_message"]["metadata"]["timings"]
+    for stage in ("history_ms", "rag_ms", "generation_ms", "total_ms"):
+        assert isinstance(timings[stage], int), stage
+    # The pipeline's own number is carried through, separately from the hop.
+    assert timings["rag_service_ms"] == 250
+    assert timings["total_ms"] >= timings["generation_ms"]
+    # Web did not run, so it is absent rather than zero.
+    assert "web_ms" not in timings
