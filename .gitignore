@@ -15,3 +15,6 @@ PROGRESS_SUMMARY.md
 .claude/
 .ollama-serve.log
 .pytest_cache/
+
+# Project documents, reports and slides stay on each machine, not in git.
+/docs/
