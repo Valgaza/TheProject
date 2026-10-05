@@ -11,10 +11,11 @@ the file to trust.
 | Postgres | 54322 | Chats, messages, projects. One Docker container. |
 | Neo4j | 7474 / 7687 | The knowledge graph. One Docker container. |
 | Qdrant | 6333 / 6334 | Document vectors for RAG. One Docker container. |
-| SearXNG | 8080 | Private metasearch. `core`'s web handler is its only caller. |
+| SearXNG | none | Private metasearch. No host port: only the websearch container can reach it. |
+| websearch | 8004 (localhost only) | `websearch/` — the one path to the internet. Redacts, checks, audits. Answers `core` only. |
 | `nexus_memory` | 8000 | Owns the graph: ingest, search, live updates. Answers `core` only. |
 | RAG API | 8001 | `rag/rag_api.py` — the only way `core` reaches the RAG pipeline. Answers `core` only. |
-| `nexus_runtime` | 8003 | Every local model, on MLX: chat, embeddings, the decision model (Laya). OpenAI-compatible API. Answers `core` and `memory` only. |
+| `nexus_runtime` | 8003 | Every local model, on MLX: chat, embeddings, the decision model (Laya). OpenAI-compatible API. Answers `core`, `memory` and websearch only. |
 | `nexus_core` | 8100 | Owns chat, the orchestrator, providers, and Postgres. |
 | Frontend | 3000 | Next.js. |
 
@@ -23,7 +24,7 @@ always. **Neo4j stores what was learned**, gated. Neither is a cache of the
 other. Qdrant is a third store with a narrower job: the chunks of uploaded
 documents, searched by the RAG pipeline.
 
-All four containers are declared in the root `docker-compose.yml` and start
+All five containers are declared in the root `docker-compose.yml` and start
 together with one `docker compose up -d` (which `./start.sh` runs for you).
 
 ## First-time setup
@@ -227,11 +228,29 @@ error and refuses everything.
 ## Web search
 
 Off unless asked for, per message: the globe button in the composer, or
-typing "search the web" / "search the internet". The query that goes to
-SearXNG is never what you typed. A model rewrites it as a generic topic, then
-`core/nexus_core/web_client.py` strips your name, your email, and anything with
-five or more digits. If the rewrite fails, nothing is sent. Each web answer
-shows the exact query that left the machine. See flag 1 in
+asking in words ("search the web for…", and, once the decision model is live
+for it, other phrasings too). Nothing in core talks to the internet. Core
+sends the message to the websearch container (`websearch/`, :8004), which:
+
+1. has the runtime's LLM rewrite it as a generic topic, then strips your
+   name, your email and anything with five or more digits from the rewrite;
+2. asks the decision model whether the query still identifies someone
+   (`WEBSEARCH_LAYA_QUERY`: in `live` it blocks the search above 0.8);
+3. sends it to SearXNG, falling back across engines when one returns nothing;
+4. appends one line to its audit log: the exact text that left, when, and for
+   whom. Never the original message.
+
+If the rewrite fails, nothing is sent. Each web answer shows the exact query.
+SearXNG has no host port, so the websearch container is the only thing that
+can reach it. Read the audit log:
+
+```bash
+curl -s -H "X-Service-Token: $SERVICE_TOKEN" localhost:8004/audit | jq .
+docker compose exec websearch tail -n 20 /data/audit.jsonl
+```
+
+Core, memory and RAG still run on the host, so Docker does not block their
+egress; they simply have no code that reaches out. See flag 1 in
 `docs/IMPORTANT_BUSINESS_LOGIC_FLAGS.md`.
 
 ## Documents and their tiers

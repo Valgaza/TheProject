@@ -113,12 +113,13 @@ services:
   searxng:
     image: searxng/searxng:latest
     container_name: nexus-searxng
-    ports:
-      - "8080:8080"
+    # No published port: only containers on this network can reach it, and
+    # the only one that asks is websearch below. Nothing on the host -- core,
+    # memory, RAG, a stray script -- can query it directly.
     volumes:
       - ./docker/searxng:/etc/searxng:rw
     environment:
-      - SEARXNG_BASE_URL=http://localhost:8080/
+      - SEARXNG_BASE_URL=http://searxng:8080/
     restart: unless-stopped
     mem_limit: 256m
 

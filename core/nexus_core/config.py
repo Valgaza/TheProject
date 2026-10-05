@@ -112,9 +112,9 @@ class Settings:
         # Shared secret sent to memory and RAG on every call; they refuse
         # requests without it. Any long random string, the same in all three.
         self.service_token = _require("SERVICE_TOKEN")
-        # Self-hosted SearXNG (docker-compose.yml). The only outbound call in
-        # core; everything sent there is redacted first (web_client.py).
-        self.searxng_url = _optional("SEARXNG_URL", "http://localhost:8080")
+        # The websearch service (websearch/, a container beside SearXNG): the
+        # only way anything reaches the internet. It redacts and audits.
+        self.websearch_url = _optional("WEBSEARCH_URL", "http://localhost:8004")
 
         # ── Decision model (Laya, served by the runtime) ────────────────────
         # Per decision point: off | shadow | live (see decisions.py). Shadow by
