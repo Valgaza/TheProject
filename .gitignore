@@ -16,5 +16,8 @@ PROGRESS_SUMMARY.md
 .ollama-serve.log
 .pytest_cache/
 
+# Local datasets and trained checkpoints (scripts/laya/), never committed.
+/data/
+
 # Project documents, reports and slides stay on each machine, not in git.
 /docs/
