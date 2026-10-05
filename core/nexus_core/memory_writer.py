@@ -221,6 +221,11 @@ async def process_decision(
     episodes: list[tuple[uuid.UUID, str, str]] = []
     async with session_factory() as session:
         record = await session.get(GateDecisionRecord, decision_id)
+        if record is None:
+            # The chat was deleted while the gate was deciding (its rows go
+            # with it): nothing left to record against, and nothing to write.
+            logger.info("gate: turn %s vanished while being decided; dropping it", decision_id)
+            return
         record.persist = bool(decision.persist)
         record.facts = [{"statement": f.statement, "scope": f.scope} for f in decision.facts]
         record.reason = decision.reason
