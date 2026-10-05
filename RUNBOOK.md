@@ -15,7 +15,7 @@ the file to trust.
 | websearch | 8004 (localhost only) | `websearch/` — the one path to the internet. Redacts, checks, audits. Answers `core` only. |
 | `nexus_memory` | 8000 | Owns the graph: ingest, search, live updates. Answers `core` only. |
 | RAG API | 8001 | `rag/rag_api.py` — the only way `core` reaches the RAG pipeline. Answers `core` only. |
-| `nexus_runtime` | 8003 | Every local model, on MLX: chat, embeddings, the decision model (Laya). OpenAI-compatible API. Answers `core`, `memory` and websearch only. |
+| `nexus_runtime` | 8003 | Every local model, on MLX: chat, embeddings, the decision model (Laya), speech-to-text, text-to-speech. OpenAI-compatible API. Answers `core`, `memory` and websearch only. |
 | `nexus_core` | 8100 | Owns chat, the orchestrator, providers, and Postgres. |
 | Frontend | 3000 | Next.js. |
 
@@ -252,6 +252,50 @@ docker compose exec websearch tail -n 20 /data/audit.jsonl
 Core, memory and RAG still run on the host, so Docker does not block their
 egress; they simply have no code that reaches out. See flag 1 in
 `docs/IMPORTANT_BUSINESS_LOGIC_FLAGS.md`.
+
+## Voice
+
+The mic button in a chat starts a hands-free conversation: no push-to-talk.
+Speak, pause, and Nexus answers aloud; talk over it to interrupt. Every spoken
+turn is an ordinary message in the chat (`meta.voice` holds its timings), with
+the same memory, documents and web as typed ones. An interrupted answer is
+stored as only what you heard.
+
+How it is wired:
+
+- The browser streams 16 kHz microphone audio to core over `WS /ws/voice/{chat}`
+  (cookie and Origin checked as for `/ws/graph`) and plays back 24 kHz audio,
+  one sentence at a time.
+- Core runs voice activity detection (Silero, CPU, ~0.1 ms per 32 ms frame).
+  A 500 ms pause ends the turn; the decision model may hold it to 1.2 s if the
+  sentence sounds unfinished (live mode only).
+- Speech-to-text (Parakeet) and text-to-speech (Kokoro) run in the runtime at
+  live priority. Each sentence of the answer is spoken while the model writes
+  the next.
+- Speech over the answer for 300 ms pauses playback; if it was only "mm-hmm" it
+  resumes, otherwise the answer stops.
+- The memory write queue waits for the whole session.
+
+First time: `uv run python scripts/fetch_voice_assets.py` (VAD, speech models,
+decision model). Opening a session loads speech-to-text and text-to-speech
+(a few seconds); they unload after five idle minutes.
+
+Troubleshooting:
+
+- **Nothing happens when I speak.** The browser must be allowed the mic
+  (address-bar permission), and the page must be on `localhost` or https.
+  Core logs `no VAD model … using the loudness fallback` if the Silero file is
+  missing, which works but is easily fooled by noise.
+- **It interrupts itself.** Its own voice is coming back through the mic. Use
+  headphones, or raise `CORE_VOICE_BARGE_THRESHOLD` (0.8 → 0.9).
+- **It answers before I'm done.** Raise `CORE_VOICE_EOT_SILENCE_MS`.
+- **Unknown words are spelled out letter by letter.** The espeak-ng that
+  Kokoro's phonemizer ships with is broken on macOS, so the runtime falls back
+  to spelling (`runtime/nexus_runtime/pronunciation.py`). `brew install
+  espeak-ng` and restart the runtime for real pronunciation.
+- **Measure it:** `uv run python scripts/voice_bench.py --exchanges 20 --out
+  docs/benchmarks/<date>-voice` drives the socket like a browser and reports
+  end-of-speech to first audio, transcription accuracy, barge-in and memory.
 
 ## Documents and their tiers
 
