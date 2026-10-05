@@ -273,8 +273,8 @@ async def main() -> int:
     print(json.dumps({k: report[k] for k in ("server_first_audio_ms", "first_audio_ms", "wer_mean")}, indent=2))
     if args.out:
         out = Path(args.out)
-        out.with_suffix(".json").write_text(json.dumps(report, indent=2))
-        out.with_suffix(".md").write_text(_markdown(report))
+        (out.parent / f"{out.name}.json").write_text(json.dumps(report, indent=2))
+        (out.parent / f"{out.name}.md").write_text(_markdown(report))
         print(f"wrote {out}.json and {out}.md")
     return 0
 

@@ -431,9 +431,9 @@ async def main() -> int:
     if args.out:
         out = ROOT / args.out
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.with_suffix(".json").write_text(json.dumps(report, indent=2, default=str))
-        out.with_suffix(".md").write_text(markdown)
-        print(f"wrote {out.with_suffix('.json')} and {out.with_suffix('.md')}")
+        (out.parent / f"{out.name}.json").write_text(json.dumps(report, indent=2, default=str))
+        (out.parent / f"{out.name}.md").write_text(markdown)
+        print(f"wrote {(out.parent / f"{out.name}.json")} and {(out.parent / f"{out.name}.md")}")
     return 0
 
 
