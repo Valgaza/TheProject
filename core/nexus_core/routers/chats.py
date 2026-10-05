@@ -6,16 +6,18 @@ answer. Retrieval joins that sequence in phase 4.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from contextlib import nullcontext
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import current_user_id as _current_user_id
-from ..chat_service import Turn, generate_turn
+from ..chat_service import Turn, generate_turn, stream_turn
 from ..db import session_dependency
 from ..models import Chat, MemoryEpisode, Message, Project
 from ..memory_client import MemoryClient
@@ -278,10 +280,10 @@ async def create_message(
     request: Request,
     session: AsyncSession = Depends(session_dependency),
 ) -> TurnOut:
-    """Send a message and get the answer to it.
+    """Send a message and get the whole answer in one response.
 
-    The memory write that follows is queued, not run here: graphiti's
-    extraction takes seconds and nobody should wait on it to read their reply.
+    The buffered form, kept for callers that want a single JSON reply (tests,
+    scripts, the benchmark). The UI uses /messages/stream.
     """
     _validate_post(body)
     user_id = _current_user_id(request)
@@ -292,6 +294,78 @@ async def create_message(
     await session.commit()
     _wake_queue(request)
     return _turn_out(turn, chat)
+
+
+def _sse(event: str, data) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
+
+
+@router.post("/{chat_id}/messages/stream")
+async def stream_message(
+    chat_id: uuid.UUID,
+    body: MessageCreate,
+    request: Request,
+) -> StreamingResponse:
+    """Send a message and receive the answer as it is written.
+
+    Server-sent events, in order:
+
+    - ``prepared``: the stored user message, the route, what memory recalled
+      and which documents and web results the answer will draw on -- before
+      the first word, so sources can show while it writes.
+    - ``token``: ``{"text": ...}`` per piece of the answer.
+    - ``done``: the whole stored turn, exactly as POST /messages returns it.
+    - ``error``: something failed after streaming began.
+
+    The session is opened here rather than injected: a dependency's cleanup
+    can run before a streaming body finishes, and this transaction has to
+    outlive the stream.
+    """
+    _validate_post(body)
+    user_id = _current_user_id(request)
+    factory = request.app.state.session_factory
+    async with factory() as session:
+        # Checked before the 200 goes out, so a missing chat is still a 404.
+        await _get_chat(session, chat_id, user_id)
+
+    async def events():
+        async with factory() as session, _live(request):
+            try:
+                chat = await _get_chat(session, chat_id, user_id)
+                turn = None
+                async for event in stream_turn(session, **_turn_kwargs(request, chat, body, user_id)):
+                    if event.kind == "prepared":
+                        p = event.prepared
+                        yield _sse("prepared", {
+                            "user_message": MessageOut.model_validate(p.user_message).model_dump(mode="json", by_alias=True),
+                            "route": {"handler": p.route.handler, "reason": p.route.reason},
+                            "recalled": [{"id": f.id, "fact": f.fact, "scope": f.scope, "kind": f.kind}
+                                         for f in p.facts],
+                            "rag_sources": [
+                                {"file_name": s.file_name, "page_number": s.page_number,
+                                 "chunk_index": s.chunk_index, "heading_path": s.heading_path,
+                                 "rerank_score": round(s.rerank_score, 4)}
+                                for s in (p.rag_result.sources if p.rag_result else ())
+                            ],
+                        })
+                    elif event.kind == "token":
+                        yield _sse("token", {"text": event.text})
+                    else:
+                        turn = event.turn
+                _queue_for_memory(request, session, chat, turn, user_id)
+                await session.commit()
+                _wake_queue(request)
+                yield _sse("done", _turn_out(turn, chat).model_dump(mode="json", by_alias=True))
+            except Exception as exc:
+                logger.exception("streamed turn failed for chat=%s", chat_id)
+                yield _sse("error", {"detail": f"{exc.__class__.__name__}: {exc}"})
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        # Proxies and browsers must not buffer the stream.
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/{chat_id}/memory-episodes", response_model=list[MemoryEpisodeOut])

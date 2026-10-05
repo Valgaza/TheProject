@@ -7,7 +7,7 @@ Also serves any OpenAI-compatible server (Ollama, vLLM, LM Studio) by setting
 from __future__ import annotations
 
 import logging
-from typing import Sequence
+from typing import AsyncIterator, Sequence
 
 from openai import AsyncOpenAI
 
@@ -84,6 +84,41 @@ class OpenAIProvider(Provider):
             response.usage.completion_tokens if response.usage else -1,
         )
         return content
+
+    async def chat_stream(
+        self,
+        messages: Sequence[Message],
+        *,
+        model: str | None = None,
+        max_tokens: int | None = None,
+        priority: str = "interactive",
+    ) -> AsyncIterator[str]:
+        resolved = model or self._chat_model
+        kwargs: dict = {
+            "model": resolved,
+            "messages": list(messages),
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "extra_headers": {"X-Nexus-Priority": priority},
+        }
+        if max_tokens is not None:
+            kwargs["max_completion_tokens"] = max_tokens
+        stream = await self._client.chat.completions.create(**kwargs)
+        usage = None
+        try:
+            async for chunk in stream:
+                if chunk.usage is not None:
+                    usage = chunk.usage
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+        finally:
+            # Closing the stream is what tells the server to stop generating
+            # when the reader went away early (a closed tab, an interruption).
+            await stream.close()
+        logger.info(
+            "chat stream model=%s in=%d out=%d", resolved,
+            usage.prompt_tokens if usage else -1, usage.completion_tokens if usage else -1,
+        )
 
     async def embed(
         self,

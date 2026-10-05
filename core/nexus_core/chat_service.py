@@ -11,8 +11,8 @@ import asyncio
 import logging
 import time
 import uuid
-from dataclasses import dataclass
-from typing import Sequence
+from dataclasses import dataclass, field
+from typing import AsyncIterator, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,6 +53,10 @@ class Turn:
     rag_sources: tuple[RagSource, ...] = ()
 
 
+def _ms_since(started: float) -> int:
+    return round((time.perf_counter() - started) * 1000)
+
+
 def _derive_title(content: str) -> str:
     """First line of the opening message, clipped at a word boundary."""
     first_line = content.strip().splitlines()[0].strip()
@@ -60,10 +64,6 @@ def _derive_title(content: str) -> str:
         return first_line
     clipped = first_line[:TITLE_MAX_CHARS].rsplit(" ", 1)[0]
     return f"{clipped or first_line[:TITLE_MAX_CHARS]}…"
-
-
-def _ms_since(started: float) -> int:
-    return round((time.perf_counter() - started) * 1000)
 
 
 async def _load_history(session: AsyncSession, chat_id: uuid.UUID) -> list[Message]:
@@ -158,7 +158,98 @@ def build_prompt(
     return prompt
 
 
-async def generate_turn(
+@dataclass
+class PreparedTurn:
+    """Everything decided before the model is asked: what was said, what was
+    recalled and retrieved, and the exact prompt. Split out so a streamed
+    answer and a buffered one share every step but the model call."""
+
+    chat: Chat
+    content: str
+    user_id: uuid.UUID
+    route: Route
+    user_message: Message
+    history: list[Message]
+    facts: list[Fact]
+    rag_result: RagResult | None
+    web_search: WebSearch | None
+    prompt: list[ProviderMessage]
+    title_task: asyncio.Task | None
+    timings: dict[str, int] = field(default_factory=dict)
+    started: float = field(default_factory=time.perf_counter)
+
+
+async def _timed(timings: dict[str, int], key: str, coro):
+    started = time.perf_counter()
+    try:
+        return await coro
+    finally:
+        timings[key] = _ms_since(started)
+
+
+async def _search_memory(memory: MemoryClient, content: str, user_id, chat: Chat) -> list[Fact]:
+    # Retrieval is allowed to come back empty -- an unreachable memory service
+    # degrades the answer, it does not fail the turn.
+    try:
+        return await memory.search(content, user_id=user_id, project_id=chat.project_id)
+    except Exception:
+        # The client already swallows transport failures; this catches
+        # everything else, because the rule is that memory degrades an
+        # answer and never fails one.
+        logger.exception("Memory search raised for chat=%s", chat.id)
+        return []
+
+
+async def _query_documents(
+    rag: RagClient, content: str, user_id, chat: Chat, rag_min_score: float, timings: dict[str, int]
+) -> RagResult | None:
+    # Documents are a retrieval tier, not a route -- the same shape as memory,
+    # and for the same reason. Every turn queries them and a relevance floor
+    # decides per turn whether the corpus had anything to say. Routing on
+    # "does this project have documents" was the previous design: once a
+    # project held one file, every turn went through retrieval, "thanks"
+    # included.
+    try:
+        candidate = await rag.query(content, user_id=user_id, project_id=chat.project_id)
+    except Exception:
+        # rag.query() already catches its own transport failures and returns
+        # None; this catches anything else, same reasoning as memory.
+        logger.exception("RAG query raised for chat=%s", chat.id)
+        return None
+    if candidate is None:
+        return None
+    if candidate.elapsed_seconds is not None:
+        # The pipeline's own time, so the HTTP hop shows up as the difference.
+        timings["rag_service_ms"] = round(candidate.elapsed_seconds * 1000)
+    if not candidate.sources:
+        return None
+    if candidate.best_score >= rag_min_score:
+        return candidate
+    logger.info(
+        "rag below floor chat=%s best=%.3f floor=%.3f sources=%d",
+        chat.id, candidate.best_score, rag_min_score, len(candidate.sources),
+    )
+    return None
+
+
+async def _search_web(
+    web: WebClient | None, content: str, provider: Provider, model: str | None,
+    known_names: list[str], chat: Chat,
+) -> WebSearch:
+    # Only when asked for, and redacted first: what goes out is the model's
+    # rewrite, never the raw message (web_client.py).
+    if web is None:
+        return WebSearch(query_sent=None, error="web search is not configured")
+    try:
+        return await web.search(content, provider=provider, model=model, known_names=known_names)
+    except Exception:
+        # WebClient.search() already turns its own failures into an error;
+        # this catches anything else, same as memory and RAG.
+        logger.exception("Web search raised for chat=%s", chat.id)
+        return WebSearch(query_sent=None, error="web search failed")
+
+
+async def prepare_turn(
     session: AsyncSession,
     *,
     chat: Chat,
@@ -172,39 +263,24 @@ async def generate_turn(
     rag_min_score: float = 0.5,
     web: WebClient | None = None,
     use_web: bool = False,
-) -> Turn:
-    """Store the user message, answer it, store the answer.
-
-    Both messages are written even if generation fails — the transcript records
-    what was said, and a turn that errored is still something that was said.
-    """
+) -> PreparedTurn:
+    """Store the user message and gather everything the answer needs."""
     turn_started = time.perf_counter()
     # Wall-clock per stage, in ms, stored on the answer as meta.timings. Every
     # latency change in the milestone is judged against these numbers.
     timings: dict[str, int] = {}
 
-    route = await select_route(
-        content=content, attachments=attachments, rag=rag, use_web=use_web
-    )
+    route = await select_route(content=content, attachments=attachments, rag=rag, use_web=use_web)
 
-    user_message = Message(
-        chat_id=chat.id,
-        role="user",
-        content=content,
-        meta={"route": route.handler},
-    )
+    user_message = Message(chat_id=chat.id, role="user", content=content, meta={"route": route.handler})
     session.add(user_message)
     await session.flush()
 
-    # Kicked off here, not awaited until after the answer call below, so a
-    # good title costs nothing in wall-clock time: it runs alongside
-    # generation instead of before or after it.
-    is_new_chat = chat.title == DEFAULT_CHAT_TITLE
+    # Kicked off here, not awaited until after the answer, so a good title
+    # costs nothing in wall-clock time: it runs alongside generation.
     title_task = (
-        asyncio.create_task(
-            chat_title.generate(provider, user_message=content, model=title_model)
-        )
-        if is_new_chat
+        asyncio.create_task(chat_title.generate(provider, user_message=content, model=title_model))
+        if chat.title == DEFAULT_CHAT_TITLE
         else None
     )
 
@@ -212,144 +288,96 @@ async def generate_turn(
     history = await _load_history(session, chat.id)
     timings["history_ms"] = _ms_since(stage)
 
-    # Retrieval runs against what the user just said, before generation. It is
-    # allowed to come back empty -- an unreachable memory service degrades the
-    # answer, it does not fail the turn.
-    facts: list[Fact] = []
-    if memory is not None:
-        stage = time.perf_counter()
-        try:
-            facts = await memory.search(
-                content, user_id=user_id, project_id=chat.project_id
-            )
-        except Exception:
-            # The client already swallows transport failures; this catches
-            # everything else, because the rule is that memory degrades an
-            # answer and never fails one.
-            logger.exception("Memory search raised for chat=%s", chat.id)
-        timings["memory_ms"] = _ms_since(stage)
-
-    # Documents are a retrieval tier, not a route -- the same shape as memory
-    # above, and for the same reason. Memory is never routed to: every turn
-    # searches it and a measured cosine floor decides whether anything is
-    # worth injecting. Documents now work identically.
-    #
-    # Routing on "does this project have documents" was the previous design
-    # and it had a defect: once a project held one file, every turn in it
-    # went through retrieval, "thanks" included, and the corpus was pushed in
-    # front of the model whether or not it had anything to say. A threshold
-    # answers that question per turn instead of per project.
-    #
-    # route.handler stays for pipelines that genuinely are different work --
-    # vision and speech, which the orchestrator already anticipates.
-    rag_result: RagResult | None = None
-    if rag is not None:
-        stage = time.perf_counter()
-        try:
-            candidate = await rag.query(
-                content, user_id=user_id, project_id=chat.project_id
-            )
-            if candidate is not None and candidate.elapsed_seconds is not None:
-                # The pipeline's own time, so the HTTP hop shows up as the
-                # difference from rag_ms.
-                timings["rag_service_ms"] = round(candidate.elapsed_seconds * 1000)
-            if candidate is not None and candidate.sources:
-                if candidate.best_score >= rag_min_score:
-                    rag_result = candidate
-                else:
-                    logger.info(
-                        "rag below floor chat=%s best=%.3f floor=%.3f sources=%d",
-                        chat.id, candidate.best_score, rag_min_score,
-                        len(candidate.sources),
-                    )
-        except Exception:
-            # rag.query() already catches its own transport failures and
-            # returns None; this catches anything else, same reasoning as
-            # the memory search above.
-            logger.exception("RAG query raised for chat=%s", chat.id)
-        timings["rag_ms"] = _ms_since(stage)
-
-    # Only when asked for, and only through the client that redacts: the
-    # query that goes out is the client's rewrite, never the raw message.
-    web_search: WebSearch | None = None
+    known_names: list[str] = []
     if route.handler == "web":
-        if web is None:
-            web_search = WebSearch(query_sent=None, error="web search is not configured")
-        else:
-            profile = await session.get(Profile, user_id)
-            known_names = [n for n in (getattr(profile, "display_name", None),
-                                       getattr(profile, "email", None)) if n]
-            # The cheap model, same as titles and the write gate: rewriting a
-            # question into a topic is small work.
-            stage = time.perf_counter()
-            try:
-                web_search = await web.search(
-                    content, provider=provider, model=title_model, known_names=known_names
-                )
-            except Exception:
-                # WebClient.search() already turns its own failures into an
-                # error; this catches anything else, same as memory and RAG.
-                logger.exception("Web search raised for chat=%s", chat.id)
-                web_search = WebSearch(query_sent=None, error="web search failed")
-            timings["web_ms"] = _ms_since(stage)
+        profile = await session.get(Profile, user_id)
+        known_names = [n for n in (getattr(profile, "display_name", None),
+                                   getattr(profile, "email", None)) if n]
+
+    # Memory, documents and (when asked for) the web are independent of each
+    # other, so they run at the same time: the turn waits for the slowest,
+    # not for the sum.
+    async def nothing():
+        return None
+
+    facts, rag_result, web_search = await asyncio.gather(
+        _timed(timings, "memory_ms", _search_memory(memory, content, user_id, chat))
+        if memory is not None else nothing(),
+        _timed(timings, "rag_ms", _query_documents(rag, content, user_id, chat, rag_min_score, timings))
+        if rag is not None else nothing(),
+        _timed(timings, "web_ms", _search_web(web, content, provider, title_model, known_names, chat))
+        if route.handler == "web" else nothing(),
+    )
+    facts = facts or []
+
+    # The route recorded is what actually happened, not what was predicted
+    # before retrieval ran. "rag" means documents genuinely informed this
+    # answer -- they cleared the floor -- which is the only version of the
+    # label a person can act on. A web turn keeps its label even when
+    # documents also helped: it is the one route that says words left the
+    # machine.
+    if rag_result is not None and route.handler != "web":
+        n = len(rag_result.sources)
+        route = Route(
+            handler="rag",
+            reason=f"{n} document {'chunk' if n == 1 else 'chunks'} cleared the relevance floor "
+                   f"(best {rag_result.best_score:.2f})",
+        )
 
     prompt = build_prompt(history, facts, rag_result, web_search)
+    return PreparedTurn(
+        chat=chat, content=content, user_id=user_id, route=route, user_message=user_message,
+        history=history, facts=facts, rag_result=rag_result, web_search=web_search,
+        prompt=prompt, title_task=title_task, timings=timings, started=turn_started,
+    )
 
-    started = time.perf_counter()
-    error: str | None = None
-    try:
-        # Live: the one call a person is waiting on, so a local runtime runs
-        # it ahead of any background work.
-        answer = await provider.chat(prompt, priority="live")
-    except Exception as exc:
-        logger.exception("Generation failed for chat=%s", chat.id)
-        error = f"{exc.__class__.__name__}: {exc}"
-        answer = (
-            "I couldn't reach the model to answer that. The message is saved — "
-            "try again once the provider is reachable."
-        )
-    latency_ms = round((time.perf_counter() - started) * 1000)
-    timings["generation_ms"] = latency_ms
 
-    if title_task is not None:
+FAILED_ANSWER = (
+    "I couldn't reach the model to answer that. The message is saved — "
+    "try again once the provider is reachable."
+)
+
+
+async def finalize_turn(
+    session: AsyncSession,
+    prepared: PreparedTurn,
+    *,
+    answer: str,
+    error: str | None,
+    generation_ms: int,
+    first_token_ms: int | None = None,
+    interrupted: bool = False,
+) -> Turn:
+    """Store the answer with everything that explains it, and finish the title."""
+    timings = prepared.timings
+    if first_token_ms is not None:
+        # From the start of the turn to the first visible token: what a
+        # person actually waits through before anything appears.
+        timings["first_token_ms"] = first_token_ms
+    timings["generation_ms"] = generation_ms
+    chat = prepared.chat
+
+    if prepared.title_task is not None:
         stage = time.perf_counter()
-        smart_title = await title_task
+        smart_title = await prepared.title_task
         # Only the wait left after the answer: the title ran alongside it.
         timings["title_wait_ms"] = _ms_since(stage)
         # Falls back to the cheap first-line derivation if the model call
-        # failed or came back empty -- a chat still needs *a* name, even a
-        # bad one, rather than sitting on the placeholder forever.
-        chat.title = smart_title or _derive_title(content)
+        # failed or came back empty -- a chat still needs *a* name.
+        chat.title = smart_title or _derive_title(prepared.content)
 
-    # The route recorded is what actually happened, not what was predicted
-    # before retrieval ran. "rag" here means documents genuinely informed
-    # this answer -- they cleared the floor and went into the prompt -- which
-    # is the only version of this label a person reading it can act on.
-    effective_route = route
-    # A web turn keeps its label even when documents also helped: it is the
-    # one route that tells the person their words went off the machine.
-    if rag_result is not None and route.handler != "web":
-        effective_route = Route(
-            handler="rag",
-            reason=(
-                f"{len(rag_result.sources)} document "
-                f"{'chunk' if len(rag_result.sources) == 1 else 'chunks'} "
-                f"cleared the relevance floor (best {rag_result.best_score:.2f})"
-            ),
-        )
-
-    timings["total_ms"] = _ms_since(turn_started)
+    timings["total_ms"] = _ms_since(prepared.started)
+    rag_result, web_search, facts = prepared.rag_result, prepared.web_search, prepared.facts
     meta: dict = {
-        "route": effective_route.handler,
-        "route_reason": effective_route.reason,
-        "latency_ms": latency_ms,
+        "route": prepared.route.handler,
+        "route_reason": prepared.route.reason,
+        "latency_ms": generation_ms,
         "timings": timings,
-        "prompt_messages": len(prompt),
+        "prompt_messages": len(prepared.prompt),
         # What was recalled, so the UI can show it and so a bad answer can be
         # traced back to what the model was told.
         "recalled_facts": [
-            {"id": f.id, "fact": f.fact, "scope": f.scope, "kind": f.kind}
-            for f in facts
+            {"id": f.id, "fact": f.fact, "scope": f.scope, "kind": f.kind} for f in facts
         ],
         "rag_sources": [
             {
@@ -369,36 +397,113 @@ async def generate_turn(
             "error": web_search.error,
             "results": [{"title": r.title, "url": r.url} for r in web_search.results],
         }
+    if interrupted:
+        # Cut off by the person (a closed stream, or later a spoken
+        # interruption): what is stored is what they actually received.
+        meta["interrupted"] = True
     if error is not None:
         meta["error"] = error
 
-    assistant_message = Message(
-        chat_id=chat.id,
-        role="assistant",
-        content=answer,
-        meta=meta,
-    )
+    assistant_message = Message(chat_id=chat.id, role="assistant", content=answer, meta=meta)
     session.add(assistant_message)
     await session.flush()
 
     logger.info(
         "turn chat=%s handler=%s latency_ms=%d history=%d recalled=%d rag_sources=%d timings=%s%s",
-        chat.id,
-        route.handler,
-        latency_ms,
-        len(history),
-        len(facts),
+        chat.id, prepared.route.handler, generation_ms, len(prepared.history), len(facts),
         len(rag_result.sources) if rag_result else 0,
         " ".join(f"{k.removesuffix('_ms')}={v}" for k, v in timings.items()),
         " FAILED" if error else "",
     )
     return Turn(
-        user_message=user_message,
+        user_message=prepared.user_message,
         assistant_message=assistant_message,
-        # effective_route, not route: the API hands this straight to the UI,
-        # and it should say what informed the answer rather than what was
-        # guessed before retrieval ran.
-        route=effective_route,
+        route=prepared.route,
         facts=tuple(facts),
         rag_sources=rag_result.sources if rag_result else (),
     )
+
+
+async def generate_turn(session: AsyncSession, *, provider: Provider, **kwargs) -> Turn:
+    """Store the user message, answer it, store the answer -- buffered.
+
+    Both messages are written even if generation fails: the transcript records
+    what was said, and a turn that errored is still something that was said.
+    """
+    prepared = await prepare_turn(session, provider=provider, **kwargs)
+    started = time.perf_counter()
+    error: str | None = None
+    try:
+        # "live": the one call in a turn that someone is watching.
+        answer = await provider.chat(prepared.prompt, priority="live")
+    except Exception as exc:
+        logger.exception("Generation failed for chat=%s", prepared.chat.id)
+        error = f"{exc.__class__.__name__}: {exc}"
+        answer = FAILED_ANSWER
+    return await finalize_turn(
+        session, prepared, answer=answer, error=error, generation_ms=_ms_since(started)
+    )
+
+
+@dataclass
+class TurnEvent:
+    kind: str  # "prepared" | "token" | "done"
+    prepared: PreparedTurn | None = None
+    text: str = ""
+    turn: Turn | None = None
+
+
+async def stream_turn(session: AsyncSession, *, provider: Provider, **kwargs) -> AsyncIterator[TurnEvent]:
+    """The same turn as generate_turn, with the answer yielded as it is made.
+
+    Yields "prepared" once retrieval is done (so sources can show before the
+    first word), "token" per piece of text, then "done" with the stored turn.
+    If the consumer goes away mid-answer, whatever was already produced is
+    still stored, marked interrupted.
+    """
+    prepared = await prepare_turn(session, provider=provider, **kwargs)
+    yield TurnEvent("prepared", prepared=prepared)
+
+    started = time.perf_counter()
+    parts: list[str] = []
+    first_token_ms: int | None = None
+    error: str | None = None
+    interrupted = False
+    try:
+        async for piece in provider.chat_stream(prepared.prompt, priority="live"):
+            if not piece:
+                continue
+            if first_token_ms is None:
+                first_token_ms = _ms_since(prepared.started)
+            parts.append(piece)
+            yield TurnEvent("token", text=piece)
+    except (asyncio.CancelledError, GeneratorExit):
+        interrupted = True
+        raise
+    except Exception as exc:
+        logger.exception("Generation failed for chat=%s", prepared.chat.id)
+        error = f"{exc.__class__.__name__}: {exc}"
+        if not parts:
+            parts = [FAILED_ANSWER]
+            yield TurnEvent("token", text=FAILED_ANSWER)
+    finally:
+        if interrupted:
+            # Store what was said before the interruption. Shielded so the
+            # cancellation that ended the stream does not also lose the row.
+            async def store():
+                await finalize_turn(
+                    session, prepared, answer="".join(parts), error=None,
+                    generation_ms=_ms_since(started), first_token_ms=first_token_ms,
+                    interrupted=True,
+                )
+                await session.commit()
+            try:
+                await asyncio.shield(store())
+            except Exception:
+                logger.exception("could not store an interrupted turn for chat=%s", prepared.chat.id)
+
+    turn = await finalize_turn(
+        session, prepared, answer="".join(parts), error=error,
+        generation_ms=_ms_since(started), first_token_ms=first_token_ms,
+    )
+    yield TurnEvent("done", turn=turn)
