@@ -238,6 +238,85 @@ export const sendMessage = (chatId: string, content: string, { useWeb = false } 
     body: JSON.stringify({ content, use_web: useWeb }),
   });
 
+/** What the server knows before the first word: the stored user message,
+ * where the answer is coming from, and what it will draw on. */
+export type PreparedTurn = {
+  user_message: Message;
+  route: Route;
+  recalled: RecalledFact[];
+  rag_sources: RagSource[];
+};
+
+/**
+ * Send a message and receive the answer as it is written (server-sent events
+ * from POST /chats/{id}/messages/stream). Resolves with the stored turn,
+ * exactly as sendMessage returns it; onPrepared fires before the first word
+ * and onToken once per piece. Aborting the signal stops the answer, and the
+ * server stores what had been said so far.
+ */
+export async function streamMessage(
+  chatId: string,
+  content: string,
+  {
+    useWeb = false,
+    onPrepared,
+    onToken,
+    signal,
+  }: {
+    useWeb?: boolean;
+    onPrepared?: (prepared: PreparedTurn) => void;
+    onToken?: (text: string) => void;
+    signal?: AbortSignal;
+  } = {}
+): Promise<Turn> {
+  const response = await fetch(`${CORE_URL}/chats/${chatId}/messages/stream`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content, use_web: useWeb }),
+    signal,
+  });
+  if (!response.ok || !response.body) {
+    const body = await response.text().catch(() => "");
+    let message = body || response.statusText;
+    try {
+      const parsed = JSON.parse(body);
+      if (typeof parsed?.detail === "string") message = parsed.detail;
+    } catch {
+      // not JSON; keep the raw text
+    }
+    throw new ApiError(response.status, message);
+  }
+
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  let turn: Turn | null = null;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += value;
+    // Events are separated by a blank line; the last piece may be partial.
+    const blocks = buffer.split("\n\n");
+    buffer = blocks.pop() ?? "";
+    for (const block of blocks) {
+      let event = "message";
+      let data = "";
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event: ")) event = line.slice(7);
+        else if (line.startsWith("data: ")) data += line.slice(6);
+      }
+      if (!data) continue;
+      const payload = JSON.parse(data);
+      if (event === "prepared") onPrepared?.(payload as PreparedTurn);
+      else if (event === "token") onToken?.(payload.text as string);
+      else if (event === "done") turn = payload as Turn;
+      else if (event === "error") throw new ApiError(500, payload.detail ?? "the answer failed");
+    }
+  }
+  if (!turn) throw new ApiError(500, "the stream ended before the answer was stored");
+  return turn;
+}
+
 export type Document = {
   id: string;
   project_id: string | null;
