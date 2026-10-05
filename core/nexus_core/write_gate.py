@@ -65,9 +65,14 @@ DUPLICATE_OVERLAP = 0.8
 # decoding is constrained to it (xgrammar), so even a small model cannot
 # return prose, a code fence, or a scope that is neither tier. _parse still
 # validates: a server that ignores response_format must not break the gate.
+# "reason" first: with constrained decoding the keys are generated in this
+# order, so the model states why before it commits to persist. With persist
+# first, Qwen3-8B declined a project decision and then explained it as "not
+# a durable fact about the user" (scenario suite, 2026-10-04).
 GATE_SCHEMA: dict = {
     "type": "object",
     "properties": {
+        "reason": {"type": "string"},
         "persist": {"type": "boolean"},
         "facts": {
             "type": "array",
@@ -81,16 +86,15 @@ GATE_SCHEMA: dict = {
                 "required": ["statement", "scope"],
             },
         },
-        "reason": {"type": "string"},
     },
-    "required": ["persist", "facts", "reason"],
+    "required": ["reason", "persist", "facts"],
 }
 
 GATE_SYSTEM_PROMPT = """\
 You decide what a personal assistant should remember from a conversation turn.
 
 Return ONLY a JSON object, no prose and no code fence:
-{"persist": bool, "facts": [{"statement": string, "scope": "user"|"project"}], "reason": string}
+{"reason": string, "persist": bool, "facts": [{"statement": string, "scope": "user"|"project"}]}
 
 ONLY the person's own message is a source of facts. The assistant's reply is
 given to you as context, so you can resolve references the person's message
@@ -99,11 +103,16 @@ in this turn came out of the assistant's mouth, persist nothing. An assistant
 repeating back a fact it was told earlier is not the person stating it again.
 
 Facts already in memory are listed below when there are any. Never restate one.
-A rephrasing of something already known is a duplicate, not a new fact.
+A rephrasing of something already known is a duplicate, not a new fact. A
+change of mind is not a duplicate: when the person replaces, reverses or
+corrects something already known ("scrap that, we switched to Postgres"),
+persist the new state as a fact, saying what it replaced.
 
 Persist something only when it will still be useful weeks from now. Durable
 facts qualify: who the person is, what they prefer, decisions they have made,
-constraints they work under, and the shape of what they are building.
+constraints they work under, and the shape of what they are building. Facts
+about their project count exactly as much as facts about them; they go in the
+project scope, below.
 
 Persist nothing for: greetings, thanks, acknowledgements, questions that carry
 no new information about the person, requests for explanation of general topics,
@@ -129,7 +138,8 @@ scope, set per fact:
   technology choices, architecture decisions, deadlines, its specific problems.
 When a fact would be equally true in a different project, it is "user".
 
-reason: a short phrase explaining the decision, for a human reading the logs.
+reason: first, a short phrase explaining the decision, for a human reading the
+logs.
 """
 
 
@@ -327,6 +337,10 @@ async def decide(
                 "type": "json_schema",
                 "json_schema": {"name": "memory_gate", "schema": GATE_SCHEMA},
             },
+            # A decision, not prose: at the runtime's default 0.7 the same
+            # introduction was kept twice and dropped once, with the same
+            # stated reason each time (scenario suite, 2026-10-04).
+            temperature=0.0,
         )
     except Exception as exc:
         logger.warning("Write gate call failed: %s", exc)

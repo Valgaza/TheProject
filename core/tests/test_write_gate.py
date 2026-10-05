@@ -33,9 +33,10 @@ class ScriptedProvider:
         self.response_formats: list[dict | None] = []
 
     async def chat(self, messages, *, model=None, max_tokens=None, priority="interactive",
-                   response_format=None):
+                   response_format=None, temperature=None):
         self.calls.append(list(messages))
         self.response_formats.append(response_format)
+        self.temperatures = getattr(self, "temperatures", []) + [temperature]
         if isinstance(self.reply, Exception):
             raise self.reply
         return self.reply
@@ -639,3 +640,12 @@ async def test_the_gate_asks_for_its_schema():
     fmt = provider.response_formats[0]
     assert fmt["type"] == "json_schema"
     assert fmt["json_schema"]["schema"] is GATE_SCHEMA
+
+
+async def test_the_gate_decides_at_temperature_zero():
+    """At the runtime's default 0.7 the same introduction was kept twice and
+    dropped once."""
+    provider = ScriptedProvider(_gate_json("Aarya is a final year B.Tech student.", "user"))
+    await decide(provider, user_message="I'm a final year B.Tech student", assistant_message="ok",
+                 subject_name="Aarya")
+    assert provider.temperatures == [0.0]

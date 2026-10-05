@@ -40,6 +40,7 @@ class Provider(ABC):
         max_tokens: int | None = None,
         priority: str = "interactive",
         response_format: dict | None = None,
+        temperature: float | None = None,
     ) -> str:
         """Return the assistant's reply to ``messages``.
 
@@ -51,6 +52,9 @@ class Provider(ABC):
         for a reply someone is waiting on, "interactive" for small side calls
         (titles, the write gate), "bulk" for background work. Servers that do
         not know the header ignore it.
+
+        ``temperature`` 0 for decisions that should not depend on the dice
+        (the write gate); None leaves the server's default.
         """
 
     async def chat_stream(

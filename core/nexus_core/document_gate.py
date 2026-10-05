@@ -172,6 +172,11 @@ async def sync_document_to_graph(
                     },
                 ],
                 model=gate_model,
+                # Background cataloguing: nobody is waiting on it, and it
+                # must never slow the next answer (or the first thing said
+                # in a voice session right after an upload).
+                priority="bulk",
+                temperature=0.0,
                 response_format={
                     "type": "json_schema",
                     "json_schema": {"name": "document_gate", "schema": DOCUMENT_GATE_SCHEMA},
