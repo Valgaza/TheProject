@@ -41,11 +41,24 @@ async def lifespan(app: FastAPI):
             # Visible in /health as "loading" forever, and here with the cause.
             logger.exception("runtime failed to load its models")
 
+    async def reap() -> None:
+        # Voice models are only worth their memory while someone is talking.
+        while True:
+            await asyncio.sleep(30)
+            try:
+                unloaded = await backend.reap_idle()
+                if unloaded:
+                    logger.info("unloaded idle session models: %s", unloaded)
+            except Exception:
+                logger.exception("idle reaper failed")
+
     task = asyncio.create_task(warm_up())
+    reaper = asyncio.create_task(reap())
     try:
         yield
     finally:
         task.cancel()
+        reaper.cancel()
         scheduler.stop()
 
 

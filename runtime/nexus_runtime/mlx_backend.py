@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 class ModelNotLoaded(RuntimeError):
     """A request named a model that is unloaded right now (an unload in
-    progress). Answered as 503, not 500."""
+    progress, a voice model outside a session). Answered as 503, not 500."""
 
 
 @dataclass
@@ -312,7 +312,7 @@ class GenerationJob:
 class ModelSlot:
     name: str          # "chat" or "embed"
     repo: str          # the Hugging Face id, and the name it is served under
-    lifetime: str      # "always" | "optional"
+    lifetime: str      # "always" | "session"
     obj: Any = None
     nbytes: int = 0
     prompt_cache: Any = None
@@ -339,6 +339,11 @@ class MLXBackend:
         }
         if settings.decide_enabled:
             self.slots["decide"] = ModelSlot("decide", settings.decide_model, "optional")
+        # Voice: loaded per session (or on first use) and unloaded when idle.
+        self.slots["stt"] = ModelSlot("stt", settings.stt_model, "session")
+        self.slots["tts"] = ModelSlot("tts", settings.tts_model, "session")
+        self.last_used: dict[str, float] = {}
+        self.pronunciation: str | None = None
         self._compilers: dict[int, Any] = {}
         self._grammars: dict[tuple[int, str], Any] = {}
         self.ready = False
@@ -382,6 +387,31 @@ class MLXBackend:
                 max_size=self.settings.prompt_cache_entries,
                 max_bytes=int(self.settings.prompt_cache_gb * 1024**3),
             )
+        elif name == "stt":
+            from parakeet_mlx import from_pretrained
+
+            before = mx.get_active_memory()
+            slot.obj = from_pretrained(slot.repo)
+            slot.nbytes = max(0, mx.get_active_memory() - before)
+        elif name == "tts":
+            from . import pronunciation
+
+            if self.pronunciation is None:
+                # Before mlx-audio imports misaki: see pronunciation.py.
+                self.pronunciation = pronunciation.install()
+            from mlx_audio.tts.utils import load_model
+
+            before = mx.get_active_memory()
+            model = load_model(slot.repo)
+            # Voices live in the same repo as the weights; without this,
+            # Kokoro looks for them in a different one.
+            model.repo_id = slot.repo
+            # The per-language pipeline (and its spaCy model) is built on first
+            # use; build it now so the first sentence spoken is not the slow one.
+            for _ in model.generate(text="Ready.", voice=self.settings.tts_voice, lang_code="a"):
+                pass
+            slot.obj = model
+            slot.nbytes = max(0, mx.get_active_memory() - before)
         elif name == "embed":
             from mlx_embeddings.utils import load
 
@@ -460,6 +490,7 @@ class MLXBackend:
             decide.obj.predict({"text": "warm up"}, {"q": {"type": "noul", "instructions": "Is `text` a test?"}})
 
     async def load(self, name: str) -> dict:
+        self.last_used[name] = time.monotonic()
         return await self.scheduler.call(lambda: self._load(name), Priority.LIVE)
 
     async def unload(self, name: str) -> dict:
@@ -604,6 +635,58 @@ class MLXBackend:
     async def decide(self, state: Any, questions: dict) -> dict:
         # Live: decisions sit on the path of a turn, and take milliseconds.
         return await self.scheduler.call(lambda: self._decide_now(state, questions), Priority.LIVE)
+
+    # ── voice ────────────────────────────────────────────────────────────────
+
+    def _ensure(self, name: str):
+        """Session models load on first use; touching one keeps it resident."""
+        slot = self.slots[name]
+        if not slot.loaded:
+            self._load(name)
+        self.last_used[name] = time.monotonic()
+        return slot.obj
+
+    def _transcribe_now(self, pcm16: bytes) -> dict:
+        import mlx.core as mx
+        import numpy as np
+        from parakeet_mlx.audio import get_logmel
+
+        stt = self._ensure("stt")
+        audio = np.frombuffer(pcm16, dtype="<i2").astype(np.float32) / 32768.0
+        seconds = len(audio) / stt.preprocessor_config.sample_rate
+        if len(audio) < stt.preprocessor_config.hop_length * 4:
+            return {"text": "", "seconds": round(seconds, 3)}
+        # float32 for the spectrogram: in bfloat16 the FFT's shape comes out wrong.
+        mel = get_logmel(mx.array(audio), stt.preprocessor_config)
+        result = stt.generate(mel)[0]
+        return {"text": result.text.strip(), "seconds": round(seconds, 3)}
+
+    async def transcribe(self, pcm16: bytes) -> dict:
+        """16 kHz mono PCM16 in, text out. Live: a person is waiting."""
+        return await self.scheduler.call(lambda: self._transcribe_now(pcm16), Priority.LIVE)
+
+    def _speak_now(self, text: str, voice: str | None, speed: float) -> bytes:
+        import numpy as np
+
+        tts = self._ensure("tts")
+        parts = [np.array(chunk.audio).reshape(-1) for chunk in
+                 tts.generate(text=text, voice=voice or self.settings.tts_voice, speed=speed, lang_code="a")]
+        audio = np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
+        return (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+
+    async def speak(self, text: str, voice: str | None = None, speed: float = 1.0) -> bytes:
+        """Text in, 24 kHz mono PCM16 out."""
+        return await self.scheduler.call(lambda: self._speak_now(text, voice, speed), Priority.LIVE)
+
+    async def reap_idle(self) -> list[str]:
+        """Unload session models nobody has used for a while."""
+        now = time.monotonic()
+        idle = [n for n, s in self.slots.items()
+                if s.lifetime == "session" and s.loaded
+                and now - self.last_used.get(n, 0) > self.settings.session_idle_seconds]
+        for name in idle:
+            await self.unload(name)
+        return idle
 
     # ── embeddings ───────────────────────────────────────────────────────────
 
