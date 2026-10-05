@@ -104,6 +104,9 @@ async def lifespan(app: FastAPI):
         memory=app.state.memory,
         gate_model=settings.gate_model,
         activity=activity,
+        decisions=decisions,
+        laya_gate=settings.laya_gate,
+        laya_skip_below=settings.laya_gate_skip_below,
     )
     write_queue.start()
     app.state.write_queue = write_queue

@@ -203,6 +203,9 @@ def _turn_kwargs(request: Request, chat: Chat, body: MessageCreate, user_id: uui
         rag_min_score=_settings(request).rag_min_score,
         web=getattr(request.app.state, "web", None),
         use_web=body.use_web,
+        decisions=getattr(request.app.state, "decisions", None),
+        laya_web_intent=getattr(_settings(request), "laya_web_intent", "off"),
+        laya_web_intent_above=getattr(_settings(request), "laya_web_intent_above", 0.9),
     )
 
 

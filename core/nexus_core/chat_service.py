@@ -24,7 +24,8 @@ from .orchestrator import Attachment, Route, select_route
 from .providers.base import Message as ProviderMessage
 from .providers.base import Provider
 from .rag_client import RagClient, RagResult, RagSource
-from .web_client import WebClient, WebSearch
+from .web_client import WEB_TRIGGER, WebClient, WebSearch
+from .decisions import WEB_INTENT_QUESTIONS, DecisionsClient, log_entry
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +264,9 @@ async def prepare_turn(
     rag_min_score: float = 0.5,
     web: WebClient | None = None,
     use_web: bool = False,
+    decisions: DecisionsClient | None = None,
+    laya_web_intent: str = "off",
+    laya_web_intent_above: float = 0.9,
 ) -> PreparedTurn:
     """Store the user message and gather everything the answer needs."""
     turn_started = time.perf_counter()
@@ -270,11 +274,44 @@ async def prepare_turn(
     # latency change in the milestone is judged against these numbers.
     timings: dict[str, int] = {}
 
-    route = await select_route(content=content, attachments=attachments, rag=rag, use_web=use_web)
+    # Only asked when nothing cheaper has already decided: the button and the
+    # trigger phrases settle most web requests without a model.
+    intent = None
+    ask_laya = (
+        decisions is not None and laya_web_intent in ("shadow", "live")
+        and not use_web and not WEB_TRIGGER.search(content)
+    )
+    shadow_intent: asyncio.Task | None = None
+    if ask_laya and laya_web_intent == "live":
+        stage = time.perf_counter()
+        intent = await decisions.decide({"message": content}, WEB_INTENT_QUESTIONS)
+        timings["laya_ms"] = _ms_since(stage)
+    elif ask_laya:
+        # In shadow its answer cannot change the route, so it is not waited
+        # for: it runs alongside retrieval and is logged once that is done.
+        shadow_intent = asyncio.create_task(decisions.decide({"message": content}, WEB_INTENT_QUESTIONS))
+
+    route = await select_route(
+        content=content, attachments=attachments, rag=rag, use_web=use_web,
+        web_intent_p=intent.p("asks_for_web") if intent and laya_web_intent == "live" else None,
+        web_intent_above=laya_web_intent_above,
+    )
 
     user_message = Message(chat_id=chat.id, role="user", content=content, meta={"route": route.handler})
     session.add(user_message)
     await session.flush()
+
+    def log_intent(decision) -> None:
+        # What the existing logic would have done without Laya, so shadow
+        # agreement can be measured: anything not caught above is "general".
+        session.add(log_entry(
+            point="web_intent", mode=laya_web_intent, state={"message": content},
+            decision=decision, baseline={"asks_for_web": False, "route": route.handler},
+            chat_id=chat.id, message_id=user_message.id,
+        ))
+
+    if ask_laya and shadow_intent is None:
+        log_intent(intent)
 
     # Kicked off here, not awaited until after the answer, so a good title
     # costs nothing in wall-clock time: it runs alongside generation.
@@ -309,6 +346,8 @@ async def prepare_turn(
         if route.handler == "web" else nothing(),
     )
     facts = facts or []
+    if shadow_intent is not None:
+        log_intent(await shadow_intent)
 
     # The route recorded is what actually happened, not what was predicted
     # before retrieval ran. "rag" means documents genuinely informed this
