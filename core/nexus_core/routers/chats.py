@@ -76,7 +76,7 @@ def _settings(request: Request):
 @router.get("", response_model=list[ChatOut])
 async def list_chats(
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
     loose: bool = False,
 ) -> list[Chat]:
     """Every chat this user has, newest activity first.
@@ -96,7 +96,7 @@ async def list_chats(
 async def create_chat(
     body: ChatCreate,
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> Chat:
     """Start a conversation, with or without a project.
 
@@ -118,7 +118,7 @@ async def create_chat(
 async def get_chat(
     chat_id: uuid.UUID,
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> Chat:
     return await _get_chat(session, chat_id, _current_user_id(request))
 
@@ -128,7 +128,7 @@ async def update_chat(
     chat_id: uuid.UUID,
     body: ChatUpdate,
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> Chat:
     """Rename, pin/unpin, or move to a different project -- whichever
     fields are set. Covers the sidebar's three-dot menu."""
@@ -163,7 +163,7 @@ async def update_chat(
 async def delete_chat(
     chat_id: uuid.UUID,
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> None:
     """Removes the chat and its transcript. Anything the write gate already
     extracted into the knowledge graph survives -- Postgres holds what was
@@ -177,7 +177,7 @@ async def delete_chat(
 async def list_messages(
     chat_id: uuid.UUID,
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> list[Message]:
     await _get_chat(session, chat_id, _current_user_id(request))
     result = await session.execute(
@@ -283,7 +283,7 @@ async def create_message(
     chat_id: uuid.UUID,
     body: MessageCreate,
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> TurnOut:
     """Send a message and get the whole answer in one response.
 
@@ -377,7 +377,7 @@ async def stream_message(
 async def list_memory_episodes(
     chat_id: uuid.UUID,
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> list[MemoryEpisode]:
     """What this chat put into memory, and what happened to it.
 

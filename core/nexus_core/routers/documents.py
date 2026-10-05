@@ -67,7 +67,7 @@ async def list_documents(
     request: Request,
     project_id: uuid.UUID | None = None,
     loose: bool = False,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> list[Document]:
     """This user's documents, newest first.
 
@@ -90,7 +90,7 @@ async def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     project_id: uuid.UUID | None = None,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> Document:
     """Take a file, record it, chunk it, and tell the graph about it.
 
@@ -192,7 +192,7 @@ async def upload_document(
 async def delete_document(
     document_id: uuid.UUID,
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> None:
     """Remove a document from both stores.
 
