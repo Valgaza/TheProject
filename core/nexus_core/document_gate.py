@@ -39,6 +39,17 @@ EXCERPT_CHARS = 4000
 
 MAX_FACTS = 3
 
+# Enforced by the MLX runtime's constrained decoding; _parse still validates.
+DOCUMENT_GATE_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "facts": {"type": "array", "maxItems": MAX_FACTS, "items": {"type": "string"}},
+        "topics": {"type": "array", "items": {"type": "string"}},
+        "reason": {"type": "string"},
+    },
+    "required": ["facts", "topics", "reason"],
+}
+
 DOCUMENT_GATE_PROMPT = """\
 You are cataloguing a document someone added to their personal assistant.
 
@@ -161,6 +172,10 @@ async def sync_document_to_graph(
                     },
                 ],
                 model=gate_model,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {"name": "document_gate", "schema": DOCUMENT_GATE_SCHEMA},
+                },
             )
         except Exception as exc:
             logger.warning("Document gate call failed for %s: %s", document_id, exc)

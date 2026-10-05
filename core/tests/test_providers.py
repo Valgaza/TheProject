@@ -54,3 +54,31 @@ async def test_live_openai_completion():
         assert reply.strip()
     finally:
         await real.aclose()
+
+
+async def test_the_priority_travels_as_a_header():
+    """nexus_runtime schedules by X-Nexus-Priority; other servers ignore it."""
+    import httpx
+    from openai import AsyncOpenAI
+
+    from nexus_core.providers.openai_provider import OpenAIProvider
+
+    seen: list[str | None] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("x-nexus-priority"))
+        return httpx.Response(200, json={
+            "id": "x", "object": "chat.completion", "created": 0, "model": "m",
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": "ok"}}],
+        })
+
+    provider = OpenAIProvider(api_key="k", chat_model="m", embed_model="e", base_url="http://runtime.test/v1")
+    provider._client = AsyncOpenAI(
+        api_key="k", base_url="http://runtime.test/v1",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+    )
+    await provider.chat([{"role": "user", "content": "hi"}], priority="live")
+    await provider.chat([{"role": "user", "content": "hi"}])
+
+    assert seen == ["live", "interactive"]

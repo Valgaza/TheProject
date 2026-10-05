@@ -30,9 +30,12 @@ class ScriptedProvider:
     def __init__(self, reply: str | Exception) -> None:
         self.reply = reply
         self.calls: list[list[dict]] = []
+        self.response_formats: list[dict | None] = []
 
-    async def chat(self, messages, *, model=None, max_tokens=None):
+    async def chat(self, messages, *, model=None, max_tokens=None, priority="interactive",
+                   response_format=None):
         self.calls.append(list(messages))
+        self.response_formats.append(response_format)
         if isinstance(self.reply, Exception):
             raise self.reply
         return self.reply
@@ -615,3 +618,21 @@ async def test_a_recall_turn_leaves_no_provenance_row(db_client, session_factory
 
     assert rows == []
     assert memory.calls == []
+
+
+async def test_the_gate_asks_for_its_schema():
+    """With the MLX runtime the schema is enforced while decoding, so the
+    reply always parses; _parse stays the backstop for servers that ignore it."""
+    from nexus_core.write_gate import GATE_SCHEMA
+
+    provider = ScriptedProvider(_gate_json())
+    await decide(
+        provider,
+        user_message="I moved to Pune last month.",
+        assistant_message="Noted.",
+        subject_name="Aarya",
+    )
+
+    fmt = provider.response_formats[0]
+    assert fmt["type"] == "json_schema"
+    assert fmt["json_schema"]["schema"] is GATE_SCHEMA

@@ -298,7 +298,9 @@ async def generate_turn(
     started = time.perf_counter()
     error: str | None = None
     try:
-        answer = await provider.chat(prompt)
+        # Live: the one call a person is waiting on, so a local runtime runs
+        # it ahead of any background work.
+        answer = await provider.chat(prompt, priority="live")
     except Exception as exc:
         logger.exception("Generation failed for chat=%s", chat.id)
         error = f"{exc.__class__.__name__}: {exc}"

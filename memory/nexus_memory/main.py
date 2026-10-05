@@ -17,6 +17,7 @@ from fastapi import (
 from pydantic import BaseModel, Field
 
 from graphiti_core import Graphiti
+from openai import AsyncOpenAI
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
 from graphiti_core.edges import EntityEdge
 from graphiti_core.embedder import OpenAIEmbedder, OpenAIEmbedderConfig
@@ -213,6 +214,15 @@ async def lifespan(app: FastAPI):
         # (Gemini now, quite possibly a local model later too) only works
         # with this one. It also defaults to a 16K token ceiling instead of 8K.
         llm_client=OpenAIGenericClient(
+            # Extraction is background work: tagged "bulk" so the runtime
+            # (runtime/nexus_runtime/engine.py) pauses it whenever a reply
+            # someone is waiting on needs the GPU. Servers that do not know
+            # the header ignore it.
+            client=AsyncOpenAI(
+                api_key=cfg.openai_api_key,
+                base_url=cfg.openai_base_url,
+                default_headers={"X-Nexus-Priority": "bulk"},
+            ),
             config=LLMConfig(
                 api_key=cfg.openai_api_key,
                 base_url=cfg.openai_base_url,

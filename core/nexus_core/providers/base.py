@@ -38,8 +38,20 @@ class Provider(ABC):
         *,
         model: str | None = None,
         max_tokens: int | None = None,
+        priority: str = "interactive",
+        response_format: dict | None = None,
     ) -> str:
-        """Return the assistant's reply to ``messages``."""
+        """Return the assistant's reply to ``messages``.
+
+        ``response_format`` is passed through as OpenAI defines it. With a
+        ``json_schema`` the local runtime constrains decoding to the schema,
+        so the reply always parses.
+
+        ``priority`` tells a local runtime how urgent this call is: "live"
+        for a reply someone is waiting on, "interactive" for small side calls
+        (titles, the write gate), "bulk" for background work. Servers that do
+        not know the header ignore it.
+        """
 
     @abstractmethod
     async def embed(

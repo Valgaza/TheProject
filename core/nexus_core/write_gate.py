@@ -61,6 +61,31 @@ MAX_FACTS_PER_TURN = 3
 # for this project" scores 0.71, and the true repeats score 1.0.
 DUPLICATE_OVERLAP = 0.8
 
+# The same shape the prompt describes, enforced. Served by the MLX runtime,
+# decoding is constrained to it (xgrammar), so even a small model cannot
+# return prose, a code fence, or a scope that is neither tier. _parse still
+# validates: a server that ignores response_format must not break the gate.
+GATE_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "persist": {"type": "boolean"},
+        "facts": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "statement": {"type": "string"},
+                    "scope": {"enum": ["user", "project"]},
+                },
+                "required": ["statement", "scope"],
+            },
+        },
+        "reason": {"type": "string"},
+    },
+    "required": ["persist", "facts", "reason"],
+}
+
 GATE_SYSTEM_PROMPT = """\
 You decide what a personal assistant should remember from a conversation turn.
 
@@ -298,6 +323,10 @@ async def decide(
                 {"role": "user", "content": "\n\n".join(sections)},
             ],
             model=model,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {"name": "memory_gate", "schema": GATE_SCHEMA},
+            },
         )
     except Exception as exc:
         logger.warning("Write gate call failed: %s", exc)
