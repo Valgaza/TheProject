@@ -122,7 +122,36 @@ services:
     restart: unless-stopped
     mem_limit: 256m
 
+  # ── Web search: the one way out ──────────────────────────────────────────
+  # Redacts every query (model rewrite through the runtime, then identifier
+  # stripping, then the decision model's check), sends it to SearXNG, and
+  # appends exactly what left to an audit log. Core calls it with the service
+  # token; it is published on localhost only.
+  websearch:
+    build: ./websearch
+    container_name: nexus-websearch
+    ports:
+      - "127.0.0.1:8004:8004"
+    environment:
+      SEARXNG_URL: http://searxng:8080
+      RUNTIME_URL: http://host.docker.internal:8003
+      SERVICE_TOKEN: ${SERVICE_TOKEN}
+      CORE_GATE_MODEL: ${CORE_GATE_MODEL}
+      CORE_CHAT_MODEL: ${CORE_CHAT_MODEL}
+      WEBSEARCH_LAYA_QUERY: ${WEBSEARCH_LAYA_QUERY:-shadow}
+      WEBSEARCH_AUDIT_LOG: /data/audit.jsonl
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - websearch_audit:/data
+    depends_on:
+      - searxng
+    restart: unless-stopped
+    mem_limit: 256m
+
 volumes:
+  websearch_audit:
+    name: nexus_websearch_audit
   postgres_data:
     name: nexus_postgres_data
   neo4j_data:
