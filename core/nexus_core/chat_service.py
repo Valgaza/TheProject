@@ -35,6 +35,15 @@ SYSTEM_PROMPT = (
     "formatting plain unless the answer genuinely needs structure."
 )
 
+# Added for a spoken turn (voice/). Every word is waited for twice over, once
+# generated and once said, and nothing on screen is read: so short, plain, and
+# with the answer first, which is also the first sentence spoken.
+SPOKEN_PROMPT = (
+    " This conversation is spoken aloud. Answer in one to three short sentences, "
+    "with the answer itself first. No lists, headings, markdown, URLs or source "
+    "citations; say numbers and names the way a person would say them."
+)
+
 # Between the context attached to a message and the message itself: the
 # context is the system's, not something the person wrote.
 CONTEXT_DIVIDER = "--- The message, from the person ---"
@@ -149,6 +158,7 @@ def build_prompt(
     facts: Sequence[Fact] = (),
     rag_result: RagResult | None = None,
     web: WebSearch | None = None,
+    spoken: bool = False,
 ) -> list[ProviderMessage]:
     """The system prompt, the conversation so far, then the message being
     answered with what was recalled and retrieved for it.
@@ -165,7 +175,8 @@ def build_prompt(
     anywhere but first. Within it, memory first (durable, about the person),
     then documents and the web (specific to this question): broad to narrow.
     """
-    prompt: list[ProviderMessage] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    system = SYSTEM_PROMPT + (SPOKEN_PROMPT if spoken else "")
+    prompt: list[ProviderMessage] = [{"role": "system", "content": system}]
     context: list[str] = []
     if facts:
         context.append(render_memory(facts))
@@ -280,6 +291,43 @@ async def _search_web(
         return WebSearch(query_sent=None, error="web search failed")
 
 
+@dataclass
+class Retrieval:
+    """Memory and documents, fetched for a message before its turn begins.
+
+    Voice starts this during the speaker's pause, on a speculative
+    transcript, so by the time the pause is long enough to end the turn the
+    retrieval is done. prepare_turn uses it only if the message it is
+    preparing is the same text.
+    """
+
+    content: str
+    facts: asyncio.Task | None
+    documents: asyncio.Task | None
+    timings: dict[str, int] = field(default_factory=dict)
+
+    def discard(self) -> None:
+        for task in (self.facts, self.documents):
+            if task is not None:
+                task.cancel()
+
+
+def start_retrieval(
+    *, content: str, chat: Chat, user_id: uuid.UUID, memory: MemoryClient | None,
+    rag: RagClient | None, rag_min_score: float = 0.5,
+) -> Retrieval:
+    timings: dict[str, int] = {}
+    return Retrieval(
+        content=content,
+        facts=asyncio.create_task(_timed(timings, "memory_ms", _search_memory(memory, content, user_id, chat)))
+        if memory is not None else None,
+        documents=asyncio.create_task(_timed(
+            timings, "rag_ms", _query_documents(rag, content, user_id, chat, rag_min_score, timings)))
+        if rag is not None else None,
+        timings=timings,
+    )
+
+
 async def prepare_turn(
     session: AsyncSession,
     *,
@@ -297,8 +345,14 @@ async def prepare_turn(
     decisions: DecisionsClient | None = None,
     laya_web_intent: str = "off",
     laya_web_intent_above: float = 0.9,
+    spoken: bool = False,
+    retrieval: Retrieval | None = None,
 ) -> PreparedTurn:
-    """Store the user message and gather everything the answer needs."""
+    """Store the user message and gather everything the answer needs.
+
+    ``retrieval``, if given and for this same text, supplies memory and
+    documents already fetched (see Retrieval); otherwise they are fetched here.
+    """
     turn_started = time.perf_counter()
     # Wall-clock per stage, in ms, stored on the answer as meta.timings. Every
     # latency change in the milestone is judged against these numbers.
@@ -367,14 +421,29 @@ async def prepare_turn(
     async def nothing():
         return None
 
+    if retrieval is not None and retrieval.content != content:
+        retrieval.discard()
+        retrieval = None
+    if retrieval is None:
+        retrieval = start_retrieval(content=content, chat=chat, user_id=user_id, memory=memory,
+                                    rag=rag, rag_min_score=rag_min_score)
+    else:
+        timings["prefetched"] = 1
+
+    async def done(task):
+        return await task if task is not None else None
+
+    stage = time.perf_counter()
     facts, rag_result, web_search = await asyncio.gather(
-        _timed(timings, "memory_ms", _search_memory(memory, content, user_id, chat))
-        if memory is not None else nothing(),
-        _timed(timings, "rag_ms", _query_documents(rag, content, user_id, chat, rag_min_score, timings))
-        if rag is not None else nothing(),
+        done(retrieval.facts),
+        done(retrieval.documents),
         _timed(timings, "web_ms", _search_web(web, content, known_names, user_id, chat))
         if route.handler == "web" else nothing(),
     )
+    timings.update(retrieval.timings)
+    if "prefetched" in timings:
+        # What was left to wait for: the rest ran during the pause.
+        timings["retrieval_wait_ms"] = _ms_since(stage)
     facts = facts or []
     if shadow_intent is not None:
         log_intent(await shadow_intent)
@@ -393,7 +462,7 @@ async def prepare_turn(
                    f"(best {rag_result.best_score:.2f})",
         )
 
-    prompt = build_prompt(history, facts, rag_result, web_search)
+    prompt = build_prompt(history, facts, rag_result, web_search, spoken=spoken)
     return PreparedTurn(
         chat=chat, content=content, user_id=user_id, route=route, user_message=user_message,
         history=history, facts=facts, rag_result=rag_result, web_search=web_search,
@@ -416,8 +485,13 @@ async def finalize_turn(
     generation_ms: int,
     first_token_ms: int | None = None,
     interrupted: bool = False,
+    extra_meta: dict | None = None,
 ) -> Turn:
-    """Store the answer with everything that explains it, and finish the title."""
+    """Store the answer with everything that explains it, and finish the title.
+
+    ``extra_meta`` is merged into the stored meta: a spoken turn adds
+    ``voice`` (its own timings) this way.
+    """
     timings = prepared.timings
     if first_token_ms is not None:
         # From the start of the turn to the first visible token: what a
@@ -472,6 +546,8 @@ async def finalize_turn(
         meta["interrupted"] = True
     if error is not None:
         meta["error"] = error
+    if extra_meta:
+        meta.update(extra_meta)
 
     assistant_message = Message(chat_id=chat.id, role="assistant", content=answer, meta=meta)
     session.add(assistant_message)

@@ -34,6 +34,11 @@ def test_what_changes_each_turn_sits_after_the_conversation_so_far():
     assert later[:3] == prompt[:3]
 
 
+def test_a_spoken_turn_asks_for_a_short_plain_answer():
+    assert "spoken aloud" in build_prompt([_msg("user", "hi")], spoken=True)[0]["content"]
+    assert "spoken aloud" not in build_prompt([_msg("user", "hi")])[0]["content"]
+
+
 async def test_a_long_conversation_drops_old_turns_a_block_at_a_time(session_factory, monkeypatch):
     monkeypatch.setattr(chat_service, "HISTORY_LIMIT", 6)
     monkeypatch.setattr(chat_service, "HISTORY_STEP", 4)

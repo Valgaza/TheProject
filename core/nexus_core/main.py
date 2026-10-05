@@ -33,6 +33,7 @@ from .routers import (
     graph_router,
     maintenance_router,
     projects_router,
+    voice_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -166,6 +167,7 @@ app.include_router(projects_router)
 app.include_router(chats_router)
 app.include_router(documents_router)
 app.include_router(graph_router)
+app.include_router(voice_router)
 app.include_router(maintenance_router)
 
 
