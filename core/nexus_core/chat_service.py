@@ -109,12 +109,17 @@ def render_memory(facts: Sequence[Fact]) -> str:
     against the user correcting it, which is exactly the failure that makes
     memory feel broken rather than helpful.
     """
-    lines = "\n".join(f"- {fact.render()}" for fact in facts)
+    # Newest first, so a correction reads before what it corrected.
+    ordered = sorted(facts, key=lambda f: f.learned_at.timestamp() if f.learned_at else float("-inf"),
+                     reverse=True)
+    lines = "\n".join(f"- {fact.render()}" for fact in ordered)
     return (
         "What you already know about this person and their work, recalled from "
-        "earlier conversations:\n"
+        "earlier conversations, most recently learned first:\n"
         f"{lines}\n\n"
         "Use it where it is relevant and say nothing about it where it is not. "
+        "When two of these disagree, the one listed first is current and the "
+        "other is out of date: the person changed their mind. "
         "It may be incomplete or out of date; if the user contradicts it, they "
         "are right."
     )

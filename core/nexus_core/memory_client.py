@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime
 from dataclasses import dataclass
 
 import httpx
@@ -40,6 +41,8 @@ class Fact:
     # "relationship" (from a graph edge) or "entity" (from a node's summary).
     kind: str = "relationship"
     subject: str | None = None
+    # When the graph learned it (the edge's valid_at). None for summaries.
+    learned_at: datetime | None = None
 
     def render(self) -> str:
         """One line, tagged with the tier it came from.
@@ -48,7 +51,19 @@ class Fact:
         about the person and an incidental project detail deserve different
         weight, and the model cannot tell them apart from the text alone.
         """
-        return f"[{self.scope}] {self.fact}"
+        if self.learned_at is None:
+            return f"[{self.scope}] {self.fact}"
+        # The date is what lets a model tell a correction from what it
+        # corrected: graphiti does not always retire the old edge, and two
+        # undated facts that disagree read as both being true.
+        return f"[{self.scope}, learned {self.learned_at:%Y-%m-%d %H:%M:%S}] {self.fact}"
+
+
+def _when(value: str | None) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value) if value else None
+    except ValueError:
+        return None
 
 
 class MemoryClient:
@@ -95,6 +110,7 @@ class MemoryClient:
                 scope=item["scope"],
                 kind=item.get("kind", "relationship"),
                 subject=item.get("subject"),
+                learned_at=_when(item.get("valid_at")),
             )
             for item in body.get("facts", [])
         ]

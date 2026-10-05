@@ -629,7 +629,11 @@ async def search(req: SearchRequest, request: Request):
             kind="relationship",
             group_id=edge.group_id,
             scope=scope_of(edge.group_id),
-            valid_at=edge.valid_at,
+            # When it became true; graphiti leaves valid_at empty unless the
+            # text itself dates the fact, so fall back to when it was learned.
+            # Core shows the date so a correction can be told from what it
+            # corrected when both come back.
+            valid_at=edge.valid_at or edge.created_at,
         )
         # A superseded edge is kept by graphiti rather than deleted, which is
         # right for history and wrong for context: injecting "the graph store
@@ -645,6 +649,10 @@ async def search(req: SearchRequest, request: Request):
             subject=node.name,
             group_id=node.group_id,
             scope=scope_of(node.group_id),
+            # When the thing was first learned of: the nearest a summary has
+            # to a date, and enough to order "uses Neo4j" before "uses
+            # Postgres" when a person changes their mind.
+            valid_at=getattr(node, "created_at", None),
         )
         for node in results.nodes
         if node.summary
@@ -659,6 +667,7 @@ async def search(req: SearchRequest, request: Request):
             kind="episode",
             group_id=episode.group_id,
             scope=scope_of(episode.group_id),
+            valid_at=getattr(episode, "valid_at", None) or getattr(episode, "created_at", None),
         )
         for episode in getattr(results, "episodes", [])
         # A duplicate episode is filtered here rather than in the query:
