@@ -12,7 +12,7 @@ import json
 import httpx
 import pytest
 
-from nexus_core.chat_service import build_prompt
+from nexus_core.chat_service import CONTEXT_DIVIDER, build_prompt
 from nexus_core.orchestrator import select_route
 from nexus_core.rag_client import RagResult, RagSource
 from nexus_core.web_client import WebClient, WebResult, WebSearch
@@ -81,7 +81,7 @@ class Row:
         self.role, self.content = role, content
 
 
-def test_web_results_sit_after_documents_and_before_the_conversation():
+def test_web_results_follow_documents_ahead_of_the_message():
     prompt = build_prompt(
         [Row("user", "can I work remote? also search the web for news")],
         rag_result=RagResult(prompt="Section 3: remote work is permitted."),
@@ -91,9 +91,10 @@ def test_web_results_sit_after_documents_and_before_the_conversation():
         ),
     )
 
-    assert [m["role"] for m in prompt] == ["system", "system", "system", "user"]
-    assert "remote work is permitted" in prompt[1]["content"]
-    assert "https://n.example" in prompt[2]["content"]
+    assert [m["role"] for m in prompt] == ["system", "user"]
+    context = prompt[1]["content"]
+    assert context.index("remote work is permitted") < context.index("https://n.example") < context.index(
+        CONTEXT_DIVIDER)
 
 
 def test_no_web_search_means_no_web_message():

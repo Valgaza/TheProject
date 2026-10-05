@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import chat_title
@@ -35,10 +35,15 @@ SYSTEM_PROMPT = (
     "formatting plain unless the answer genuinely needs structure."
 )
 
+# Between the context attached to a message and the message itself: the
+# context is the system's, not something the person wrote.
+CONTEXT_DIVIDER = "--- The message, from the person ---"
+
 # How many prior turns to replay. Cheap insurance against an unbounded prompt on
 # a long thread; a real budget in tokens replaces it once retrieval competes for
 # the same context window (phase 4).
 HISTORY_LIMIT = 40
+HISTORY_STEP = 10
 
 # Nothing in the schema says a title has to be short, but the sidebar does.
 TITLE_MAX_CHARS = 60
@@ -68,14 +73,23 @@ def _derive_title(content: str) -> str:
 
 
 async def _load_history(session: AsyncSession, chat_id: uuid.UUID) -> list[Message]:
-    """The most recent turns, returned oldest first."""
+    """The most recent turns, returned oldest first.
+
+    Past HISTORY_LIMIT the window moves HISTORY_STEP messages at a time
+    rather than one: every move changes where the prompt starts, which throws
+    away the runtime's cached prefix for the whole conversation. Sliding by
+    one message did that on every turn of a long conversation.
+    """
+    total = await session.scalar(select(func.count()).select_from(Message).where(Message.chat_id == chat_id))
+    over = max(0, (total or 0) - HISTORY_LIMIT)
+    skip = -(-over // HISTORY_STEP) * HISTORY_STEP  # rounded up to a whole step
     result = await session.execute(
         select(Message)
         .where(Message.chat_id == chat_id)
-        .order_by(Message.created_at.desc(), Message.id.desc())
-        .limit(HISTORY_LIMIT)
+        .order_by(Message.created_at, Message.id)
+        .offset(skip)
     )
-    return list(reversed(list(result.scalars())))
+    return list(result.scalars())
 
 
 def render_memory(facts: Sequence[Fact]) -> str:
@@ -136,26 +150,43 @@ def build_prompt(
     rag_result: RagResult | None = None,
     web: WebSearch | None = None,
 ) -> list[ProviderMessage]:
-    """The system prompt, then recalled memory, then retrieved documents, then
-    the conversation.
+    """The system prompt, the conversation so far, then the message being
+    answered with what was recalled and retrieved for it.
 
-    Both memory and RAG context go above the transcript so the turn the user
-    just typed stays the most recent thing in the window, and stays what the
-    model is answering. Memory first (durable, about the person) then RAG
-    (specific to this one question) — broad to narrow, right before the live
-    conversation.
+    The context travels with the latest message rather than above the
+    transcript: it changes every turn, and anything that changes ends the
+    prefix the runtime can reuse from the previous turn's prompt cache. This
+    way the system prompt and every earlier turn are a stable prefix, so a
+    long conversation is not prefilled again each time (measured on the voice
+    bench: first-token time had been growing with every exchange).
+
+    It is part of the user message, not a system message of its own, because
+    several models' chat templates (Qwen3.5, Gemma) refuse a system message
+    anywhere but first. Within it, memory first (durable, about the person),
+    then documents and the web (specific to this question): broad to narrow.
     """
     prompt: list[ProviderMessage] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    context: list[str] = []
     if facts:
-        prompt.append({"role": "system", "content": render_memory(facts)})
+        context.append(render_memory(facts))
     if rag_result is not None and rag_result.prompt:
-        prompt.append({"role": "system", "content": render_rag_context(rag_result)})
+        context.append(render_rag_context(rag_result))
     if web is not None:
-        prompt.append({"role": "system", "content": render_web_context(web)})
-    for message in history:
-        if message.role == "system":
-            continue
+        context.append(render_web_context(web))
+
+    turns = [m for m in history if m.role != "system"]
+    latest = turns[-1] if turns and turns[-1].role == "user" else None
+    for message in turns[:-1] if latest is not None else turns:
         prompt.append({"role": message.role, "content": message.content})
+    if latest is None:
+        # Nothing to attach it to (not a real turn); keep it next to the
+        # system prompt.
+        prompt[1:1] = [{"role": "system", "content": block} for block in context]
+    elif context:
+        prompt.append({"role": "user", "content": "\n\n".join(context)
+                       + f"\n\n{CONTEXT_DIVIDER}\n{latest.content}"})
+    else:
+        prompt.append({"role": "user", "content": latest.content})
     return prompt
 
 
