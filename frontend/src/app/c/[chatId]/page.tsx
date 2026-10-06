@@ -24,7 +24,7 @@ import {
   getChat,
   listMessages,
   notifyChatsChanged,
-  sendMessage,
+  streamMessage,
 } from "@/lib/api";
 
 type PendingMessage = Message & { pending?: true };
@@ -83,13 +83,43 @@ function Thread({ chatId }: { chatId: string }) {
         pending: true,
       };
       setMessages(prev => [...prev, optimistic]);
+      // The answer as it arrives: a placeholder assistant row that grows
+      // token by token, then gives way to the stored one.
+      const streamingId = `streaming-${Date.now()}`;
 
       try {
-        const turn = await sendMessage(chatId, trimmed, { useWeb });
-        // Swap the optimistic row for the stored one; ids and timestamps are
-        // the server's to assign.
+        const turn = await streamMessage(chatId, trimmed, {
+          useWeb,
+          onPrepared: prepared => {
+            setMessages(prev => [
+              ...prev.filter(m => m.id !== optimistic.id),
+              prepared.user_message,
+              {
+                id: streamingId,
+                chat_id: chatId,
+                role: "assistant",
+                content: "",
+                metadata: {
+                  route: prepared.route.handler,
+                  route_reason: prepared.route.reason,
+                  rag_sources: prepared.rag_sources,
+                  recalled_facts: prepared.recalled,
+                },
+                created_at: new Date().toISOString(),
+                pending: true,
+              },
+            ]);
+          },
+          onToken: text => {
+            setMessages(prev =>
+              prev.map(m => (m.id === streamingId ? { ...m, content: m.content + text } : m))
+            );
+          },
+        });
+        // Swap the streamed rows for the stored ones; ids, timestamps and
+        // timings are the server's to assign.
         setMessages(prev => [
-          ...prev.filter(m => m.id !== optimistic.id),
+          ...prev.filter(m => m.id !== optimistic.id && m.id !== streamingId && m.id !== turn.user_message.id),
           turn.user_message,
           turn.assistant_message,
         ]);
@@ -98,7 +128,7 @@ function Thread({ chatId }: { chatId: string }) {
         // has no other way to know.
         notifyChatsChanged();
       } catch (err) {
-        setMessages(prev => prev.filter(m => m.id !== optimistic.id));
+        setMessages(prev => prev.filter(m => m.id !== optimistic.id && m.id !== streamingId));
         setValue(trimmed);
         setError(
           err instanceof ApiError
@@ -179,7 +209,9 @@ function Thread({ chatId }: { chatId: string }) {
           )
         )}
 
-        {busy && <ThinkingMessage />}
+        {busy && !messages.some(m => m.pending && m.role === "assistant" && m.content) && (
+          <ThinkingMessage />
+        )}
 
         {error && (
           <div className="msg msg--ai" style={{ color: "var(--d-vision, crimson)" }}>

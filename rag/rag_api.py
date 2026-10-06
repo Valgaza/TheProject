@@ -17,10 +17,12 @@ Exposes:
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 import os
 import tempfile
 from pathlib import Path
 
+from fastapi.concurrency import run_in_threadpool
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
@@ -45,11 +47,46 @@ from rag_pipeline.pipelines.query import QueryPipeline
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(name)s | %(message)s")
 logger = logging.getLogger("rag-api")
 
+# ── Models, loaded once and warmed before the first request ──────────────
+# One embedding service, store and reranker shared by ingest and query: two
+# copies of each model would double the memory for nothing. Loaded at startup
+# rather than on first use, because the first use is a person's question --
+# the baseline measured 14 s of model loading landing on the first turn.
+_ingest_pipeline: IngestionPipeline | None = None
+_query_pipeline: QueryPipeline | None = None
+
+
+def _build_and_warm() -> None:
+    global _ingest_pipeline, _query_pipeline
+    from rag_pipeline.embeddings.fastembed_service import FastEmbedService
+    from rag_pipeline.retrieval.reranker import CrossEncoderReranker
+    from rag_pipeline.vectorstore.qdrant_store import QdrantStore
+
+    embeddings, store, reranker = FastEmbedService(), QdrantStore(), CrossEncoderReranker()
+    _ingest_pipeline = IngestionPipeline(embedding_service=embeddings, vector_store=store)
+    _query_pipeline = QueryPipeline(embedding_service=embeddings, vector_store=store, reranker=reranker)
+    embeddings.embed_query("warm up")
+    list(reranker.model.rerank("warm up", ["warm up"]))
+    logger.info("RAG models loaded and warm")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        await run_in_threadpool(_build_and_warm)
+    except Exception:
+        # Still serve: the pipelines build lazily on first use if this failed
+        # (a model download that needs the network, say).
+        logger.exception("RAG warm-up failed; models will load on first use")
+    yield
+
+
 # ── FastAPI app ───────────────────────────────────────────────────────────
 app = FastAPI(
     title="RAG API",
     description="HTTP interface to the RAG pipeline, called by core.",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # No CORS: core is the only caller, and it is a server. The browser's uploads
@@ -58,11 +95,7 @@ app.add_middleware(ServiceTokenMiddleware)
 if not os.environ.get("SERVICE_TOKEN"):
     logger.error("SERVICE_TOKEN is not set: every request except /api/health will be refused")
 
-# ── Lazy-initialized singletons (avoid cold-start on import) ─────────────
-_ingest_pipeline: IngestionPipeline | None = None
-_query_pipeline: QueryPipeline | None = None
-
-
+# Fallbacks for when the warm-up above did not run or failed.
 def _get_ingest_pipeline() -> IngestionPipeline:
     global _ingest_pipeline
     if _ingest_pipeline is None:
@@ -162,7 +195,9 @@ async def ingest_document(
             file.filename, len(content), scope_key,
         )
         pipeline = _get_ingest_pipeline()
-        stats = pipeline.ingest(dest, extra_payload={
+        # Off the event loop: parsing, chunking and embedding are synchronous
+        # and would otherwise block every query while a file ingests.
+        stats = await run_in_threadpool(pipeline.ingest, dest, extra_payload={
             "user_id": user_id,
             "project_id": project_id,
             "document_id": document_id,
@@ -209,9 +244,9 @@ async def query_knowledge_base(
     pipeline = _get_query_pipeline()
     # A list value becomes Qdrant's MatchAny -- an OR across the tiers -- so
     # this one filter is the whole access rule.
-    result = pipeline.query(
-        question=question.strip(),
-        filters={"scope_key": scopes},
+    # Off the event loop: embedding, search and reranking are synchronous.
+    result = await run_in_threadpool(
+        pipeline.query, question=question.strip(), filters={"scope_key": scopes},
     )
 
     ctx = result.assembled_context
@@ -254,12 +289,12 @@ async def status(user_id: str | None = None, project_id: str | None = None):
     for operators poking at the service directly.
     """
     pipeline = _get_query_pipeline()
-    info = pipeline.collection_info()
+    info = await run_in_threadpool(pipeline.collection_info)
     if user_id:
         scopes = read_scopes(user_id, project_id)
         info = dict(info)
         info["scope_keys"] = scopes
-        info["points_count"] = pipeline.count_in_scopes(scopes)
+        info["points_count"] = await run_in_threadpool(pipeline.count_in_scopes, scopes)
     return info
 
 
@@ -273,7 +308,7 @@ async def document_excerpt(document_id: str, chars: int = 4000):
     not the raw bytes.
     """
     pipeline = _get_query_pipeline()
-    chunks = pipeline.opening_chunks(document_id, limit=6)
+    chunks = await run_in_threadpool(pipeline.opening_chunks, document_id, limit=6)
     text = "\n\n".join(c for c in chunks if c)
     return {"document_id": document_id, "excerpt": text[:chars]}
 
@@ -288,5 +323,5 @@ async def delete_document(document_id: str):
     keep answering questions.
     """
     pipeline = _get_query_pipeline()
-    removed = pipeline.delete_document(document_id)
+    removed = await run_in_threadpool(pipeline.delete_document, document_id)
     return {"document_id": document_id, "chunks_removed": removed}

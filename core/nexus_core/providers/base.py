@@ -9,7 +9,7 @@ at a local base URL, and the rest of the service does not notice.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Literal, Sequence, TypedDict
+from typing import AsyncIterator, Literal, Sequence, TypedDict
 
 Role = Literal["system", "user", "assistant"]
 
@@ -52,6 +52,21 @@ class Provider(ABC):
         (titles, the write gate), "bulk" for background work. Servers that do
         not know the header ignore it.
         """
+
+    async def chat_stream(
+        self,
+        messages: Sequence[Message],
+        *,
+        model: str | None = None,
+        max_tokens: int | None = None,
+        priority: str = "interactive",
+    ) -> AsyncIterator[str]:
+        """The reply to ``messages``, a piece at a time as it is generated.
+
+        The default buffers: one piece, the whole reply. Providers that can
+        stream override it, and callers never need to know which they got.
+        """
+        yield await self.chat(messages, model=model, max_tokens=max_tokens, priority=priority)
 
     @abstractmethod
     async def embed(

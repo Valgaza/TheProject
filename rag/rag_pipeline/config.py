@@ -41,7 +41,8 @@ class Settings(BaseSettings):
     rerank_score_threshold: float = 0.01  # minimum cross-encoder score
 
     # --- Reranker ---
-    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-12-v2"
+    # ONNX export of cross-encoder/ms-marco-MiniLM-L-12-v2 (identical scores).
+    reranker_model: str = "Xenova/ms-marco-MiniLM-L-12-v2"
 
     # --- Context assembly ---
     max_context_tokens: int = 3000  # rough char-based limit (≈ tokens * 4)

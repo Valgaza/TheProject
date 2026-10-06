@@ -5,6 +5,12 @@ After initial retrieval returns candidates, the reranker scores each
 relevance scoring than bi-encoder similarity alone.
 
 This is the single biggest quality improvement in a RAG pipeline.
+
+Runs on ONNX Runtime through fastembed, not on PyTorch through
+sentence-transformers. Same model weights (Xenova's ONNX export of
+ms-marco-MiniLM-L-12-v2), same scores to four decimal places -- checked
+2026-10-04 -- without loading torch into the service, which cost memory the
+language model needs and about 14 s on every cold start.
 """
 
 from __future__ import annotations
@@ -17,15 +23,23 @@ from rag_pipeline.config import settings
 from rag_pipeline.models import RerankedResult, SearchResult
 
 if TYPE_CHECKING:
-    from sentence_transformers import CrossEncoder
+    from fastembed.rerank.cross_encoder import TextCrossEncoder
 
 logger = logging.getLogger(__name__)
 
 
-class CrossEncoderReranker:
-    """Reranker using sentence-transformers CrossEncoder.
+def _onnx_name(model_name: str) -> str:
+    """The ONNX export of a sentence-transformers cross-encoder name, so an
+    older RERANKER_MODEL setting keeps meaning the same model."""
+    if model_name.startswith("cross-encoder/"):
+        return "Xenova/" + model_name.split("/", 1)[1]
+    return model_name
 
-    Model: cross-encoder/ms-marco-MiniLM-L-12-v2
+
+class CrossEncoderReranker:
+    """Reranker using a cross-encoder on ONNX Runtime (fastembed).
+
+    Model: ms-marco-MiniLM-L-12-v2 (ONNX export: Xenova/ms-marco-MiniLM-L-12-v2)
         - Trained on MS MARCO passage ranking
         - NDCG@10 of 74.31 on TREC DL 2019
         - Fast enough for real-time reranking of 20-50 candidates
@@ -48,22 +62,22 @@ class CrossEncoderReranker:
             top_n: Number of top results to return after reranking.
             score_threshold: Minimum score to include a result.
         """
-        self._model_name = model_name or settings.reranker_model
+        self._model_name = _onnx_name(model_name or settings.reranker_model)
         self._top_n = top_n or settings.rerank_top_n
         self._score_threshold = (
             score_threshold if score_threshold is not None
             else settings.rerank_score_threshold
         )
-        self._model: CrossEncoder | None = None
+        self._model: TextCrossEncoder | None = None
 
     @property
-    def model(self) -> CrossEncoder:
+    def model(self) -> TextCrossEncoder:
         """Lazy-load the cross-encoder model."""
         if self._model is None:
-            from sentence_transformers import CrossEncoder
+            from fastembed.rerank.cross_encoder import TextCrossEncoder
 
             logger.info("Loading cross-encoder model: %s", self._model_name)
-            self._model = CrossEncoder(self._model_name)
+            self._model = TextCrossEncoder(self._model_name)
         return self._model
 
     def rerank(
@@ -88,13 +102,10 @@ class CrossEncoderReranker:
         n = top_n or self._top_n
         logger.info("Reranking %d candidates → top %d", len(results), n)
 
-        # Build (query, passage) pairs for the cross-encoder
-        pairs = [(query, result.content) for result in results]
-
-        # Score all pairs.
-        # sentence-transformers v5 returns raw logits (can be negative).
-        # Apply sigmoid to convert to a 0-1 probability score.
-        raw_scores = self.model.predict(pairs)
+        # Score every (query, passage) pair. The model returns raw logits
+        # (can be negative); a sigmoid turns them into 0-1 probabilities,
+        # which is the scale core's CORE_RAG_MIN_SCORE floor is set on.
+        raw_scores = list(self.model.rerank(query, [result.content for result in results]))
 
         def _sigmoid(x: float) -> float:
             return 1.0 / (1.0 + math.exp(-x))

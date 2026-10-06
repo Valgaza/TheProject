@@ -24,6 +24,7 @@ from .memory_client import MemoryClient
 from .providers import Provider, build_provider
 from .rag_client import RagClient
 from .web_client import WebClient
+from .write_queue import Activity, WriteQueue
 from .routers import (
     auth_router,
     chats_router,
@@ -87,6 +88,20 @@ async def lifespan(app: FastAPI):
         )
     app.state.oauth = oauth
 
+    # Live work (a reply being generated, later a voice session) registers
+    # with this; the memory write queue waits for it to be quiet.
+    activity = Activity()
+    app.state.activity = activity
+    write_queue = WriteQueue(
+        session_factory=app.state.session_factory,
+        provider=provider,
+        memory=app.state.memory,
+        gate_model=settings.gate_model,
+        activity=activity,
+    )
+    write_queue.start()
+    app.state.write_queue = write_queue
+
     logger.info(
         "Core service ready  provider=%s chat_model=%s memory=%s google_oauth=%s",
         provider.name,
@@ -96,6 +111,7 @@ async def lifespan(app: FastAPI):
     )
     yield
 
+    await write_queue.stop()
     await engine.dispose()
     await http.aclose()
     aclose = getattr(provider, "aclose", None)
