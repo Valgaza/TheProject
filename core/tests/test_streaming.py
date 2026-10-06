@@ -17,7 +17,7 @@ class StreamingProvider:
         self.priorities: list[str] = []
 
     async def chat(self, messages, *, model=None, max_tokens=None, priority="interactive",
-                   response_format=None):
+                   response_format=None, temperature=None):
         return "A Title"
 
     async def chat_stream(self, messages, *, model=None, max_tokens=None, priority="interactive"):

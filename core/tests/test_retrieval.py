@@ -186,3 +186,20 @@ async def test_the_client_parses_facts():
         facts = await client.search("q", user_id=__import__("uuid").uuid4())
 
     assert facts == [Fact(id="a", fact="uses Neo4j", scope="project")]
+
+
+def test_a_correction_reads_before_what_it_corrected():
+    """graphiti does not always retire a superseded edge, so both versions can
+    come back; dated and newest first, the model can tell which is current."""
+    from datetime import datetime, timezone
+
+    old = Fact(id="1", fact="The graph store is Neo4j.", scope="project",
+               learned_at=datetime(2026, 10, 4, 9, 0, tzinfo=timezone.utc))
+    new = Fact(id="2", fact="The graph store is Postgres.", scope="project",
+               learned_at=datetime(2026, 10, 4, 9, 5, tzinfo=timezone.utc))
+    summary = Fact(id="3", fact="Aarya builds Nexus.", scope="user", kind="entity")
+
+    text = render_memory([old, summary, new])
+
+    assert text.index("Postgres") < text.index("Neo4j") < text.index("Aarya builds")
+    assert "learned 2026-10-04 09:05:00" in text and "the one listed first is current" in text

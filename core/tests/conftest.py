@@ -52,6 +52,7 @@ class FakeProvider(Provider):
         max_tokens: int | None = None,
         priority: str = "interactive",
         response_format: dict | None = None,
+        temperature: float | None = None,
     ) -> str:
         if messages and messages[0].get("content") == TITLE_SYSTEM_PROMPT:
             self.title_calls.append(list(messages))

@@ -23,6 +23,7 @@ TOKEN = "test-service-token"
 class FakeSettings:
     enable_thinking = False
     default_max_tokens = 256
+    max_tokens_cap = 1024
 
 
 class FakeBackend:
@@ -203,3 +204,11 @@ async def test_an_unloaded_model_answers_503_before_any_streaming(client, backen
     assert response.status_code == 503
     backend.slots["embed"].obj = None
     assert (await client.post("/v1/embeddings", json={"input": "x"})).status_code == 503
+
+
+async def test_no_caller_can_ask_for_more_than_the_cap(client, backend):
+    """graphiti asks for 16384 tokens per extraction; a model looping inside
+    its JSON would hold the GPU for minutes."""
+    await client.post("/v1/chat/completions", json={
+        "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16384})
+    assert backend.calls[-1]["params"].max_tokens == 1024

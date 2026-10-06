@@ -140,7 +140,7 @@ else:
 
 | Setting | Model |
 |---|---|
-| `CORE_CHAT_MODEL` | `mlx-community/Qwen3-8B-4bit` (provisional, see below) |
+| `CORE_CHAT_MODEL` | `mlx-community/Qwen3-8B-4bit` (chosen by benchmark: `docs/benchmarks/model-decision.md`) |
 | `CORE_GATE_MODEL` | same |
 | `MEMORY_EXTRACTION_MODEL` | same |
 | `MEMORY_EMBEDDING_MODEL` | `mlx-community/embeddinggemma-300m-4bit` (768-d) |
@@ -252,6 +252,45 @@ docker compose exec websearch tail -n 20 /data/audit.jsonl
 Core, memory and RAG still run on the host, so Docker does not block their
 egress; they simply have no code that reaches out. See flag 1 in
 `docs/IMPORTANT_BUSINESS_LOGIC_FLAGS.md`.
+
+## The decision model (Laya)
+
+A 421M-parameter encoder in the runtime answers classification questions in
+about 15 ms, where an LLM call takes seconds. Each place it is used has a
+mode, `off`, `shadow` or `live`:
+
+| Point | Setting | What it decides |
+|---|---|---|
+| Memory gate | `CORE_LAYA_GATE` | Worth remembering? If clearly not, the gate's LLM call is skipped |
+| Web intent | `CORE_LAYA_WEB_INTENT` | Is the message asking to search the web? Can only turn the web on |
+| Outgoing query | `WEBSEARCH_LAYA_QUERY` | Does the query still identify someone? Blocks it |
+| End of turn | `CORE_LAYA_END_OF_TURN` | Is a paused speaker finished, or about to go on? |
+| Barge-in | `CORE_LAYA_BARGE_IN` | Interruption, or "mm-hmm"? |
+
+In `shadow` its answer is written to `decision_log` beside what the existing
+logic decided, and the existing logic acts. A point goes `live` when
+`scripts/laya/evaluate.py` shows it meets the bar on the hand-labelled sets in
+`scripts/laya/labels/` (the decision record: `docs/benchmarks/laya-decision.md`). To see how
+shadow decisions compare on real traffic:
+
+```bash
+docker compose exec postgres psql -U postgres -c \
+  "select point, mode, laya, baseline, laya_ms from decision_log order by created_at desc limit 20"
+```
+
+The fine-tuned checkpoint is built locally (synthetic data from the resident
+LLM; the labelled sets are held out):
+
+```bash
+uv run python scripts/laya/synth.py            # examples, with the stack up
+uv run python scripts/laya/export.py           # -> data/laya/train.jsonl, val.jsonl
+data/laya/.venv/bin/python scripts/laya/finetune.py   # torch on MPS, ~1 h
+# then in .env: RUNTIME_DECIDE_MODEL=data/laya/finetuned, RUNTIME_DECIDE_SUBFOLDER=
+uv run python scripts/laya/evaluate.py --out docs/benchmarks/laya-finetuned
+```
+
+`data/laya/.venv` is separate on purpose: fine-tuning needs torch, and nothing
+the services run does.
 
 ## Voice
 
@@ -365,9 +404,23 @@ RUN_MLX=1 uv run pytest runtime/tests
                                # the runtime on real small MLX models
 ```
 
-The scenario suite is the one that answers whether memory actually works:
+The scenario suite is the one that answers whether the product works. Memory:
 cross-chat recall, cross-project isolation, personal facts following you between
-projects, and the write gate keeping chit-chat out of the graph.
+projects, the write gate keeping chit-chat out of the graph. And the eval
+(`tests/test_eval_scenarios.py`): a document question cited to the right file, a
+web search whose audit log holds no identifying detail, and a spoken question
+streamed into the voice socket and answered aloud. Each signs up a throwaway
+user and removes it afterwards.
+
+Benchmarks, with the stack up. Reports go to `docs/benchmarks/`, which stays on
+the machine that ran them: `docs/` is not in git.
+
+```bash
+uv run python scripts/bench.py --out docs/benchmarks/<date>-text           # typed turns
+uv run python scripts/voice_bench.py --out docs/benchmarks/<date>-voice    # spoken turns
+uv run python scripts/extraction_check.py --out docs/benchmarks/<date>-extraction
+scripts/compare_models.sh <model id> ...    # all of the above per candidate chat model
+```
 
 ## Stopping
 

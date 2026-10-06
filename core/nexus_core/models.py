@@ -258,6 +258,8 @@ class GateDecisionRecord(Base):
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
     persist: Mapped[bool | None] = mapped_column(Boolean)
     facts: Mapped[list | None] = mapped_column(JSONB)
+    # [{"id", "fact"}] retired from memory because this turn changed them.
+    retired: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     reason: Mapped[str | None] = mapped_column(Text)
     decided_by: Mapped[str | None] = mapped_column(String)
     gate_ms: Mapped[int | None] = mapped_column(Integer)

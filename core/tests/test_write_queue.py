@@ -23,7 +23,7 @@ class ScriptedProvider:
         self.calls = 0
 
     async def chat(self, messages, *, model=None, max_tokens=None, priority="interactive",
-                   response_format=None):
+                   response_format=None, temperature=None):
         self.calls += 1
         return self.reply
 

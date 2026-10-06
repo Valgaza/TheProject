@@ -588,3 +588,100 @@ async def load_suppressed(driver) -> int:
     _suppressed.clear()
     _suppressed.update(r["uuid"] for r in records)
     return len(_suppressed)
+
+
+# ── Retired facts ──────────────────────────────────────────────────────────
+#
+# A fact the person has since changed ("the deadline moved to the 21st") is
+# retired: kept in Neo4j as history, never returned again. graphiti's own
+# invalidation only covers relationship edges, and only when its extraction
+# happens to notice the contradiction; a fact that lives in an entity's
+# summary or an episode ("Demo User's project deadline is the 14th") has no
+# such mechanism, so both versions kept coming back and the answer depended
+# on the model choosing the newer one.
+#
+# Core's write gate decides what a correction replaces (it sees the facts
+# memory holds, by id) and asks for those ids to be retired once the new fact
+# is written. Same in-memory-set arrangement as suppression, for the same
+# reason: it is consulted on every search.
+
+_retired: set[str] = set()
+
+# Every live item in some groups, with the text a search would return for it.
+_LIVE_NODES = """
+MATCH (n) WHERE n.group_id IN $groups AND (n:Entity OR n:Episodic) AND n.nexus_retired_at IS NULL
+RETURN n.uuid AS uuid, 'Entity' IN labels(n) AS entity, coalesce(n.summary, n.content, '') AS text
+"""
+
+_LIVE_EDGES = """
+MATCH ()-[e:RELATES_TO]->() WHERE e.group_id IN $groups AND e.nexus_retired_at IS NULL
+RETURN e.uuid AS uuid, coalesce(e.fact, '') AS text
+"""
+
+_MARK_NODES = """
+MATCH (n) WHERE n.uuid IN $ids SET n.nexus_retired_at = datetime()
+"""
+
+_MARK_EDGES = """
+MATCH ()-[e:RELATES_TO]->() WHERE e.uuid IN $ids
+SET e.nexus_retired_at = datetime(),
+    e.invalid_at = coalesce(e.invalid_at, datetime()),
+    e.expired_at = coalesce(e.expired_at, datetime())
+"""
+
+_LOAD_RETIRED = """
+MATCH (n) WHERE n.nexus_retired_at IS NOT NULL RETURN n.uuid AS uuid
+UNION
+MATCH ()-[e:RELATES_TO]->() WHERE e.nexus_retired_at IS NOT NULL RETURN e.uuid AS uuid
+"""
+
+_SENTENCE_END = re.compile(r"[.!?](?:\s|$)")
+
+
+def _norm(text: str) -> str:
+    return " ".join(text.lower().split()).rstrip(".")
+
+
+def _one_statement(summary: str) -> bool:
+    """An entity summary that says one thing. A summary that bundles several
+    ("Demo User is 21. Demo User's father is Subhash.") is never retired:
+    hiding the node would hide everything else it says."""
+    return "\n" not in summary.strip() and len(_SENTENCE_END.findall(summary.strip())) <= 1
+
+
+def is_retired(uuid_: str) -> bool:
+    return uuid_ in _retired
+
+
+async def retire(driver, texts: list[str], groups: list[str]) -> list[str]:
+    """Retire every live item in ``groups`` that still says one of ``texts``.
+
+    By text, not by id, for two reasons found on the live graph. The same
+    sentence is often stored twice (an entity's summary and the episode it
+    came from) and search shows only one of them, so retiring that one let
+    the other back in. And graphiti may fold the new value into the old
+    node, rewriting its summary: an id would then retire the new fact too,
+    whereas its text no longer matches and it is left alone.
+    """
+    wanted = {_norm(t) for t in texts if t.strip()}
+    if not wanted:
+        return []
+    nodes, _, _ = await driver.execute_query(_LIVE_NODES, groups=groups)
+    edges, _, _ = await driver.execute_query(_LIVE_EDGES, groups=groups)
+    node_ids = [r["uuid"] for r in nodes if _norm(r["text"]) in wanted
+                and (not r["entity"] or _one_statement(r["text"]))]
+    edge_ids = [r["uuid"] for r in edges if _norm(r["text"]) in wanted]
+    if node_ids:
+        await driver.execute_query(_MARK_NODES, ids=node_ids)
+    if edge_ids:
+        await driver.execute_query(_MARK_EDGES, ids=edge_ids)
+    _retired.update(node_ids + edge_ids)
+    return node_ids + edge_ids
+
+
+async def load_retired(driver) -> int:
+    """Read the retired set back after a restart."""
+    records, _, _ = await driver.execute_query(_LOAD_RETIRED)
+    _retired.clear()
+    _retired.update(r["uuid"] for r in records)
+    return len(_retired)

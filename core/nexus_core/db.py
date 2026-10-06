@@ -61,7 +61,14 @@ def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSessi
 
 
 async def session_dependency(request: Request) -> AsyncIterator[AsyncSession]:
-    """FastAPI dependency yielding a session that commits on success."""
+    """FastAPI dependency yielding a session that commits on success.
+
+    Always injected with ``scope="function"``: FastAPI's default for a yield
+    dependency is "request", which runs the commit *after* the response is
+    sent. A client that used what it had just created (send a message to the
+    chat it just made) could then arrive before the row was committed and get
+    a 404 -- intermittently, which is how the scenario suite found it.
+    """
     factory: async_sessionmaker[AsyncSession] = request.app.state.session_factory
     async with factory() as session:
         try:
