@@ -234,15 +234,14 @@ async def _query_documents(
 
 
 async def _search_web(
-    web: WebClient | None, content: str, provider: Provider, model: str | None,
-    known_names: list[str], chat: Chat,
+    web: WebClient | None, content: str, known_names: list[str], user_id, chat: Chat,
 ) -> WebSearch:
-    # Only when asked for, and redacted first: what goes out is the model's
-    # rewrite, never the raw message (web_client.py).
+    # Only when asked for, and only through the websearch service, which
+    # redacts: what goes out is its rewrite, never the raw message.
     if web is None:
         return WebSearch(query_sent=None, error="web search is not configured")
     try:
-        return await web.search(content, provider=provider, model=model, known_names=known_names)
+        return await web.search(content, known_names=known_names, user_id=str(user_id))
     except Exception:
         # WebClient.search() already turns its own failures into an error;
         # this catches anything else, same as memory and RAG.
@@ -342,7 +341,7 @@ async def prepare_turn(
         if memory is not None else nothing(),
         _timed(timings, "rag_ms", _query_documents(rag, content, user_id, chat, rag_min_score, timings))
         if rag is not None else nothing(),
-        _timed(timings, "web_ms", _search_web(web, content, provider, title_model, known_names, chat))
+        _timed(timings, "web_ms", _search_web(web, content, known_names, user_id, chat))
         if route.handler == "web" else nothing(),
     )
     facts = facts or []

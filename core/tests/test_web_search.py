@@ -7,124 +7,51 @@ catch a leak; these use the doctor's query the flag was written about.
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
 from nexus_core.chat_service import build_prompt
 from nexus_core.orchestrator import select_route
 from nexus_core.rag_client import RagResult, RagSource
-from nexus_core.web_client import WebClient, WebResult, WebSearch, strip_identifiers
+from nexus_core.web_client import WebClient, WebResult, WebSearch
 
 
-class RewritingProvider:
-    """Stands in for the rewrite model, returning whatever it is told to."""
-
-    def __init__(self, reply: str | Exception) -> None:
-        self.reply = reply
-
-    async def chat(self, messages, *, model=None, max_tokens=None) -> str:
-        if isinstance(self.reply, Exception):
-            raise self.reply
-        return self.reply
+# ── The client (redaction itself is tested in websearch/tests) ───────────────
 
 
-def searxng(seen: list[str]) -> httpx.MockTransport:
+def websearch(seen: list[dict], status: int = 200) -> httpx.MockTransport:
     def respond(request: httpx.Request) -> httpx.Response:
-        seen.append(request.url.params["q"])
-        return httpx.Response(200, json={"results": [
-            {"title": "Lymphoma treatment", "url": "https://example.org/a", "content": "..."},
-        ]})
+        seen.append(json.loads(request.content))
+        return httpx.Response(status, json={
+            "query_sent": "stage 3 lymphoma treatment options",
+            "results": [{"title": "Lymphoma", "url": "https://example.org/a", "snippet": "..."}],
+            "stripped": ["00482913"], "blocked": False, "error": None,
+        })
     return httpx.MockTransport(respond)
 
 
-# ── The deterministic layer ──────────────────────────────────────────────────
+async def test_core_sends_the_message_and_the_names_to_redact():
+    seen: list[dict] = []
+    web = WebClient(httpx.AsyncClient(transport=websearch(seen)), "http://websearch.test")
 
+    result = await web.search("Priya's lymphoma, MRN 00482913", known_names=["Aarya Patil"], user_id="u1")
 
-def test_the_person_s_own_name_is_stripped_whole_or_in_parts():
-    query, removed = strip_identifiers("Aarya's thesis on raft", ["Aarya Patil"])
-    assert query == "thesis on raft"
-    assert removed == ["Aarya's"]
-
-
-def test_emails_and_long_numbers_are_stripped():
-    query, _ = strip_identifiers(
-        "case 2024-CV-118273 filed by x@firm.com lymphoma MRN00482913", []
-    )
-    assert "118273" not in query and "@" not in query and "00482913" not in query
-    assert "lymphoma" in query
-
-
-def test_ordinary_numbers_in_topics_survive():
-    query, removed = strip_identifiers("COVID-19 guidance 2024 for GPT-4", [])
-    assert query == "COVID-19 guidance 2024 for GPT-4"
-    assert removed == []
-
-
-# ── The client ───────────────────────────────────────────────────────────────
-
-
-async def test_what_leaves_is_the_rewrite_not_the_message():
-    seen: list[str] = []
-    web = WebClient("http://searxng.test", transport=searxng(seen))
-
-    result = await web.search(
-        "search the internet for Priya Nair's stage 3 lymphoma options",
-        provider=RewritingProvider("stage 3 lymphoma treatment options"),
-        model=None,
-        known_names=[],
-    )
-
-    assert seen == ["stage 3 lymphoma treatment options"]
+    assert seen == [{"message": "Priya's lymphoma, MRN 00482913", "known_names": ["Aarya Patil"],
+                     "user_id": "u1"}]
     assert result.query_sent == "stage 3 lymphoma treatment options"
     assert result.results[0].url == "https://example.org/a"
+    assert result.stripped == ("00482913",)
 
 
-async def test_a_rewrite_that_leaks_the_person_s_name_is_still_caught():
-    seen: list[str] = []
-    web = WebClient("http://searxng.test", transport=searxng(seen))
+async def test_an_unreachable_service_is_an_error_not_an_exception():
+    def refuse(request):
+        raise httpx.ConnectError("down", request=request)
 
-    await web.search(
-        "what did I say about raft",
-        provider=RewritingProvider("Aarya Patil raft consensus"),
-        model=None,
-        known_names=["Aarya Patil", "aarya@example.com"],
-    )
-
-    assert seen == ["raft consensus"]
-
-
-@pytest.mark.parametrize("reply", [RuntimeError("model down"), "", "   "])
-async def test_no_safe_query_means_nothing_is_sent(reply):
-    """The raw message is never the fallback."""
-    seen: list[str] = []
-    web = WebClient("http://searxng.test", transport=searxng(seen))
-
-    result = await web.search(
-        "Priya Nair MRN 00482913", provider=RewritingProvider(reply), model=None, known_names=[]
-    )
-
-    assert seen == []
-    assert result.query_sent is None and result.error
-
-
-async def test_a_dead_searxng_is_an_error_not_an_exception():
-    """Degrading an answer is acceptable; failing one is not -- the same rule
-    as memory and RAG. Ported from feature/orchestrator's test_web_context.py."""
-    def refuse(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("searxng is down", request=request)
-
-    web = WebClient("http://searxng.test", transport=httpx.MockTransport(refuse))
-
-    result = await web.search(
-        "latest raft news",
-        provider=RewritingProvider("raft consensus news"),
-        model=None,
-        known_names=[],
-    )
-
-    assert result.results == ()
-    assert result.query_sent == "raft consensus news"
-    assert "ConnectError" in (result.error or "")
+    web = WebClient(httpx.AsyncClient(transport=httpx.MockTransport(refuse)), "http://websearch.test")
+    result = await web.search("raft news", known_names=[])
+    assert result.query_sent is None and "unreachable" in result.error
 
 
 # ── Routing ──────────────────────────────────────────────────────────────────
@@ -180,7 +107,7 @@ class FakeWeb:
     def __init__(self) -> None:
         self.messages: list[str] = []
 
-    async def search(self, message, *, provider, model, known_names) -> WebSearch:
+    async def search(self, message, *, known_names, user_id=None) -> WebSearch:
         self.messages.append(message)
         return WebSearch(
             query_sent="raft consensus",
@@ -247,7 +174,7 @@ async def test_documents_and_the_web_can_inform_one_turn(db_client, provider):
 
 async def test_a_web_client_that_raises_still_answers(db_client, provider):
     class ExplodingWeb:
-        async def search(self, message, *, provider, model, known_names) -> WebSearch:
+        async def search(self, message, *, known_names, user_id=None) -> WebSearch:
             raise RuntimeError("searxng is down")
 
     db_client._transport.app.state.web = ExplodingWeb()

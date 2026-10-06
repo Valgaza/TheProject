@@ -77,7 +77,7 @@ class FakeSettings:
     # Hosts that cannot resolve, so the health check exercises its failure path.
     memory_service_url = "http://memory.invalid"
     rag_service_url = "http://rag.invalid"
-    searxng_url = "http://searxng.invalid"
+    websearch_url = "http://websearch.invalid"
     # The relevance floor documents must clear to reach the model. Matches
     # the production default so a test that stubs a score reads the same way
     # here as it behaves in the app.

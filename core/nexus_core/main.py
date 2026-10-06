@@ -70,7 +70,7 @@ async def lifespan(app: FastAPI):
     # the prompt. Optional throughout: a failed query degrades the turn.
     app.state.rag = RagClient(http, settings.rag_service_url)
     app.state.http = http
-    app.state.web = WebClient(settings.searxng_url)
+    app.state.web = WebClient(http, settings.websearch_url)
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)
 
@@ -203,14 +203,13 @@ async def health(request: Request) -> HealthResponse:
         rag_status = "unreachable"
 
     try:
-        # A plain client, not app.state.http: that one carries the service
-        # token, which is for memory and RAG only. SearXNG has no /health; a
-        # healthy instance answers GET / with its search page.
-        async with httpx.AsyncClient(timeout=3.0) as plain:
-            response = await plain.get(settings.searxng_url)
-        web_status = "ok" if response.status_code == 200 else "degraded"
+        # The websearch service reports SearXNG's state too: "degraded" when
+        # the service is up but the search engine behind it is not.
+        response = await http.get(f"{settings.websearch_url}/health", timeout=3.0)
+        searxng = response.json().get("searxng") if response.status_code == 200 else None
+        web_status = "ok" if searxng == "ok" else "degraded"
     except Exception as exc:
-        logger.warning("SearXNG unreachable: %s", exc)
+        logger.warning("Web search service unreachable: %s", exc)
         web_status = "unreachable"
 
     try:
