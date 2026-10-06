@@ -82,6 +82,7 @@ class FakeEdge:
         self.invalid_at = invalid_at
         self.expired_at = expired_at
         self.valid_at = None
+        self.created_at = datetime(2026, 10, 4, tzinfo=timezone.utc)
 
 
 class FakeNode:
@@ -361,3 +362,14 @@ async def test_a_distilled_fact_outranks_the_episode_it_came_from(client, monkey
     facts = response.json()["facts"]
     assert len(facts) == 1
     assert facts[0]["kind"] == "relationship"
+
+
+async def test_a_fact_without_a_date_of_its_own_is_dated_when_it_was_learned(client, monkeypatch):
+    """graphiti leaves valid_at empty unless the text dates the fact; core needs
+    a date to tell a correction from what it corrected."""
+    _install(monkeypatch, [FakeEdge("the graph store is Postgres", project_group(ALICE, THESIS))])
+    response = await client.post(
+        "/search",
+        json={"query": "storage", "user_id": str(ALICE), "project_id": str(THESIS)},
+    )
+    assert response.json()["facts"][0]["valid_at"].startswith("2026-10-04")

@@ -79,7 +79,32 @@ WEB_INTENT_QUESTIONS: dict[str, dict] = {
 
 # For each two-way choice, the option that means "yes" -- so callers read one
 # probability whichever form a question takes.
-YES_OPTION = {"worth_remembering": "lasting_fact", "asks_for_web": "web"}
+YES_OPTION = {"worth_remembering": "lasting_fact", "asks_for_web": "web",
+              "utterance": "complete", "overlap": "interrupt"}
+
+# Voice turn-taking (voice/session.py). Shadow until there is labelled
+# conversation to judge them on: the rules (silence, a backchannel list) act.
+END_OF_TURN_QUESTIONS: dict[str, dict] = {
+    "utterance": {
+        "type": "choice",
+        "instructions": "The person paused while speaking. Is `transcript` finished?",
+        "criteria": {
+            "complete": "a complete question, request or statement the assistant can answer",
+            "unfinished": "cut off mid-sentence or mid-thought; they are about to say more",
+        },
+    },
+}
+
+BARGE_IN_QUESTIONS: dict[str, dict] = {
+    "overlap": {
+        "type": "choice",
+        "instructions": "The person spoke while the assistant was talking. What is `said`?",
+        "criteria": {
+            "interrupt": "they want the assistant to stop, or to ask or say something new",
+            "backchannel": "a short acknowledgement such as mm-hmm, yeah, right or okay",
+        },
+    },
+}
 
 WEB_QUERY_QUESTIONS: dict[str, dict] = {
     "identifies_someone": {

@@ -25,7 +25,7 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 @router.get("", response_model=list[ProjectOut])
 async def list_projects(
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> list[Project]:
     result = await session.execute(
         select(Project)
@@ -39,7 +39,7 @@ async def list_projects(
 async def create_project(
     body: ProjectCreate,
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> Project:
     project = Project(
         user_id=_current_user_id(request),
@@ -63,7 +63,7 @@ async def _get_project(session: AsyncSession, project_id: uuid.UUID, user_id: uu
 async def get_project(
     project_id: uuid.UUID,
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> Project:
     return await _get_project(session, project_id, _current_user_id(request))
 
@@ -73,7 +73,7 @@ async def update_project(
     project_id: uuid.UUID,
     body: ProjectUpdate,
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> Project:
     """Rename or pin/unpin -- whichever fields are set. No move, the way
     chats have one: a project isn't inside anything to move between."""
@@ -96,7 +96,7 @@ async def update_project(
 async def delete_project(
     project_id: uuid.UUID,
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> None:
     """Removes the project and every chat inside it -- a much bigger blast
     radius than deleting a single chat, so the frontend needs a confirm
@@ -113,7 +113,7 @@ async def delete_project(
 async def list_chats(
     project_id: uuid.UUID,
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> list[Chat]:
     await _get_project(session, project_id, _current_user_id(request))
     result = await session.execute(
@@ -127,7 +127,7 @@ async def create_chat(
     project_id: uuid.UUID,
     body: ChatCreate,
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> Chat:
     project = await _get_project(session, project_id, _current_user_id(request))
     chat = Chat(user_id=project.user_id, project_id=project_id, title=body.title)

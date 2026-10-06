@@ -3,11 +3,11 @@
 /**
  * The one input box.
  *
- * The three tool buttons are the adapter affordances — attach a document, speak,
- * pull in knowledge. They are inert this milestone; the pipelines behind them
- * belong to phases and people other than this one. They stay visible because
- * the whole product direction is that you type or attach here and the system
- * works out what to do, rather than making you pick a pipeline first.
+ * The tool buttons are the adapter affordances — attach a document, search the
+ * web, talk, pull in knowledge. Knowledge is still inert. They stay visible
+ * because the whole product direction is that you type, attach or speak here
+ * and the system works out what to do, rather than making you pick a pipeline
+ * first.
  */
 
 import React, { useEffect, useRef, useState } from "react";
@@ -40,6 +40,8 @@ type ComposerProps = {
    * a page handles it, and the page resets it after each send. */
   web?: boolean;
   onWebChange?: (on: boolean) => void;
+  /** Starts a hands-free voice conversation. The mic is inert without it. */
+  onVoice?: () => void;
 };
 
 export function Composer({
@@ -55,6 +57,7 @@ export function Composer({
   projectId = null,
   web = false,
   onWebChange,
+  onVoice,
 }: ComposerProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -190,7 +193,13 @@ export function Composer({
                 <Icon name="globe" size={16} />
               </button>
             )}
-            <button className="ctool" type="button" title="Speak" disabled>
+            <button
+              className="ctool"
+              type="button"
+              title={onVoice ? "Talk: hands-free, speak over the answer to interrupt" : "Speak"}
+              disabled={!onVoice || busy}
+              onClick={onVoice}
+            >
               <Icon name="mic" size={16} />
             </button>
             <button className="ctool" type="button" title="Knowledge" disabled>

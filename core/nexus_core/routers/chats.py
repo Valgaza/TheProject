@@ -76,7 +76,7 @@ def _settings(request: Request):
 @router.get("", response_model=list[ChatOut])
 async def list_chats(
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
     loose: bool = False,
 ) -> list[Chat]:
     """Every chat this user has, newest activity first.
@@ -96,7 +96,7 @@ async def list_chats(
 async def create_chat(
     body: ChatCreate,
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> Chat:
     """Start a conversation, with or without a project.
 
@@ -118,7 +118,7 @@ async def create_chat(
 async def get_chat(
     chat_id: uuid.UUID,
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> Chat:
     return await _get_chat(session, chat_id, _current_user_id(request))
 
@@ -128,7 +128,7 @@ async def update_chat(
     chat_id: uuid.UUID,
     body: ChatUpdate,
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> Chat:
     """Rename, pin/unpin, or move to a different project -- whichever
     fields are set. Covers the sidebar's three-dot menu."""
@@ -163,7 +163,7 @@ async def update_chat(
 async def delete_chat(
     chat_id: uuid.UUID,
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> None:
     """Removes the chat and its transcript. Anything the write gate already
     extracted into the knowledge graph survives -- Postgres holds what was
@@ -177,7 +177,7 @@ async def delete_chat(
 async def list_messages(
     chat_id: uuid.UUID,
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> list[Message]:
     await _get_chat(session, chat_id, _current_user_id(request))
     result = await session.execute(
@@ -191,10 +191,12 @@ async def list_messages(
 logger = logging.getLogger(__name__)
 
 
-def _turn_kwargs(request: Request, chat: Chat, body: MessageCreate, user_id: uuid.UUID) -> dict:
+def _turn_kwargs(request: Request, chat: Chat, content: str, use_web: bool, user_id: uuid.UUID) -> dict:
+    """Everything a turn needs from the app. ``request`` may also be a
+    WebSocket (routers/voice.py): only ``.app`` is read."""
     return dict(
         chat=chat,
-        content=body.content,
+        content=content,
         provider=_provider(request),
         user_id=user_id,
         memory=_memory(request),
@@ -202,7 +204,7 @@ def _turn_kwargs(request: Request, chat: Chat, body: MessageCreate, user_id: uui
         title_model=request.app.state.settings.gate_model,
         rag_min_score=_settings(request).rag_min_score,
         web=getattr(request.app.state, "web", None),
-        use_web=body.use_web,
+        use_web=use_web,
         decisions=getattr(request.app.state, "decisions", None),
         laya_web_intent=getattr(_settings(request), "laya_web_intent", "off"),
         laya_web_intent_above=getattr(_settings(request), "laya_web_intent_above", 0.9),
@@ -281,7 +283,7 @@ async def create_message(
     chat_id: uuid.UUID,
     body: MessageCreate,
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> TurnOut:
     """Send a message and get the whole answer in one response.
 
@@ -292,7 +294,7 @@ async def create_message(
     user_id = _current_user_id(request)
     chat = await _get_chat(session, chat_id, user_id)
     async with _live(request):
-        turn = await generate_turn(session, **_turn_kwargs(request, chat, body, user_id))
+        turn = await generate_turn(session, **_turn_kwargs(request, chat, body.content, body.use_web, user_id))
     _queue_for_memory(request, session, chat, turn, user_id)
     await session.commit()
     _wake_queue(request)
@@ -336,7 +338,7 @@ async def stream_message(
             try:
                 chat = await _get_chat(session, chat_id, user_id)
                 turn = None
-                async for event in stream_turn(session, **_turn_kwargs(request, chat, body, user_id)):
+                async for event in stream_turn(session, **_turn_kwargs(request, chat, body.content, body.use_web, user_id)):
                     if event.kind == "prepared":
                         p = event.prepared
                         yield _sse("prepared", {
@@ -375,7 +377,7 @@ async def stream_message(
 async def list_memory_episodes(
     chat_id: uuid.UUID,
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> list[MemoryEpisode]:
     """What this chat put into memory, and what happened to it.
 

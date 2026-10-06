@@ -95,7 +95,8 @@ def _params(body: ChatRequest, settings) -> GenParams:
     effort = (body.reasoning_effort or "").lower()
     thinking = settings.enable_thinking if not effort else effort in ("medium", "high")
     return GenParams(
-        max_tokens=body.max_completion_tokens or body.max_tokens or settings.default_max_tokens,
+        max_tokens=min(body.max_completion_tokens or body.max_tokens or settings.default_max_tokens,
+                       settings.max_tokens_cap),
         # 0.7 rather than OpenAI's 1.0: these are small local models, and at
         # 1.0 they wander. Callers that care pass their own.
         temperature=0.7 if body.temperature is None else body.temperature,
@@ -232,6 +233,41 @@ async def decide(body: DecideRequest, request: Request):
         # Laya validates question shapes and says precisely what is wrong.
         raise HTTPException(400, str(exc)) from exc
     return {"model": slot.repo, **result}
+
+
+class SpeechRequest(BaseModel):
+    input: str
+    voice: str | None = None
+    speed: float = 1.0
+
+
+@router.post("/v1/audio/transcriptions")
+async def transcriptions(request: Request):
+    """Speech to text. The body is raw 16 kHz mono PCM16 (little-endian),
+    exactly what the browser's microphone worklet produces."""
+    backend = _backend(request)
+    pcm = await request.body()
+    if len(pcm) % 2:
+        raise HTTPException(400, "PCM16 audio must be an even number of bytes")
+    started = time.perf_counter()
+    result = await backend.transcribe(pcm)
+    return {**result, "ms": round((time.perf_counter() - started) * 1000)}
+
+
+@router.post("/v1/audio/speech")
+async def speech(body: SpeechRequest, request: Request):
+    """Text to speech: 24 kHz mono PCM16 (little-endian) in the body."""
+    backend = _backend(request)
+    if not body.input.strip():
+        raise HTTPException(400, "input is empty")
+    started = time.perf_counter()
+    pcm = await backend.speak(body.input, body.voice, body.speed)
+    from fastapi.responses import Response
+
+    return Response(content=pcm, media_type="audio/L16; rate=24000; channels=1", headers={
+        "X-Audio-Seconds": f"{len(pcm) / 2 / 24000:.3f}",
+        "X-Synthesis-Ms": str(round((time.perf_counter() - started) * 1000)),
+    })
 
 
 @router.get("/v1/models")

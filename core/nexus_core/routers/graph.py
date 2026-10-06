@@ -58,7 +58,7 @@ async def get_graph(
     request: Request,
     view: View = "all",
     project_id: uuid.UUID | None = None,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> dict:
     user_id = current_user_id(request)
     await _check_view(session, user_id, project_id, view)
@@ -76,7 +76,7 @@ async def delete_graph(
     request: Request,
     view: View = "all",
     project_id: uuid.UUID | None = None,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> None:
     user_id = current_user_id(request)
     await _check_view(session, user_id, project_id, view)

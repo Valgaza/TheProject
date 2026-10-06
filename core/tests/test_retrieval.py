@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from nexus_core.chat_service import SYSTEM_PROMPT, build_prompt, render_memory
+from nexus_core.chat_service import CONTEXT_DIVIDER, SYSTEM_PROMPT, build_prompt, render_memory
 from nexus_core.memory_client import Fact, MemoryClient
 
 
@@ -30,9 +30,10 @@ async def _make_chat(client) -> dict:
 # ── Prompt shape ──────────────────────────────────────────────────────────────
 
 
-def test_memory_sits_between_the_system_prompt_and_the_conversation():
-    """Above the transcript, so the turn the user just typed stays the most
-    recent thing in the window."""
+def test_memory_travels_with_the_message_it_was_recalled_for():
+    """Attached to the latest message, ahead of its text: the message the
+    person typed is still the last thing in the window, and the turns before
+    it stay a stable prefix (test_prompt_prefix.py)."""
 
     class Row:
         def __init__(self, role, content):
@@ -43,10 +44,11 @@ def test_memory_sits_between_the_system_prompt_and_the_conversation():
         [Fact(id="1", fact="the graph store is Neo4j", scope="project")],
     )
 
-    assert [m["role"] for m in prompt] == ["system", "system", "user"]
+    assert [m["role"] for m in prompt] == ["system", "user"]
     assert prompt[0]["content"] == SYSTEM_PROMPT
-    assert "Neo4j" in prompt[1]["content"]
-    assert prompt[2]["content"] == "what storage?"
+    context, said = prompt[1]["content"].split(CONTEXT_DIVIDER)
+    assert "Neo4j" in context
+    assert said.strip() == "what storage?"
 
 
 def test_no_facts_means_no_memory_message_at_all():
@@ -184,3 +186,20 @@ async def test_the_client_parses_facts():
         facts = await client.search("q", user_id=__import__("uuid").uuid4())
 
     assert facts == [Fact(id="a", fact="uses Neo4j", scope="project")]
+
+
+def test_a_correction_reads_before_what_it_corrected():
+    """graphiti does not always retire a superseded edge, so both versions can
+    come back; dated and newest first, the model can tell which is current."""
+    from datetime import datetime, timezone
+
+    old = Fact(id="1", fact="The graph store is Neo4j.", scope="project",
+               learned_at=datetime(2026, 10, 4, 9, 0, tzinfo=timezone.utc))
+    new = Fact(id="2", fact="The graph store is Postgres.", scope="project",
+               learned_at=datetime(2026, 10, 4, 9, 5, tzinfo=timezone.utc))
+    summary = Fact(id="3", fact="Aarya builds Nexus.", scope="user", kind="entity")
+
+    text = render_memory([old, summary, new])
+
+    assert text.index("Postgres") < text.index("Neo4j") < text.index("Aarya builds")
+    assert "learned 2026-10-04 09:05:00" in text and "the one listed first is current" in text

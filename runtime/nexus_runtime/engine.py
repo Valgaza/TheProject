@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 class Priority(IntEnum):
     """Lower runs first."""
 
-    LIVE = 0          # a reply someone is waiting on; embeddings
+    LIVE = 0          # a reply someone is waiting on; embeddings; voice
     INTERACTIVE = 1   # titles, the write gate, the web-query rewrite
     BULK = 2          # graph extraction
 
@@ -144,7 +144,8 @@ class Scheduler:
                 if self._stopping:
                     return None
                 # Smallest (priority, seq): the most urgent, and within a
-                # priority the oldest, so equal jobs run in arrival order.
+                # priority the one that has waited longest (a job that has
+                # just stepped goes to the back, see _run).
                 entry = min(self._jobs)
                 if entry.job.cancelled:
                     # The caller went away (a closed stream, a barge-in);
@@ -179,7 +180,12 @@ class Scheduler:
                     logger.exception("could not report a job failure")
             finally:
                 self.busy_with = None
-            if finished:
-                with self._cond:
-                    if entry in self._jobs:
-                        self._jobs.remove(entry)
+            with self._cond:
+                if entry in self._jobs:
+                    self._jobs.remove(entry)
+                    if not finished:
+                        # To the back of its priority: equal jobs take turns
+                        # a step at a time. A voice answer's speech synthesis
+                        # then waits one token of its own answer's generation,
+                        # not the rest of it.
+                        self._jobs.append(_Entry(entry.priority, next(self._seq), job))

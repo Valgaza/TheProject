@@ -61,6 +61,7 @@ class OpenAIProvider(Provider):
         max_tokens: int | None = None,
         priority: str = "interactive",
         response_format: dict | None = None,
+        temperature: float | None = None,
     ) -> str:
         resolved = model or self._chat_model
         kwargs: dict = {
@@ -74,6 +75,8 @@ class OpenAIProvider(Provider):
             kwargs["max_completion_tokens"] = max_tokens
         if response_format is not None:
             kwargs["response_format"] = response_format
+        if temperature is not None:
+            kwargs["temperature"] = temperature
 
         response = await self._client.chat.completions.create(**kwargs)
         content = response.choices[0].message.content or ""

@@ -58,14 +58,25 @@ def test_live_work_overtakes_bulk_work_mid_flight(scheduler):
     assert log.count("bulk") == 50
 
 
-def test_equal_priority_runs_in_arrival_order(scheduler):
+def test_equal_priority_jobs_take_turns_a_step_at_a_time(scheduler):
     log: list[str] = []
     gate = StepJob("gate", Priority.INTERACTIVE, steps=3, log=log, delay=0.01)
     title = StepJob("title", Priority.INTERACTIVE, steps=3, log=log)
     scheduler.submit(gate)
     scheduler.submit(title)
     assert gate.done.wait(5) and title.done.wait(5)
-    assert log == ["gate"] * 3 + ["title"] * 3
+    assert log == ["gate", "title"] * 3
+
+
+async def test_a_call_waits_one_step_of_a_running_generation_not_all_of_it(scheduler):
+    """A voice answer's speech synthesis, behind its own answer's tokens."""
+    log: list[str] = []
+    answer = StepJob("token", Priority.LIVE, steps=50, log=log, delay=0.002)
+    scheduler.submit(answer)
+    while not log:
+        time.sleep(0.001)
+    await scheduler.call(lambda: log.append("speak"), Priority.LIVE)
+    assert log.index("speak") <= 3 and answer.done.wait(5)
 
 
 def test_a_cancelled_job_takes_no_more_steps(scheduler):

@@ -16,6 +16,8 @@ import { WebSources } from "@/components/web-sources";
 import { RenderedAnswer } from "@/components/rendered-answer";
 import { RecalledFacts } from "@/components/recalled-facts";
 import { Icon } from "@/components/icons";
+import { VoiceSession } from "@/components/voice-session";
+import type { VoiceEvents } from "@/lib/voice";
 import { domainById } from "@/lib/domains";
 import {
   ApiError,
@@ -60,6 +62,7 @@ function Thread({ chatId }: { chatId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [web, setWeb] = useState(false);
+  const [voice, setVoice] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   // React 18+ runs effects twice in development; without this the opening
@@ -141,6 +144,44 @@ function Thread({ chatId }: { chatId: string }) {
     },
     [chatId]
   );
+
+  // A spoken turn lands in the thread exactly like a streamed typed one:
+  // what was heard, then the stored message, then the answer as it is written.
+  const voiceEvents: VoiceEvents = {
+    onTranscript: (turn, text) => {
+      setBusy(true);
+      setError(null);
+      setMessages(prev => [...prev, {
+        id: `voice-user-${turn}`, chat_id: chatId, role: "user", content: text,
+        metadata: {}, created_at: new Date().toISOString(), pending: true,
+      }]);
+    },
+    onPrepared: (turn, prepared) => {
+      setMessages(prev => [
+        ...prev.filter(m => m.id !== `voice-user-${turn}`),
+        prepared.user_message,
+        {
+          id: `voice-ai-${turn}`, chat_id: chatId, role: "assistant", content: "",
+          metadata: {
+            route: prepared.route.handler, route_reason: prepared.route.reason,
+            rag_sources: prepared.rag_sources, recalled_facts: prepared.recalled,
+          },
+          created_at: new Date().toISOString(), pending: true,
+        },
+      ]);
+    },
+    onToken: (turn, text) => {
+      setMessages(prev => prev.map(m => (m.id === `voice-ai-${turn}` ? { ...m, content: m.content + text } : m)));
+    },
+    onDone: (turn, assistant, title) => {
+      setMessages(prev => [...prev.filter(m => m.id !== `voice-ai-${turn}` && m.id !== assistant.id), assistant]);
+      setBusy(false);
+      if (title) setChat(prev => (prev ? { ...prev, title } : prev));
+      notifyChatsChanged();
+    },
+    onInterrupted: () => setBusy(false),
+    onError: detail => setError(`Voice: ${detail}`),
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -228,6 +269,17 @@ function Thread({ chatId }: { chatId: string }) {
           scrolling history, so it's always in reach instead of scrolling
           away with a long conversation. */}
       <div className="convo__composer-dock">
+        {voice ? (
+          <VoiceSession
+            chatId={chatId}
+            events={voiceEvents}
+            onEnd={err => {
+              setVoice(false);
+              setBusy(false);
+              if (err) setError(err);
+            }}
+          />
+        ) : (
         <Composer
           value={value}
           onChange={setValue}
@@ -245,6 +297,10 @@ function Thread({ chatId }: { chatId: string }) {
           projectId={chat?.project_id ?? null}
           web={web}
           onWebChange={setWeb}
+          onVoice={() => {
+            setError(null);
+            setVoice(true);
+          }}
           autoFocus
           badge={
             <div className="tag tag--accent">
@@ -253,6 +309,7 @@ function Thread({ chatId }: { chatId: string }) {
             </div>
           }
         />
+        )}
       </div>
     </div>
   );

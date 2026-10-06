@@ -68,7 +68,20 @@ class Settings:
         self.decide_subfolder = os.getenv("RUNTIME_DECIDE_SUBFOLDER", "typed-decisions").strip()
         self.decide_enabled = _optional("RUNTIME_DECIDE", "1") == "1"
 
+        # Voice: loaded when a voice session starts (or on first use), and
+        # unloaded after this long unused, so they cost memory only while
+        # someone is talking.
+        self.stt_model = _optional("RUNTIME_STT_MODEL", "mlx-community/parakeet-tdt-0.6b-v2")
+        self.tts_model = _optional("RUNTIME_TTS_MODEL", "mlx-community/Kokoro-82M-bf16")
+        self.tts_voice = _optional("RUNTIME_TTS_VOICE", "af_heart")
+        self.session_idle_seconds = int(_optional("RUNTIME_SESSION_IDLE_SECONDS", "300"))
+
         self.default_max_tokens = int(_optional("RUNTIME_DEFAULT_MAX_TOKENS", "4096"))
+        # A ceiling on what any caller may ask for. graphiti asks for 16384 on
+        # every extraction call; a model that loops inside its JSON (seen with
+        # Qwen3.5-9B, 2026-10-04) then holds the GPU for minutes. Real
+        # extractions stay well under 2k tokens.
+        self.max_tokens_cap = int(_optional("RUNTIME_MAX_TOKENS", "4096"))
 
         # Reused KV for each conversation's shared prefix (system prompt plus
         # history), so a follow-up turn only processes what is new.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from nexus_core.chat_service import build_prompt, generate_turn
+from nexus_core.chat_service import CONTEXT_DIVIDER, build_prompt, generate_turn
 from nexus_core.orchestrator import select_route
 from nexus_core.rag_client import RagResult, RagSource
 
@@ -63,7 +63,7 @@ async def test_routing_is_the_same_with_or_without_a_rag_client():
 # ── Prompt shape ──────────────────────────────────────────────────────────────
 
 
-def test_rag_context_sits_between_memory_and_the_conversation():
+def test_rag_context_travels_with_the_message():
     class Row:
         def __init__(self, role, content):
             self.role, self.content = role, content
@@ -73,8 +73,9 @@ def test_rag_context_sits_between_memory_and_the_conversation():
         rag_result=RagResult(prompt="Section 3: remote work is permitted."),
     )
 
-    assert [m["role"] for m in prompt] == ["system", "system", "user"]
-    assert "remote work is permitted" in prompt[1]["content"]
+    assert [m["role"] for m in prompt] == ["system", "user"]
+    context, said = prompt[1]["content"].split(CONTEXT_DIVIDER)
+    assert "remote work is permitted" in context and said.strip() == "what does the handbook say?"
 
 
 def test_no_rag_result_means_no_rag_message_at_all():

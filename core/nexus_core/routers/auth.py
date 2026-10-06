@@ -47,7 +47,7 @@ async def signup(
     body: SignupRequest,
     request: Request,
     response: Response,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> Profile:
     existing = await session.execute(select(Profile).where(Profile.email == body.email))
     if existing.scalar_one_or_none() is not None:
@@ -73,7 +73,7 @@ async def login(
     body: LoginRequest,
     request: Request,
     response: Response,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> Profile:
     result = await session.execute(select(Profile).where(Profile.email == body.email))
     profile = result.scalar_one_or_none()
@@ -108,7 +108,7 @@ async def logout(response: Response) -> dict:
 @router.get("/me", response_model=ProfileOut)
 async def me(
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> Profile:
     """401s if not logged in — deliberately the same shape as any other
     protected route, not a special "am I logged in" contract. The frontend
@@ -138,7 +138,7 @@ async def google_login(request: Request):
 @router.get("/google/callback")
 async def google_callback(
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ):
     settings: Settings = request.app.state.settings
     if not settings.google_oauth_enabled:

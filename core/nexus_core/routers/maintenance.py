@@ -155,7 +155,7 @@ async def _episodes_in_scope(
 async def run_maintenance(
     body: MaintenanceRequest,
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
 ) -> dict:
     """Tidy the graph behind one view, on demand.
 
@@ -196,7 +196,7 @@ async def run_maintenance(
 @router.get("/runs", response_model=list[MaintenanceRunOut])
 async def list_runs(
     request: Request,
-    session: AsyncSession = Depends(session_dependency),
+    session: AsyncSession = Depends(session_dependency, scope="function"),
     limit: int = 20,
 ) -> list[MaintenanceRun]:
     """The last few passes, newest first."""
