@@ -1,0 +1,100 @@
+{"person_said": "I'm a final-year B.Tech student at Pune University.", "assistant_replied": "Good luck with the final year!", "worth_remembering": true, "tier": "user"}
+{"person_said": "My name is Aarya and I mostly work in Python.", "assistant_replied": "Nice to meet you, Aarya.", "worth_remembering": true, "tier": "user"}
+{"person_said": "I prefer short answers without bullet points.", "assistant_replied": "Understood, I'll keep it brief.", "worth_remembering": true, "tier": "user"}
+{"person_said": "Please always reply in British English.", "assistant_replied": "Will do.", "worth_remembering": true, "tier": "user"}
+{"person_said": "I'm vegetarian, so skip meat recipes.", "assistant_replied": "Noted, vegetarian only.", "worth_remembering": true, "tier": "user"}
+{"person_said": "I live in Lisbon now, I moved last month.", "assistant_replied": "How are you finding Lisbon?", "worth_remembering": true, "tier": "user"}
+{"person_said": "I'm allergic to peanuts.", "assistant_replied": "Thanks for telling me.", "worth_remembering": true, "tier": "user"}
+{"person_said": "I work night shifts at the hospital, so I'm usually online after 10pm.", "assistant_replied": "Got it.", "worth_remembering": true, "tier": "user"}
+{"person_said": "My partner's name is Rhea.", "assistant_replied": "Lovely name.", "worth_remembering": true, "tier": "user"}
+{"person_said": "I don't drink coffee, only green tea.", "assistant_replied": "Green tea it is.", "worth_remembering": true, "tier": "user"}
+{"person_said": "I have two kids, aged 6 and 9.", "assistant_replied": "That must keep you busy.", "worth_remembering": true, "tier": "user"}
+{"person_said": "I'm a criminal defence lawyer in Mumbai.", "assistant_replied": "Interesting work.", "worth_remembering": true, "tier": "user"}
+{"person_said": "I usually write code in Rust and Go these days.", "assistant_replied": "Both great choices.", "worth_remembering": true, "tier": "user"}
+{"person_said": "Call me Sam, not Samuel.", "assistant_replied": "Sure, Sam.", "worth_remembering": true, "tier": "user"}
+{"person_said": "I'm learning Japanese, currently at JLPT N4 level.", "assistant_replied": "Ganbatte!", "worth_remembering": true, "tier": "user"}
+{"person_said": "I hate long meetings, keep any agenda tight.", "assistant_replied": "Understood.", "worth_remembering": true, "tier": "user"}
+{"person_said": "I'm left-handed, so suggest ergonomic gear accordingly.", "assistant_replied": "Noted.", "worth_remembering": true, "tier": "user"}
+{"person_said": "My birthday is on 14 March.", "assistant_replied": "I'll remember that.", "worth_remembering": true, "tier": "user"}
+{"person_said": "I run a small bakery with my sister.", "assistant_replied": "Sounds wonderful.", "worth_remembering": true, "tier": "user"}
+{"person_said": "I use a 24 GB M5 Pro MacBook for everything.", "assistant_replied": "Plenty of power.", "worth_remembering": true, "tier": "user"}
+{"person_said": "English isn't my first language, Marathi is.", "assistant_replied": "Thanks for letting me know.", "worth_remembering": true, "tier": "user"}
+{"person_said": "I'm colour-blind, so don't rely on red and green in charts.", "assistant_replied": "I'll avoid that palette.", "worth_remembering": true, "tier": "user"}
+{"person_said": "I prefer metric units.", "assistant_replied": "Metric it is.", "worth_remembering": true, "tier": "user"}
+{"person_said": "I'm based in the IST time zone.", "assistant_replied": "Got it.", "worth_remembering": true, "tier": "user"}
+{"person_said": "I take the train to work every day, about an hour each way.", "assistant_replied": "That's a long commute.", "worth_remembering": true, "tier": "user"}
+{"person_said": "For this project we're using Qdrant for vectors.", "assistant_replied": "Good choice.", "worth_remembering": true, "tier": "project"}
+{"person_said": "We decided to drop Supabase and run plain Postgres in Docker.", "assistant_replied": "Makes sense.", "worth_remembering": true, "tier": "project"}
+{"person_said": "The deadline for the thesis draft is 30 November.", "assistant_replied": "Noted.", "worth_remembering": true, "tier": "project"}
+{"person_said": "Bhoumish owns the RAG pipeline on this team.", "assistant_replied": "Got it.", "worth_remembering": true, "tier": "project"}
+{"person_said": "We're targeting a 1.5 second first-token latency for the demo.", "assistant_replied": "Ambitious but doable.", "worth_remembering": true, "tier": "project"}
+{"person_said": "The client wants the report in Marathi and English.", "assistant_replied": "Both languages, noted.", "worth_remembering": true, "tier": "project"}
+{"person_said": "This case is set for hearing on 12 December.", "assistant_replied": "Noted.", "worth_remembering": true, "tier": "project"}
+{"person_said": "We switched the inference engine to MLX.", "assistant_replied": "Got it.", "worth_remembering": true, "tier": "project"}
+{"person_said": "The budget for this renovation is 8 lakh rupees.", "assistant_replied": "Okay.", "worth_remembering": true, "tier": "project"}
+{"person_said": "Our API must stay backwards compatible with v2 clients.", "assistant_replied": "Understood.", "worth_remembering": true, "tier": "project"}
+{"person_said": "The bakery's new menu launches on Diwali.", "assistant_replied": "Exciting.", "worth_remembering": true, "tier": "project"}
+{"person_said": "We chose Next.js for the frontend of this app.", "assistant_replied": "Good.", "worth_remembering": true, "tier": "project"}
+{"person_said": "The paper is going to ACL, so it must fit in 8 pages.", "assistant_replied": "Tight but fine.", "worth_remembering": true, "tier": "project"}
+{"person_said": "Siya is handling the vision pipeline with PaddleOCR.", "assistant_replied": "Okay.", "worth_remembering": true, "tier": "project"}
+{"person_said": "We store transcripts in Postgres and facts in Neo4j for this system.", "assistant_replied": "Clear split.", "worth_remembering": true, "tier": "project"}
+{"person_said": "The patient's follow-up is scheduled every three months.", "assistant_replied": "Noted.", "worth_remembering": true, "tier": "project"}
+{"person_said": "We agreed to use conventional commits on this repo.", "assistant_replied": "Good practice.", "worth_remembering": true, "tier": "project"}
+{"person_said": "The eval demo has to run fully offline.", "assistant_replied": "Understood.", "worth_remembering": true, "tier": "project"}
+{"person_said": "Our team meets every Thursday at 5pm for this project.", "assistant_replied": "Noted.", "worth_remembering": true, "tier": "project"}
+{"person_said": "The thesis has to use the university's LaTeX template.", "assistant_replied": "Okay.", "worth_remembering": true, "tier": "project"}
+{"person_said": "What's the capital of Australia?", "assistant_replied": "Canberra.", "worth_remembering": false, "tier": null}
+{"person_said": "thanks, that helped a lot", "assistant_replied": "Glad it helped!", "worth_remembering": false, "tier": null}
+{"person_said": "Can you explain how Raft leader election works?", "assistant_replied": "Sure: ...", "worth_remembering": false, "tier": null}
+{"person_said": "lol okay", "assistant_replied": "\ud83d\ude04", "worth_remembering": false, "tier": null}
+{"person_said": "What time is it in Tokyo right now?", "assistant_replied": "It's about 10pm there.", "worth_remembering": false, "tier": null}
+{"person_said": "Summarise this paragraph for me.", "assistant_replied": "Here's a summary...", "worth_remembering": false, "tier": null}
+{"person_said": "Write a haiku about rain.", "assistant_replied": "Soft rain on tin roofs...", "worth_remembering": false, "tier": null}
+{"person_said": "Is Python faster than Rust?", "assistant_replied": "Generally no...", "worth_remembering": false, "tier": null}
+{"person_said": "Translate 'good morning' into French.", "assistant_replied": "Bonjour.", "worth_remembering": false, "tier": null}
+{"person_said": "How do I reverse a list in Python?", "assistant_replied": "Use list[::-1] or reversed().", "worth_remembering": false, "tier": null}
+{"person_said": "Hmm, let me think about it.", "assistant_replied": "Take your time.", "worth_remembering": false, "tier": null}
+{"person_said": "What's 17 times 23?", "assistant_replied": "391.", "worth_remembering": false, "tier": null}
+{"person_said": "Remind me what we were talking about?", "assistant_replied": "We were discussing RAG.", "worth_remembering": false, "tier": null}
+{"person_said": "Water boils at 100 degrees Celsius at sea level, right?", "assistant_replied": "Yes.", "worth_remembering": false, "tier": null}
+{"person_said": "Can you make that shorter?", "assistant_replied": "Sure: ...", "worth_remembering": false, "tier": null}
+{"person_said": "ok cool", "assistant_replied": "\ud83d\udc4d", "worth_remembering": false, "tier": null}
+{"person_said": "What's the difference between TCP and UDP?", "assistant_replied": "TCP is connection-oriented...", "worth_remembering": false, "tier": null}
+{"person_said": "Give me three names for a cat.", "assistant_replied": "Miso, Pixel, Juniper.", "worth_remembering": false, "tier": null}
+{"person_said": "Good night!", "assistant_replied": "Good night!", "worth_remembering": false, "tier": null}
+{"person_said": "Why is the sky blue?", "assistant_replied": "Rayleigh scattering...", "worth_remembering": false, "tier": null}
+{"person_said": "Search the web for the latest MLX release.", "assistant_replied": "Here's what I found...", "worth_remembering": false, "tier": null}
+{"person_said": "Could you rephrase the second sentence?", "assistant_replied": "Sure.", "worth_remembering": false, "tier": null}
+{"person_said": "What did I say my name was?", "assistant_replied": "You said it's Aarya.", "worth_remembering": false, "tier": null}
+{"person_said": "I'm tired today.", "assistant_replied": "Rest up.", "worth_remembering": false, "tier": null}
+{"person_said": "It's raining here right now.", "assistant_replied": "Stay dry!", "worth_remembering": false, "tier": null}
+{"person_said": "I just had lunch.", "assistant_replied": "Hope it was good.", "worth_remembering": false, "tier": null}
+{"person_said": "I'm reading an article about volcanoes at the moment.", "assistant_replied": "Interesting!", "worth_remembering": false, "tier": null}
+{"person_said": "Let's continue tomorrow.", "assistant_replied": "Sounds good.", "worth_remembering": false, "tier": null}
+{"person_said": "What's a good name for a variable that holds a count?", "assistant_replied": "count or n_items.", "worth_remembering": false, "tier": null}
+{"person_said": "Explain recursion like I'm five.", "assistant_replied": "Imagine a set of nesting dolls...", "worth_remembering": false, "tier": null}
+{"person_said": "Can you check this SQL query for errors?", "assistant_replied": "Looks fine except...", "worth_remembering": false, "tier": null}
+{"person_said": "Who won the 2011 cricket world cup?", "assistant_replied": "India.", "worth_remembering": false, "tier": null}
+{"person_said": "That's interesting.", "assistant_replied": "Glad you think so.", "worth_remembering": false, "tier": null}
+{"person_said": "Are you there?", "assistant_replied": "Yes, I'm here.", "worth_remembering": false, "tier": null}
+{"person_said": "How long does it take to boil an egg?", "assistant_replied": "About 9-12 minutes.", "worth_remembering": false, "tier": null}
+{"person_said": "Convert 5 miles to kilometres.", "assistant_replied": "About 8 km.", "worth_remembering": false, "tier": null}
+{"person_said": "Give me a quick example of a Python decorator.", "assistant_replied": "def deco(f): ...", "worth_remembering": false, "tier": null}
+{"person_said": "I'm in a meeting, brb.", "assistant_replied": "No problem.", "worth_remembering": false, "tier": null}
+{"person_said": "What does HTTP 418 mean?", "assistant_replied": "I'm a teapot.", "worth_remembering": false, "tier": null}
+{"person_said": "Draft an email declining the invitation politely.", "assistant_replied": "Dear ...", "worth_remembering": false, "tier": null}
+{"person_said": "What database am I using?", "assistant_replied": "You're using Neo4j for the graph.", "worth_remembering": false, "tier": null}
+{"person_said": "Which city do I live in again?", "assistant_replied": "You live in Lisbon.", "worth_remembering": false, "tier": null}
+{"person_said": "What's my preferred answer style?", "assistant_replied": "Short, without bullet points.", "worth_remembering": false, "tier": null}
+{"person_said": "who's on my team?", "assistant_replied": "Bhoumish and Siya, as you mentioned.", "worth_remembering": false, "tier": null}
+{"person_said": "When is my deadline?", "assistant_replied": "30 November.", "worth_remembering": false, "tier": null}
+{"person_said": "By the way, I've started using vim instead of VS Code.", "assistant_replied": "Welcome to vim.", "worth_remembering": true, "tier": "user"}
+{"person_said": "From now on, cite sources whenever you use the web.", "assistant_replied": "Will do.", "worth_remembering": true, "tier": "user"}
+{"person_said": "We're no longer using Gemini; everything is local now.", "assistant_replied": "Understood.", "worth_remembering": true, "tier": "project"}
+{"person_said": "Actually my deadline moved to 15 December.", "assistant_replied": "Updated.", "worth_remembering": true, "tier": "project"}
+{"person_said": "I switched teams, I'm in the platform group now.", "assistant_replied": "Congrats on the move.", "worth_remembering": true, "tier": "user"}
+{"person_said": "Our project name is Nexus.", "assistant_replied": "Got it.", "worth_remembering": true, "tier": "project"}
+{"person_said": "I'm a beginner at machine learning.", "assistant_replied": "We'll start simple.", "worth_remembering": true, "tier": "user"}
+{"person_said": "The demo audience will be non-technical professors.", "assistant_replied": "I'll keep it accessible.", "worth_remembering": true, "tier": "project"}
+{"person_said": "I prefer dark mode screenshots in the docs.", "assistant_replied": "Noted.", "worth_remembering": true, "tier": "user"}
+{"person_said": "We're using uv instead of pip for this repo.", "assistant_replied": "Good.", "worth_remembering": true, "tier": "project"}

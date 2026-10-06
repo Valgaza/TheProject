@@ -25,6 +25,7 @@ from .providers import Provider, build_provider
 from .rag_client import RagClient
 from .web_client import WebClient
 from .write_queue import Activity, WriteQueue
+from .decisions import DecisionsClient, runtime_root
 from .routers import (
     auth_router,
     chats_router,
@@ -92,12 +93,20 @@ async def lifespan(app: FastAPI):
     # with this; the memory write queue waits for it to be quiet.
     activity = Activity()
     app.state.activity = activity
+    # The decision model lives in the runtime; with inference elsewhere
+    # (the Ollama fallback) there is none, and every point keeps its old logic.
+    root = runtime_root(settings.openai_base_url)
+    decisions = DecisionsClient(http, root) if root else None
+    app.state.decisions = decisions
     write_queue = WriteQueue(
         session_factory=app.state.session_factory,
         provider=provider,
         memory=app.state.memory,
         gate_model=settings.gate_model,
         activity=activity,
+        decisions=decisions,
+        laya_gate=settings.laya_gate,
+        laya_skip_below=settings.laya_gate_skip_below,
     )
     write_queue.start()
     app.state.write_queue = write_queue

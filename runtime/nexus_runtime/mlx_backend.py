@@ -312,7 +312,7 @@ class GenerationJob:
 class ModelSlot:
     name: str          # "chat" or "embed"
     repo: str          # the Hugging Face id, and the name it is served under
-    lifetime: str      # "always"
+    lifetime: str      # "always" | "optional"
     obj: Any = None
     nbytes: int = 0
     prompt_cache: Any = None
@@ -337,6 +337,8 @@ class MLXBackend:
             "chat": ModelSlot("chat", settings.chat_model, "always"),
             "embed": ModelSlot("embed", settings.embed_model, "always"),
         }
+        if settings.decide_enabled:
+            self.slots["decide"] = ModelSlot("decide", settings.decide_model, "optional")
         self._compilers: dict[int, Any] = {}
         self._grammars: dict[tuple[int, str], Any] = {}
         self.ready = False
@@ -386,6 +388,34 @@ class MLXBackend:
             model, tokenizer = load(slot.repo)
             slot.obj = (model, tokenizer)
             slot.nbytes = _param_bytes(model)
+        else:
+            from huggingface_hub import snapshot_download
+            from laya_mlx import Agent
+
+            import os
+
+            sub = self.settings.decide_subfolder or None
+            if os.path.isdir(slot.repo):
+                # A local checkpoint, e.g. one fine-tuned by scripts/laya/finetune.py.
+                local = slot.repo
+            else:
+                try:
+                    # Only from disk: an optional model must never hold startup
+                    # hostage to a slow download. Fetch it ahead of time, then
+                    # POST /models/decide/load.
+                    local = snapshot_download(
+                        slot.repo, allow_patterns=[f"{sub}/*"] if sub else None, local_files_only=True
+                    )
+                except Exception as exc:
+                    raise ModelNotLoaded(
+                        f"{slot.repo} ({sub or 'root'}) is not downloaded yet"
+                    ) from exc
+            before = mx.get_active_memory()
+            agent = Agent(local, subfolder=sub, dtype="float16")
+            slot.obj = agent
+            # Laya keeps its weights inside its own wrapper; what it added to
+            # MLX's allocation is the honest size.
+            slot.nbytes = max(0, mx.get_active_memory() - before)
         slot.loaded_at = time.time()
         logger.info(
             "loaded %s (%s) in %.1fs, %.2f GB weights, %.2f GB active",
@@ -425,6 +455,9 @@ class MLXBackend:
         for _ in zip(range(2), generate_step(mx.array(prompt), model, max_tokens=2)):
             pass
         self._embed_now(["warm up"], None)
+        decide = self.slots.get("decide")
+        if decide is not None and decide.loaded:
+            decide.obj.predict({"text": "warm up"}, {"q": {"type": "noul", "instructions": "Is `text` a test?"}})
 
     async def load(self, name: str) -> dict:
         return await self.scheduler.call(lambda: self._load(name), Priority.LIVE)
@@ -442,6 +475,13 @@ class MLXBackend:
         for name, slot in self.slots.items():
             if slot.lifetime == "always":
                 await self.load(name)
+            elif slot.lifetime == "optional":
+                # Wanted, not required: without it /decide answers 503 and
+                # core keeps its old logic.
+                try:
+                    await self.load(name)
+                except Exception:
+                    logger.exception("optional model %s (%s) did not load", name, slot.repo)
         await self.scheduler.call(self._warm, Priority.LIVE)
         self.ready = True
         logger.info("runtime ready")
@@ -532,6 +572,38 @@ class MLXBackend:
             # A closed stream or a cancelled request stops the job at its
             # next step instead of generating into the void.
             job.cancelled = True
+
+    # ── decisions ────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _normalise(answer: dict) -> dict:
+        """Laya's answer reshaped to what core reads: ``p`` for yes/no,
+        ``label`` and ``probs`` for a choice, ``score`` for a scale."""
+        out: dict[str, Any] = {"type": answer.get("type"), "confidence": answer.get("confidence")}
+        if answer.get("type") == "noul":
+            out["p"] = answer.get("noul")
+        elif answer.get("type") == "choice":
+            out["label"] = answer.get("choice")
+            out["probs"] = answer.get("probabilities")
+        else:
+            out["score"] = answer.get("score")
+            out["probs"] = answer.get("probabilities")
+            out["legend"] = answer.get("legend")
+        return out
+
+    def _decide_now(self, state: Any, questions: dict) -> dict:
+        slot = self.slots.get("decide")
+        if slot is None or not slot.loaded:
+            raise ModelNotLoaded("the decision model is not loaded")
+        result = slot.obj.predict(state, questions)
+        return {
+            "answers": {qid: self._normalise(a) for qid, a in result["answers"].items()},
+            "usage": result.get("usage", {}),
+        }
+
+    async def decide(self, state: Any, questions: dict) -> dict:
+        # Live: decisions sit on the path of a turn, and take milliseconds.
+        return await self.scheduler.call(lambda: self._decide_now(state, questions), Priority.LIVE)
 
     # ── embeddings ───────────────────────────────────────────────────────────
 

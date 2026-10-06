@@ -15,6 +15,9 @@ dependencies = [
     "mlx-lm>=0.32.0",
     "mlx-embeddings>=0.1.0",
     "xgrammar>=0.2.8",
+    # The decision model (Laya) on MLX: typed yes/no and choice questions in
+    # one forward pass, for the decisions core no longer spends an LLM call on.
+    "laya-mlx>=0.3.0",
 ]
 
 [dependency-groups]

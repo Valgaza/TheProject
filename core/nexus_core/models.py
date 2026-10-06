@@ -269,6 +269,32 @@ class GateDecisionRecord(Base):
     )
 
 
+class DecisionLogRecord(Base):
+    """What the decision model said beside what the existing logic decided.
+    See decisions.py and db/migrations/20261004130000_decision_log.sql."""
+
+    __tablename__ = "decision_log"
+    __table_args__ = (
+        CheckConstraint("mode in ('shadow', 'live')", name="decision_log_mode_check"),
+    )
+
+    id: Mapped[uuid.UUID] = _pk()
+    point: Mapped[str] = mapped_column(String, nullable=False)
+    mode: Mapped[str] = mapped_column(String, nullable=False)
+    chat_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chats.id", ondelete="CASCADE")
+    )
+    message_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("messages.id", ondelete="SET NULL")
+    )
+    input: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    laya: Mapped[dict | None] = mapped_column(JSONB)
+    baseline: Mapped[dict | None] = mapped_column(JSONB)
+    laya_ms: Mapped[int | None] = mapped_column(Integer)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
+
+
 class MaintenanceRun(Base):
     """One pass of the graph tidy-up, and what it decided.
 

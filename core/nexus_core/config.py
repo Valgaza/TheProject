@@ -115,6 +115,20 @@ class Settings:
         # Self-hosted SearXNG (docker-compose.yml). The only outbound call in
         # core; everything sent there is redacted first (web_client.py).
         self.searxng_url = _optional("SEARXNG_URL", "http://localhost:8080")
+
+        # ── Decision model (Laya, served by the runtime) ────────────────────
+        # Per decision point: off | shadow | live (see decisions.py). Shadow by
+        # default: recorded beside the existing logic, never acted on, until
+        # scripts/laya/evaluate.py says a point has earned live.
+        self.laya_gate = _optional("CORE_LAYA_GATE", "shadow")
+        self.laya_web_intent = _optional("CORE_LAYA_WEB_INTENT", "shadow")
+        # Live only: below this probability of "worth remembering", the write
+        # gate skips its model call and records a decline.
+        self.laya_gate_skip_below = float(_optional("CORE_LAYA_GATE_SKIP_BELOW", "0.15"))
+        # Live only: at or above this probability a message is treated as
+        # asking for the web. High on purpose -- a false yes sends words off
+        # the machine.
+        self.laya_web_intent_above = float(_optional("CORE_LAYA_WEB_INTENT_ABOVE", "0.9"))
         self.port = int(_optional("CORE_PORT", "8100"))
         self.cors_origins = [
             origin.strip()

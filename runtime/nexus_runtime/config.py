@@ -16,7 +16,8 @@ from dotenv import load_dotenv
 
 # The repo-root .env, explicitly, for the reason RUNBOOK gives: a bare
 # load_dotenv() stops at the first .env it finds walking upward.
-load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(ROOT / ".env")
 
 
 def _require(key: str) -> str:
@@ -51,6 +52,21 @@ class Settings:
         # person waits through and never sees. A request can still ask for it
         # with reasoning_effort.
         self.enable_thinking = _optional("RUNTIME_ENABLE_THINKING", "0") == "1"
+
+        # The decision model (Laya): one forward pass, calibrated probabilities,
+        # for the questions in core/nexus_core/decisions.py. The typed-decisions
+        # checkpoint is the fine-tuned one (better accuracy, 1024-token input).
+        # Optional: if it is missing the runtime serves everything else and
+        # /decide answers 503, which core treats as "use the old logic".
+        self.decide_model = _optional("RUNTIME_DECIDE_MODEL", "convaiinnovations/laya")
+        # A relative path is a local checkpoint under the repo (data/laya/finetuned),
+        # wherever the runtime was started from.
+        if not os.path.isabs(self.decide_model) and (ROOT / self.decide_model).is_dir():
+            self.decide_model = str(ROOT / self.decide_model)
+        # Blank for a checkpoint that is not inside a subfolder (a local
+        # fine-tune from scripts/laya/finetune.py).
+        self.decide_subfolder = os.getenv("RUNTIME_DECIDE_SUBFOLDER", "typed-decisions").strip()
+        self.decide_enabled = _optional("RUNTIME_DECIDE", "1") == "1"
 
         self.default_max_tokens = int(_optional("RUNTIME_DEFAULT_MAX_TOKENS", "4096"))
 

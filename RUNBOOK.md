@@ -14,7 +14,7 @@ the file to trust.
 | SearXNG | 8080 | Private metasearch. `core`'s web handler is its only caller. |
 | `nexus_memory` | 8000 | Owns the graph: ingest, search, live updates. Answers `core` only. |
 | RAG API | 8001 | `rag/rag_api.py` — the only way `core` reaches the RAG pipeline. Answers `core` only. |
-| `nexus_runtime` | 8003 | Every local model, on MLX: chat, embeddings. OpenAI-compatible API. Answers `core` and `memory` only. |
+| `nexus_runtime` | 8003 | Every local model, on MLX: chat, embeddings, the decision model (Laya). OpenAI-compatible API. Answers `core` and `memory` only. |
 | `nexus_core` | 8100 | Owns chat, the orchestrator, providers, and Postgres. |
 | Frontend | 3000 | Next.js. |
 

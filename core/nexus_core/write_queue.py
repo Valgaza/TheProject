@@ -86,6 +86,9 @@ class WriteQueue:
         activity: Activity,
         idle_grace: float = 1.5,
         poll_seconds: float = 5.0,
+        decisions=None,
+        laya_gate: str = "off",
+        laya_skip_below: float = 0.15,
     ) -> None:
         self.session_factory = session_factory
         self.provider = provider
@@ -94,6 +97,9 @@ class WriteQueue:
         self.activity = activity
         self.idle_grace = idle_grace
         self.poll_seconds = poll_seconds
+        self.decisions = decisions
+        self.laya_gate = laya_gate
+        self.laya_skip_below = laya_skip_below
         self._wake = asyncio.Event()
         self._task: asyncio.Task | None = None
 
@@ -175,6 +181,8 @@ class WriteQueue:
             await process_decision(
                 session_factory=self.session_factory, provider=self.provider,
                 memory=self.memory, gate_model=self.gate_model, decision_id=row.id,
+                decisions=self.decisions, laya_gate=self.laya_gate,
+                laya_skip_below=self.laya_skip_below,
             )
         except Exception as exc:
             logger.exception("write queue: turn %s failed (attempt %d)", row.id, row.attempts)

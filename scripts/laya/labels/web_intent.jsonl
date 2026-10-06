@@ -1,0 +1,65 @@
+{"message": "search the web for the latest MLX release", "asks_for_web": true}
+{"message": "can you look this up online: current price of an M5 Pro", "asks_for_web": true}
+{"message": "check online what changed in the Raft paper errata", "asks_for_web": true}
+{"message": "Google the opening hours of the Pune city library", "asks_for_web": true}
+{"message": "what does the internet say about Qdrant vs Milvus benchmarks?", "asks_for_web": true}
+{"message": "find me recent news on the monsoon forecast", "asks_for_web": true}
+{"message": "browse for the newest version of Next.js and tell me", "asks_for_web": true}
+{"message": "look up the train timings from Pune to Mumbai tomorrow", "asks_for_web": true}
+{"message": "can you fetch the latest docs for graphiti online", "asks_for_web": true}
+{"message": "search for reviews of the Kokoro TTS model", "asks_for_web": true}
+{"message": "please go online and check today's exchange rate for USD to INR", "asks_for_web": true}
+{"message": "do a quick web search on who won yesterday's match", "asks_for_web": true}
+{"message": "look online for the release notes of Python 3.14", "asks_for_web": true}
+{"message": "check the web: is the conference deadline extended?", "asks_for_web": true}
+{"message": "find the official website for the B.Tech admissions portal", "asks_for_web": true}
+{"message": "search online for papers on non-autoregressive decision models", "asks_for_web": true}
+{"message": "could you look up current weather in Lisbon on the internet", "asks_for_web": true}
+{"message": "hunt down the latest CVE for OpenSSL online", "asks_for_web": true}
+{"message": "what are people saying online about the new MacBook?", "asks_for_web": true}
+{"message": "check if there's a newer release of mlx-lm on PyPI", "asks_for_web": true}
+{"message": "search the internet for treatment guidelines for stage 3 lymphoma", "asks_for_web": true}
+{"message": "go and find recent articles about local-first software", "asks_for_web": true}
+{"message": "lookup the current Docker Desktop version online", "asks_for_web": true}
+{"message": "can you see online whether the store is open on Sunday?", "asks_for_web": true}
+{"message": "browse the web for SearXNG configuration examples", "asks_for_web": true}
+{"message": "find out from the web what the population of Pune is in 2026", "asks_for_web": true}
+{"message": "research online the best practices for SSE in FastAPI", "asks_for_web": true}
+{"message": "check google for 'Laya decision model accuracy'", "asks_for_web": true}
+{"message": "search for the lyrics of that song online", "asks_for_web": true}
+{"message": "look up today's top headlines", "asks_for_web": true}
+{"message": "what is a knowledge graph?", "asks_for_web": false}
+{"message": "explain how hybrid search works", "asks_for_web": false}
+{"message": "summarise our conversation so far", "asks_for_web": false}
+{"message": "what's my name?", "asks_for_web": false}
+{"message": "write a function that checks for palindromes", "asks_for_web": false}
+{"message": "how do I configure SearXNG?", "asks_for_web": false}
+{"message": "tell me about the Raft consensus algorithm", "asks_for_web": false}
+{"message": "what did the document say about chunking?", "asks_for_web": false}
+{"message": "thanks!", "asks_for_web": false}
+{"message": "I searched the web yesterday and found nothing useful", "asks_for_web": false}
+{"message": "the internet was down at my place this morning", "asks_for_web": false}
+{"message": "my browser keeps crashing, any ideas?", "asks_for_web": false}
+{"message": "what's the best way to learn Rust?", "asks_for_web": false}
+{"message": "draft a reply to my professor", "asks_for_web": false}
+{"message": "how many tokens per second can an 8B model do on an M5 Pro?", "asks_for_web": false}
+{"message": "do you remember which database I chose?", "asks_for_web": false}
+{"message": "translate this paragraph into Hindi", "asks_for_web": false}
+{"message": "what's 2 to the power of 20?", "asks_for_web": false}
+{"message": "why does my Docker container keep restarting?", "asks_for_web": false}
+{"message": "is it better to use MLX or llama.cpp on a Mac?", "asks_for_web": false}
+{"message": "give me a recipe for paneer tikka", "asks_for_web": false}
+{"message": "what is the capital of Canada?", "asks_for_web": false}
+{"message": "I read online that MLX is fast, is that true?", "asks_for_web": false}
+{"message": "help me plan my week", "asks_for_web": false}
+{"message": "how does web search work in this app?", "asks_for_web": false}
+{"message": "can you explain what SEO means?", "asks_for_web": false}
+{"message": "write a short story about a lighthouse", "asks_for_web": false}
+{"message": "list the planets in order", "asks_for_web": false}
+{"message": "what's the difference between a URL and a URI?", "asks_for_web": false}
+{"message": "what is the boiling point of water?", "asks_for_web": false}
+{"message": "rate my essay out of 10", "asks_for_web": false}
+{"message": "how do browsers render HTML?", "asks_for_web": false}
+{"message": "tell me a joke", "asks_for_web": false}
+{"message": "what's a good name for my startup?", "asks_for_web": false}
+{"message": "convert this JSON to YAML", "asks_for_web": false}

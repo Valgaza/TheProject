@@ -51,6 +51,8 @@ async def select_route(
     attachments: Sequence[Attachment] = (),
     rag: "RagClient | None" = None,
     use_web: bool = False,
+    web_intent_p: float | None = None,
+    web_intent_above: float = 0.9,
 ) -> Route:
     """Decide which handler answers this turn.
 
@@ -80,12 +82,23 @@ async def select_route(
 
     # The web belongs here for the same reason: it is the one handler that
     # sends something off the machine, so it only ever runs when the person
-    # asked for it -- the composer's web button, or saying so in words. A
-    # model never decides on its own to go to the internet.
+    # asked for it -- the composer's web button, or saying so in words. Never
+    # because a model judged a search would help.
+    #
+    # "Saying so in words" has two detectors. The trigger phrases catch the
+    # obvious wording; ``web_intent_p``, when given, is the decision model's
+    # probability that the message asks for the web in other words ("can you
+    # check online…"). It is passed only when that point is live, and can only
+    # turn the web on, never off, and only at a high bar.
     if use_web:
         route = Route(handler="web", reason="web search requested from the composer")
     elif WEB_TRIGGER.search(content):
         route = Route(handler="web", reason="the message asks to search the web")
+    elif web_intent_p is not None and web_intent_p >= web_intent_above:
+        route = Route(
+            handler="web",
+            reason=f"the message asks to look something up online (decision model, p={web_intent_p:.2f})",
+        )
     else:
         route = Route(handler="general", reason="no attachment requiring another pipeline")
     logger.info(

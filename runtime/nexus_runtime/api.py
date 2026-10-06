@@ -207,6 +207,33 @@ async def embeddings(body: EmbeddingRequest, request: Request):
     }
 
 
+class DecideRequest(BaseModel):
+    state: Any
+    questions: dict[str, dict[str, Any]]
+
+
+@router.post("/decide")
+async def decide(body: DecideRequest, request: Request):
+    """Typed decisions in one forward pass (the Laya decision model).
+
+    ``questions`` maps an id to ``{"type": "noul" | "choice" | "score",
+    "instructions": ..., "criteria": ...}``. Answers come back per id: ``p``
+    (probability of yes) for noul, ``label`` and ``probs`` for choice.
+    """
+    backend = _backend(request)
+    slot = backend.slots.get("decide")
+    if slot is None or not slot.loaded:
+        raise HTTPException(503, "the decision model is not loaded")
+    if not body.questions:
+        raise HTTPException(400, "questions is empty")
+    try:
+        result = await backend.decide(body.state, body.questions)
+    except ValueError as exc:
+        # Laya validates question shapes and says precisely what is wrong.
+        raise HTTPException(400, str(exc)) from exc
+    return {"model": slot.repo, **result}
+
+
 @router.get("/v1/models")
 async def list_models(request: Request):
     backend = request.app.state.backend

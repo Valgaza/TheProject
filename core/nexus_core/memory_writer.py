@@ -30,7 +30,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from .memory_client import MemoryClient
 from .models import GateDecisionRecord, MemoryEpisode, Profile
 from .providers.base import Provider
-from .write_gate import GateFact, decide
+from .decisions import GATE_QUESTIONS, DecisionsClient, log_entry
+from .write_gate import GateDecision, GateFact, decide, looks_trivial
 
 logger = logging.getLogger(__name__)
 
@@ -138,8 +139,16 @@ async def process_decision(
     memory: MemoryClient,
     gate_model: str | None,
     decision_id: uuid.UUID,
+    decisions: DecisionsClient | None = None,
+    laya_gate: str = "off",
+    laya_skip_below: float = 0.15,
 ) -> None:
     """Decide, write, record -- for one queued turn.
+
+    With the decision model enabled for the gate (``laya_gate``), it is asked
+    first. In shadow mode its answer is only recorded beside the LLM gate's;
+    in live mode a confident "not worth remembering" skips the LLM call
+    entirely, which is the common case -- most turns leave nothing behind.
 
     Raises only on infrastructure failure (the database). The write queue
     catches that and retries the row; a gate or graph failure is an outcome,
@@ -161,15 +170,26 @@ async def process_decision(
         recalled = list(record.recalled_facts or [])
 
     started = time.perf_counter()
-    decision = await decide(
-        provider,
-        user_message=user_message,
-        assistant_message=assistant_message,
-        subject_name=subject_name,
-        known_facts=recalled,
-        model=gate_model,
-    )
-    decided_by = "prefilter" if decision.reason.startswith(PREFILTER_PREFIX) else "llm"
+    laya = None
+    laya_state = {"person_said": user_message, "assistant_replied": assistant_message[:400]}
+    ask_laya = decisions is not None and laya_gate in ("shadow", "live") and not looks_trivial(user_message)
+    if ask_laya:
+        laya = await decisions.decide(laya_state, GATE_QUESTIONS)
+    worth = laya.p("worth_remembering") if laya else None
+
+    if laya_gate == "live" and worth is not None and worth < laya_skip_below:
+        decision = GateDecision.skip(f"decision model: not worth remembering (p={worth:.2f})")
+        decided_by = "laya"
+    else:
+        decision = await decide(
+            provider,
+            user_message=user_message,
+            assistant_message=assistant_message,
+            subject_name=subject_name,
+            known_facts=recalled,
+            model=gate_model,
+        )
+        decided_by = "prefilter" if decision.reason.startswith(PREFILTER_PREFIX) else "llm"
     gate_ms = round((time.perf_counter() - started) * 1000)
 
     tiers = _by_tier(decision.facts, project_id, chat_id) if decision.persist else {}
@@ -200,6 +220,17 @@ async def process_decision(
             episodes.append((episode.id, scope, episode.body))
         if not episodes:
             record.status = "done"
+        if ask_laya:
+            # The LLM's verdict is the baseline Laya is measured against; when
+            # Laya decided alone there is none, and the row says so.
+            session.add(log_entry(
+                point="gate", mode=laya_gate, state=laya_state, decision=laya,
+                baseline=None if decided_by == "laya" else {
+                    "persist": bool(decision.persist),
+                    "tiers": sorted({f.scope for f in decision.facts}),
+                },
+                chat_id=chat_id, message_id=message_id,
+            ))
         await session.commit()
 
     if not decision.persist:
