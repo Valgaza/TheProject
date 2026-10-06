@@ -14,7 +14,7 @@ the file to trust.
 | SearXNG | 8080 | Private metasearch. `core`'s web handler is its only caller. |
 | `nexus_memory` | 8000 | Owns the graph: ingest, search, live updates. Answers `core` only. |
 | RAG API | 8001 | `rag/rag_api.py` — the only way `core` reaches the RAG pipeline. Answers `core` only. |
-| Ollama | 11434 | Local inference. Serves both chat and embeddings. |
+| `nexus_runtime` | 8003 | Every local model, on MLX: chat, embeddings. OpenAI-compatible API. Answers `core` and `memory` only. |
 | `nexus_core` | 8100 | Owns chat, the orchestrator, providers, and Postgres. |
 | Frontend | 3000 | Next.js. |
 
@@ -30,12 +30,17 @@ together with one `docker compose up -d` (which `./start.sh` runs for you).
 
 ```bash
 cp .env.example .env          # then fill in NEO4J_PASSWORD, JWT_SECRET and SERVICE_TOKEN
-uv sync                       # installs both services editable
+uv sync                       # every service editable, the MLX runtime included
 cd frontend && npm install && cd ..
+```
 
-brew install ollama           # pulls mlx as a dependency — the fast path here
-ollama pull gpt-oss:20b       # 13 GB. chat + write gate + graph extraction
-ollama pull nomic-embed-text  # 274 MB. embeddings only
+No separate model install: the runtime downloads the models named in `.env` the
+first time it starts (about 5 GB for the default chat model; at a slow
+connection's ~1 MB/s, budget over an hour). To fetch them ahead of time:
+
+```bash
+uv run python -c "from huggingface_hub import snapshot_download as d; \
+  d('mlx-community/Qwen3-8B-4bit'); d('mlx-community/embeddinggemma-300m-4bit')"
 ```
 
 `JWT_SECRET` has no default and the core service refuses to start without it —
@@ -83,70 +88,101 @@ the other was unreachable. They are `nexus_memory` and `nexus_core` now.
 ## Running the models locally
 
 Everything runs on this machine. No API key, no credit, no network call leaves
-the laptop. Both services reach one Ollama daemon through its OpenAI-compatible
-endpoint:
+the laptop except an explicitly requested web search. Every model lives in one
+process, the runtime (`runtime/`, port 8003), on Apple's MLX. It serves an
+OpenAI-compatible API, so `core` and graphiti reach it with nothing more than:
 
 ```
-OPENAI_BASE_URL=http://localhost:11434/v1
-OPENAI_API_KEY=ollama-local-no-key-needed   # required by config, ignored by Ollama
+OPENAI_BASE_URL=http://localhost:8003/v1
+OPENAI_API_KEY=${SERVICE_TOKEN}        # the runtime checks it like memory and RAG do
 ```
 
-`OPENAI_API_KEY` is still `_require`d by both configs, so it has to hold
-something — but Ollama never reads it. It is a placeholder, not a credential.
-
-Start the daemon:
+`./start.sh` starts the runtime first, so its models load while the containers
+boot, and waits for `curl -s localhost:8003/health` to say `"status": "ok"`
+before starting anything that calls it. The first start downloads the models
+from Hugging Face into `~/.cache/huggingface`; after that, loading takes
+seconds. To run it by hand:
 
 ```bash
-OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 \
-OLLAMA_CONTEXT_LENGTH=16384 ollama serve
+uv run uvicorn nexus_runtime.main:app --port 8003     # no --reload: it would reload the weights
 ```
 
-All three matter on a 24 GB machine. The q8 KV cache roughly halves what the
-context window costs, which is what makes the third flag affordable: Ollama
-derives a default context from available VRAM and lands on **4096**, far too
-small for a turn that carries chat history, recalled facts and an assembled
-RAG prompt together. It would truncate silently. Measured here, 16K costs
-nothing extra in resident size — still 12 GB, still 100% GPU.
+### Why one process owns every model
+
+There is one GPU. The runtime runs all model work on a single worker thread,
+one step at a time (a step is one generated token), and before every step picks
+the most urgent job waiting (`runtime/nexus_runtime/engine.py`). Callers say how
+urgent they are with an `X-Nexus-Priority` header:
+
+| Priority | Who sends it |
+|---|---|
+| `live` | the answer someone is waiting for; every embedding |
+| `interactive` | titles, the write gate, the web-query rewrite (the default) |
+| `bulk` | graphiti's extraction (`memory/nexus_memory/main.py`) |
+
+So a reply overtakes a background extraction within one token of arriving,
+and extraction resumes where it stopped. Under Ollama the two simply competed:
+the baseline measured memory writes stretching to 70-120 s and timing out.
+
+It also keeps each conversation's KV cache between turns
+(`RUNTIME_PROMPT_CACHE_*`), so a follow-up only processes what is new, and it
+enforces `response_format: json_schema` with xgrammar's token masks, so
+graphiti's structured extraction cannot come back as malformed JSON.
+
+`GET /models` shows what is loaded and how much memory it holds;
+`POST /models/{chat|embed}/unload` and `/load` move a model in or out.
 
 ### Which model does what
 
-One model covers three jobs, because loading two at once does not fit:
+One chat model covers every job, because two do not fit alongside everything
+else:
 
 | Setting | Model |
 |---|---|
-| `CORE_CHAT_MODEL` | `gpt-oss:20b` |
-| `CORE_GATE_MODEL` | `gpt-oss:20b` |
-| `MEMORY_EXTRACTION_MODEL` | `gpt-oss:20b` |
-| `MEMORY_EMBEDDING_MODEL` | `nomic-embed-text` |
+| `CORE_CHAT_MODEL` | `mlx-community/Qwen3-8B-4bit` (provisional, see below) |
+| `CORE_GATE_MODEL` | same |
+| `MEMORY_EXTRACTION_MODEL` | same |
+| `MEMORY_EMBEDDING_MODEL` | `mlx-community/embeddinggemma-300m-4bit` (768-d) |
 
-`gpt-oss:20b` is a 21B mixture-of-experts model with roughly 3.6B parameters
-active per token, so it reads a fraction of its weights on each step and runs
-far quicker than 21B suggests. Its MXFP4 weights are **native** — OpenAI
-trained it in 4-bit rather than quantising a larger model afterwards — which
-matters here more than raw benchmark scores. Post-hoc 4-bit quantisation costs
-1.5–3% perplexity, and that damage lands disproportionately on precise
-reasoning and structured output: exactly what the write gate and graphiti
-extraction do. A natively-4-bit model never paid that tax.
+The chat model is chosen by benchmark (`scripts/extraction_check.py` for graph
+quality, `tests/test_scenarios.py` for behaviour); the record goes in
+`docs/benchmarks/`. The runtime turns Qwen3's
+thinking off by default (`RUNTIME_ENABLE_THINKING=0`): thinking tokens are
+latency nobody sees.
+
+**Changing the embedding model invalidates every stored vector.** After any
+change to `MEMORY_EMBEDDING_MODEL` (including the move from Ollama's
+nomic-embed-text):
+
+```bash
+uv run python scripts/reembed_graph.py      # recompute every name and fact vector
+uv run python scripts/floor_sweep.py        # re-measure MEMORY_SEARCH_MIN_SCORE
+```
+
+Document vectors are unaffected: the RAG pipeline embeds with its own model.
 
 ### The memory ceiling
 
-Ollama reports what it can actually use at startup:
-
-```
-inference compute ... name=MTL0 description="Apple M5 Pro" total="17.8 GiB"
-```
-
-That 17.8 GiB is macOS's default GPU wired limit, about 75% of installed RAM.
-It caps the model **plus** its KV cache, not just the weights. `gpt-oss:20b` at
-13 GB leaves roughly 4 GB of headroom; an 18 GB model does not fit at all, even
-though the machine has 24 GB. The limit can be raised:
+macOS lets the GPU use about 75% of installed RAM by default: **17.8 GiB** on
+this 24 GB M5 Pro. That ceiling covers the model, its KV cache and the prompt
+cache together. `RUNTIME_MEMORY_LIMIT_GB` caps what MLX may take below it. The
+limit itself can be raised:
 
 ```bash
 sudo sysctl iogpu.wired_limit_mb=20480     # resets on reboot
 ```
 
 Starving macOS of memory to feed the GPU destabilises the whole system, so
-treat that as an experiment, not a default.
+treat that as an experiment, not a default. The containers are capped in
+`docker-compose.yml` (Neo4j's heap and page cache included) for the same
+reason: every gigabyte they do not take is one the model can.
+
+### Ollama, the fallback
+
+Until the MLX runtime has proven itself through the eval, Ollama still works:
+set `OPENAI_BASE_URL=http://localhost:11434/v1` and Ollama tags for the model
+names (`gpt-oss:20b`, `nomic-embed-text`), and `start.sh` starts Ollama instead
+of the runtime. Switching embedding models either way means re-embedding.
 
 ### Graphiti needs the generic client
 
@@ -261,6 +297,9 @@ uv run pytest                  # ~320 tests, about a minute (the RAG suite
 RUN_SCENARIOS=1 uv run pytest tests -v
                                # end-to-end scenarios: needs all services up
                                # and the local model, takes several minutes
+
+RUN_MLX=1 uv run pytest runtime/tests
+                               # the runtime on real small MLX models
 ```
 
 The scenario suite is the one that answers whether memory actually works:
@@ -361,9 +400,15 @@ core log for `gate returned unparseable output` before blaming the graph.
 **A local model that reasons out loud breaks the write gate.** `_parse`
 tolerates a ```json fence and nothing else. Any model whose chain-of-thought
 lands in the response body rather than a separate field fails every gate call,
-silently, as above.
+silently, as above. The runtime turns thinking off and strips any
+`<think>…</think>` span from what it returns, so this only bites on Ollama.
 
-**Ollama says a model is too large but the machine has 24 GB.** macOS caps
+**A model is "too large" but the machine has 24 GB.** macOS caps
 GPU-wired memory at roughly 75% of RAM — 17.8 GiB here — and that cap covers
-the KV cache as well as the weights. Ollama prints its real ceiling at startup:
-`inference compute ... total="17.8 GiB"`.
+the KV cache as well as the weights. Ollama prints its real ceiling at startup
+(`inference compute ... total="17.8 GiB"`); for the runtime, `GET /models`
+shows active and peak MLX memory.
+
+**Downloads hang at 0 bytes.** The Hugging Face client fetches through its Xet
+storage backend, which can stall on some networks. `HF_HUB_DISABLE_XET=1`
+falls back to plain HTTPS.

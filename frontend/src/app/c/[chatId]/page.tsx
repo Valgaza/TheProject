@@ -253,8 +253,16 @@ const AssistantMessage = ({
   message: Message;
   onViewGraph: () => void;
 }) => {
-  const { route, route_reason, latency_ms, error } = message.metadata;
+  const { route, route_reason, latency_ms, timings, error } = message.metadata;
   const domain = domainById(route ?? "general");
+  // The whole turn when it was measured, which is what the person waited
+  // for; older messages only carry the model call.
+  const shownMs = timings?.total_ms ?? latency_ms;
+  const breakdown = timings
+    ? Object.entries(timings)
+        .map(([stage, ms]) => `${stage.replace(/_ms$/, "")} ${(ms / 1000).toFixed(2)}s`)
+        .join("\n")
+    : undefined;
 
   return (
     <div className="msg msg--ai msg-enter">
@@ -263,8 +271,10 @@ const AssistantMessage = ({
         <strong>Nexus · {domain.name}</strong>
         <span>{new Date(message.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
         <span style={{ flex: 1 }} />
-        {latency_ms != null && (
-          <span style={{ color: "var(--ink-3)" }}>· {(latency_ms / 1000).toFixed(1)}s</span>
+        {shownMs != null && (
+          <span style={{ color: "var(--ink-3)", cursor: breakdown ? "help" : undefined }} title={breakdown}>
+            · {(shownMs / 1000).toFixed(1)}s
+          </span>
         )}
       </div>
       <div className="msg__body">

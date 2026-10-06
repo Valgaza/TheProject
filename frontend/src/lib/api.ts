@@ -44,6 +44,10 @@ export type Message = {
     route?: string;
     route_reason?: string;
     latency_ms?: number;
+    // Wall-clock per stage of the turn, in ms (history_ms, memory_ms, rag_ms,
+    // rag_service_ms, web_ms, generation_ms, title_wait_ms, total_ms). Only
+    // stages that ran are present.
+    timings?: Record<string, number>;
     prompt_messages?: number;
     error?: string;
     // Recorded on the assistant message, so a reloaded thread can show what

@@ -40,6 +40,9 @@ class FakeProvider(Provider):
         # a chat's first message, and tests written against chat_calls expect
         # it to hold only real answer prompts, at stable indices.
         self.title_calls: list[list[Message]] = []
+        # The priority each answer call asked for, in order (see
+        # Provider.chat): only the reply someone is waiting on is "live".
+        self.chat_priorities: list[str] = []
 
     async def chat(
         self,
@@ -47,11 +50,14 @@ class FakeProvider(Provider):
         *,
         model: str | None = None,
         max_tokens: int | None = None,
+        priority: str = "interactive",
+        response_format: dict | None = None,
     ) -> str:
         if messages and messages[0].get("content") == TITLE_SYSTEM_PROMPT:
             self.title_calls.append(list(messages))
             return "Fake Title"
         self.chat_calls.append(list(messages))
+        self.chat_priorities.append(priority)
         return "fake reply"
 
     async def embed(

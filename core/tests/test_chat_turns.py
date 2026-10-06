@@ -180,3 +180,11 @@ def test_a_long_title_is_clipped_on_a_word_boundary():
     assert len(title) <= TITLE_MAX_CHARS + 1  # room for the ellipsis
     assert title.endswith("…")
     assert set(title.rstrip("…").split()) == {"word"}
+
+
+async def test_only_the_answer_is_a_live_model_call(db_client, provider):
+    chat = await _make_chat(db_client)
+
+    await db_client.post(f"/chats/{chat['id']}/messages", json={"content": "hello"})
+
+    assert provider.chat_priorities == ["live"]

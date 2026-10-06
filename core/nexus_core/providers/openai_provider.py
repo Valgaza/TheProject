@@ -59,14 +59,21 @@ class OpenAIProvider(Provider):
         *,
         model: str | None = None,
         max_tokens: int | None = None,
+        priority: str = "interactive",
+        response_format: dict | None = None,
     ) -> str:
         resolved = model or self._chat_model
         kwargs: dict = {
             "model": resolved,
             "messages": list(messages),
+            # Read by nexus_runtime's scheduler (runtime/nexus_runtime/engine.py)
+            # so a live reply overtakes background work on the one GPU.
+            "extra_headers": {"X-Nexus-Priority": priority},
         }
         if max_tokens is not None:
             kwargs["max_completion_tokens"] = max_tokens
+        if response_format is not None:
+            kwargs["response_format"] = response_format
 
         response = await self._client.chat.completions.create(**kwargs)
         content = response.choices[0].message.content or ""

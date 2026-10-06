@@ -40,6 +40,7 @@ services:
       - ./db/seed.sql:/seed.sql:ro
       - ./docker/postgres-init.sh:/docker-entrypoint-initdb.d/init.sh:ro
     restart: unless-stopped
+    mem_limit: 512m
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -58,10 +59,19 @@ services:
       NEO4J_AUTH: "${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD:-nexus-local}"
       NEO4J_PLUGINS: '["apoc"]'
       NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
+      # Capped: left alone, Neo4j sizes its heap and page cache from the
+      # container's memory and grew to ~850 MB on a graph of a few hundred
+      # nodes. On a 24 GB machine where the language model needs every spare
+      # gigabyte, the database gets a fixed, small share. Plenty for a
+      # personal graph; raise both if one ever grows into the millions.
+      NEO4J_server_memory_heap_initial__size: "256m"
+      NEO4J_server_memory_heap_max__size: "512m"
+      NEO4J_server_memory_pagecache_size: "256m"
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
     restart: unless-stopped
+    mem_limit: 1g
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
       interval: 10s
@@ -82,6 +92,7 @@ services:
     volumes:
       - qdrant_storage:/qdrant/storage
     restart: unless-stopped
+    mem_limit: 1g
     healthcheck:
       # The qdrant image ships no curl, wget, nc or python — the curl-based
       # check inherited from rag/docker-compose.yml always failed, so the
@@ -109,6 +120,7 @@ services:
     environment:
       - SEARXNG_BASE_URL=http://localhost:8080/
     restart: unless-stopped
+    mem_limit: 256m
 
 volumes:
   postgres_data:

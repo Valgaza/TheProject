@@ -62,6 +62,10 @@ def _derive_title(content: str) -> str:
     return f"{clipped or first_line[:TITLE_MAX_CHARS]}…"
 
 
+def _ms_since(started: float) -> int:
+    return round((time.perf_counter() - started) * 1000)
+
+
 async def _load_history(session: AsyncSession, chat_id: uuid.UUID) -> list[Message]:
     """The most recent turns, returned oldest first."""
     result = await session.execute(
@@ -174,6 +178,11 @@ async def generate_turn(
     Both messages are written even if generation fails — the transcript records
     what was said, and a turn that errored is still something that was said.
     """
+    turn_started = time.perf_counter()
+    # Wall-clock per stage, in ms, stored on the answer as meta.timings. Every
+    # latency change in the milestone is judged against these numbers.
+    timings: dict[str, int] = {}
+
     route = await select_route(
         content=content, attachments=attachments, rag=rag, use_web=use_web
     )
@@ -199,13 +208,16 @@ async def generate_turn(
         else None
     )
 
+    stage = time.perf_counter()
     history = await _load_history(session, chat.id)
+    timings["history_ms"] = _ms_since(stage)
 
     # Retrieval runs against what the user just said, before generation. It is
     # allowed to come back empty -- an unreachable memory service degrades the
     # answer, it does not fail the turn.
     facts: list[Fact] = []
     if memory is not None:
+        stage = time.perf_counter()
         try:
             facts = await memory.search(
                 content, user_id=user_id, project_id=chat.project_id
@@ -215,6 +227,7 @@ async def generate_turn(
             # everything else, because the rule is that memory degrades an
             # answer and never fails one.
             logger.exception("Memory search raised for chat=%s", chat.id)
+        timings["memory_ms"] = _ms_since(stage)
 
     # Documents are a retrieval tier, not a route -- the same shape as memory
     # above, and for the same reason. Memory is never routed to: every turn
@@ -231,10 +244,15 @@ async def generate_turn(
     # vision and speech, which the orchestrator already anticipates.
     rag_result: RagResult | None = None
     if rag is not None:
+        stage = time.perf_counter()
         try:
             candidate = await rag.query(
                 content, user_id=user_id, project_id=chat.project_id
             )
+            if candidate is not None and candidate.elapsed_seconds is not None:
+                # The pipeline's own time, so the HTTP hop shows up as the
+                # difference from rag_ms.
+                timings["rag_service_ms"] = round(candidate.elapsed_seconds * 1000)
             if candidate is not None and candidate.sources:
                 if candidate.best_score >= rag_min_score:
                     rag_result = candidate
@@ -249,6 +267,7 @@ async def generate_turn(
             # returns None; this catches anything else, same reasoning as
             # the memory search above.
             logger.exception("RAG query raised for chat=%s", chat.id)
+        timings["rag_ms"] = _ms_since(stage)
 
     # Only when asked for, and only through the client that redacts: the
     # query that goes out is the client's rewrite, never the raw message.
@@ -262,6 +281,7 @@ async def generate_turn(
                                        getattr(profile, "email", None)) if n]
             # The cheap model, same as titles and the write gate: rewriting a
             # question into a topic is small work.
+            stage = time.perf_counter()
             try:
                 web_search = await web.search(
                     content, provider=provider, model=title_model, known_names=known_names
@@ -271,13 +291,16 @@ async def generate_turn(
                 # error; this catches anything else, same as memory and RAG.
                 logger.exception("Web search raised for chat=%s", chat.id)
                 web_search = WebSearch(query_sent=None, error="web search failed")
+            timings["web_ms"] = _ms_since(stage)
 
     prompt = build_prompt(history, facts, rag_result, web_search)
 
     started = time.perf_counter()
     error: str | None = None
     try:
-        answer = await provider.chat(prompt)
+        # Live: the one call a person is waiting on, so a local runtime runs
+        # it ahead of any background work.
+        answer = await provider.chat(prompt, priority="live")
     except Exception as exc:
         logger.exception("Generation failed for chat=%s", chat.id)
         error = f"{exc.__class__.__name__}: {exc}"
@@ -286,9 +309,13 @@ async def generate_turn(
             "try again once the provider is reachable."
         )
     latency_ms = round((time.perf_counter() - started) * 1000)
+    timings["generation_ms"] = latency_ms
 
     if title_task is not None:
+        stage = time.perf_counter()
         smart_title = await title_task
+        # Only the wait left after the answer: the title ran alongside it.
+        timings["title_wait_ms"] = _ms_since(stage)
         # Falls back to the cheap first-line derivation if the model call
         # failed or came back empty -- a chat still needs *a* name, even a
         # bad one, rather than sitting on the placeholder forever.
@@ -311,10 +338,12 @@ async def generate_turn(
             ),
         )
 
+    timings["total_ms"] = _ms_since(turn_started)
     meta: dict = {
         "route": effective_route.handler,
         "route_reason": effective_route.reason,
         "latency_ms": latency_ms,
+        "timings": timings,
         "prompt_messages": len(prompt),
         # What was recalled, so the UI can show it and so a bad answer can be
         # traced back to what the model was told.
@@ -353,13 +382,14 @@ async def generate_turn(
     await session.flush()
 
     logger.info(
-        "turn chat=%s handler=%s latency_ms=%d history=%d recalled=%d rag_sources=%d%s",
+        "turn chat=%s handler=%s latency_ms=%d history=%d recalled=%d rag_sources=%d timings=%s%s",
         chat.id,
         route.handler,
         latency_ms,
         len(history),
         len(facts),
         len(rag_result.sources) if rag_result else 0,
+        " ".join(f"{k.removesuffix('_ms')}={v}" for k, v in timings.items()),
         " FAILED" if error else "",
     )
     return Turn(

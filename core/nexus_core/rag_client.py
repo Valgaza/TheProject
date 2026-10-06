@@ -48,6 +48,9 @@ class RagSource:
 class RagResult:
     prompt: str
     sources: tuple[RagSource, ...] = ()
+    # How long the RAG pipeline itself took, as it reports it. None when the
+    # service doesn't say (an older build, or a test double).
+    elapsed_seconds: float | None = None
 
     @property
     def best_score(self) -> float:
@@ -206,5 +209,8 @@ class RagClient:
                     rerank_score=float(s.get("rerank_score") or 0.0),
                 )
                 for s in body.get("sources", [])
+            ),
+            elapsed_seconds=(
+                float(body["elapsed_seconds"]) if body.get("elapsed_seconds") is not None else None
             ),
         )
