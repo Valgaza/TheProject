@@ -146,6 +146,18 @@ class Settings:
         self.voice_barge_threshold = float(_optional("CORE_VOICE_BARGE_THRESHOLD", "0.8"))
         self.laya_end_of_turn = _optional("CORE_LAYA_END_OF_TURN", "shadow")
         self.laya_barge_in = _optional("CORE_LAYA_BARGE_IN", "shadow")
+
+        # ── Voice over WebRTC (voice/pipeline.py) ───────────────────────────
+        # Silence before Smart Turn is asked whether the person has finished,
+        # and how long it waits when it says they haven't.
+        self.voice_vad_stop_ms = int(_optional("CORE_VOICE_VAD_STOP_MS", "200"))
+        self.voice_incomplete_wait_ms = int(_optional("CORE_VOICE_INCOMPLETE_WAIT_MS", "2000"))
+        # Speech over an answer stops it at this many words (a short "mm-hmm"
+        # never does), or after this long talking without a pause.
+        self.voice_interrupt_min_words = int(_optional("CORE_VOICE_INTERRUPT_MIN_WORDS", "3"))
+        self.voice_interrupt_after_ms = int(_optional("CORE_VOICE_INTERRUPT_AFTER_MS", "1000"))
+        # Speaking again this soon after a turn ended carries the same turn on.
+        self.voice_continue_within_ms = int(_optional("CORE_VOICE_CONTINUE_WITHIN_MS", "2000"))
         self.port = int(_optional("CORE_PORT", "8100"))
         self.cors_origins = [
             origin.strip()
