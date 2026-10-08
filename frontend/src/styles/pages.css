@@ -1561,6 +1561,8 @@
 .voicebar--listening .voicebar__orb { background: var(--d-speech); opacity: 0.55; }
 .voicebar--hearing .voicebar__orb { background: var(--d-speech); transform: scale(1.35); animation: voicePulse 900ms var(--ease-in-out) infinite; }
 .voicebar--thinking .voicebar__orb { background: var(--accent); animation: voicePulse 1400ms var(--ease-in-out) infinite; }
+/* Rose, as everywhere else that marks words leaving the machine. */
+.voicebar--searching .voicebar__orb { background: var(--d-web); animation: voicePulse 1100ms var(--ease-in-out) infinite; }
 .voicebar--speaking .voicebar__orb { background: var(--accent); transform: scale(1.2); }
 .voicebar__text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: var(--t-body-s); }
 .voicebar__heard { color: var(--ink-3, var(--ink-2)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
