@@ -26,6 +26,7 @@ dependencies = [
     # microphone audio -- too frequent to be a call to the runtime.
     "numpy>=1.26",
     "onnxruntime>=1.18",
+    "pipecat-ai[webrtc]==1.12.0",
 ]
 
 [dependency-groups]
