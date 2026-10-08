@@ -15,7 +15,7 @@ import pytest
 from nexus_core.chat_service import CONTEXT_DIVIDER, build_prompt
 from nexus_core.orchestrator import select_route
 from nexus_core.rag_client import RagResult, RagSource
-from nexus_core.web_client import WebClient, WebResult, WebSearch
+from nexus_core.web_client import WebClient, WebResult, WebSearch, accepts, offers_web
 
 
 # ── The client (redaction itself is tested in websearch/tests) ───────────────
@@ -68,9 +68,47 @@ async def test_the_web_only_runs_when_asked_for():
     "Search The Web for raft",
     "can you look it up online?",
     "look this up online please",
+    "Reference the web for this because I think you have outdated information.",
+    "Check online who the president is",
+    "look it up",
+    "google that for me",
+    "what does the internet say about Qdrant vs Milvus?",
+    "look up the news online",
+    "Look up who the prime minister is",
+    "could you look up the train times?",
 ])
 async def test_every_trigger_phrase_routes_to_the_web(content):
     assert (await select_route(content=content)).handler == "web"
+
+
+@pytest.mark.parametrize("content", [
+    "I read online that MLX is fast, is that true?",
+    "I look up to my father",
+    "Look at the web page I sent",
+    "I looked it up yesterday",
+    "what is the boiling point of water",
+])
+async def test_mentioning_the_internet_is_not_asking_for_it(content):
+    assert (await select_route(content=content)).handler == "general"
+
+
+@pytest.mark.parametrize("answer,offer", [
+    ("Joe Biden, as of my training. Want me to check online?", True),
+    ("Would you like me to look that up?", True),
+    ("Do you want me to search the web for the latest?", True),
+    ("Anything else?", False),
+    ("Want me to tell you more?", False),
+])
+def test_an_offer_to_check(answer, offer):
+    assert offers_web(answer) is offer
+
+
+@pytest.mark.parametrize("reply,yes", [
+    ("Yes.", True), ("Yeah, go ahead", True), ("Sure, please do.", True), ("Okay", True),
+    ("No thanks", False), ("Not now", False), ("Yes, but what about the dog and the keeper?", False),
+])
+def test_a_plain_yes(reply, yes):
+    assert accepts(reply) is yes
 
 
 # ── The prompt ───────────────────────────────────────────────────────────────
@@ -201,3 +239,33 @@ async def test_an_unconfigured_web_search_tells_the_model_so(db_client, provider
     assert response.json()["assistant_message"]["metadata"]["web"]["error"]
     prompt_text = "\n".join(m["content"] for m in provider.chat_calls[-1])
     assert "could not check the web" in prompt_text
+
+
+async def test_yes_to_the_offer_searches_the_question_it_was_about(db_client, provider):
+    web = FakeWeb()
+    db_client._transport.app.state.web = web
+    chat = await _make_chat(db_client)
+    replies = iter(["Joe Biden, but that may be out of date. Want me to check online?", "fake reply"])
+    answer = provider.chat
+
+    async def offering(messages, **kwargs):
+        reply = await answer(messages, **kwargs)
+        return next(replies, reply) if reply == "fake reply" else reply
+
+    provider.chat = offering
+    first = (await db_client.post(f"/chats/{chat['id']}/messages", json={"content": "who's the US president?"})).json()
+    assert first["route"]["handler"] == "general" and web.messages == []
+
+    second = (await db_client.post(f"/chats/{chat['id']}/messages", json={"content": "Yes please"})).json()
+    assert second["route"]["handler"] == "web"
+    assert "said yes" in second["route"]["reason"]
+    assert web.messages == ["who's the US president?"]
+
+
+async def test_yes_without_an_offer_goes_nowhere(db_client):
+    web = FakeWeb()
+    db_client._transport.app.state.web = web
+    chat = await _make_chat(db_client)
+    await db_client.post(f"/chats/{chat['id']}/messages", json={"content": "is raft a consensus algorithm?"})
+    body = (await db_client.post(f"/chats/{chat['id']}/messages", json={"content": "Yes"})).json()
+    assert body["route"]["handler"] == "general" and web.messages == []

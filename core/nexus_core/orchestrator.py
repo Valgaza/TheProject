@@ -51,6 +51,7 @@ async def select_route(
     attachments: Sequence[Attachment] = (),
     rag: "RagClient | None" = None,
     use_web: bool = False,
+    accepted_web_offer: bool = False,
     web_intent_p: float | None = None,
     web_intent_above: float = 0.9,
 ) -> Route:
@@ -94,6 +95,10 @@ async def select_route(
         route = Route(handler="web", reason="web search requested from the composer")
     elif WEB_TRIGGER.search(content):
         route = Route(handler="web", reason="the message asks to search the web")
+    elif accepted_web_offer:
+        # Asked, in two steps: Nexus offered to check online, and the person
+        # said yes. The search is for the question that prompted the offer.
+        route = Route(handler="web", reason="the person said yes to checking online")
     elif web_intent_p is not None and web_intent_p >= web_intent_above:
         route = Route(
             handler="web",
