@@ -24,7 +24,7 @@ from .orchestrator import Attachment, Route, select_route
 from .providers.base import Message as ProviderMessage
 from .providers.base import Provider
 from .rag_client import RagClient, RagResult, RagSource
-from .web_client import WEB_TRIGGER, WebClient, WebSearch
+from .web_client import WEB_TRIGGER, WebClient, WebSearch, accepts, offers_web
 from .decisions import WEB_INTENT_QUESTIONS, DecisionsClient, log_entry
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,15 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = (
     "You are Nexus, a local-first assistant. Answer directly and concretely. "
     "Prefer specifics over generalities, admit what you do not know, and keep "
-    "formatting plain unless the answer genuinely needs structure."
+    "formatting plain unless the answer genuinely needs structure. "
+    # The web runs only when the person asks (flag 1), so the model is told
+    # it exists and how to offer it, rather than claiming it can't.
+    "Nexus can search the web, but only when the person asks, so you never "
+    "browse on your own. When a question depends on recent or changing facts "
+    "(news, who holds an office now, prices, releases, today's date) and no "
+    "web results are attached, answer from what you know, say it may be out "
+    "of date, and end with exactly: \"Want me to check online?\" Never say "
+    "you have no way to reach the internet."
 )
 
 # Added for a spoken turn (voice/). Every word is waited for twice over, once
@@ -296,6 +304,19 @@ async def _search_web(
         return WebSearch(query_sent=None, error="web search failed")
 
 
+async def question_offered_a_search(session: AsyncSession, chat_id: uuid.UUID) -> str | None:
+    """If the chat's last answer offered to check online, the question it
+    was answering; otherwise None."""
+    rows = (await session.execute(
+        select(Message).where(Message.chat_id == chat_id, Message.role != "system")
+        .order_by(Message.created_at.desc()).limit(2)
+    )).scalars().all()
+    if len(rows) == 2 and rows[0].role == "assistant" and rows[1].role == "user" \
+            and offers_web(rows[0].content):
+        return rows[1].content
+    return None
+
+
 @dataclass
 class Retrieval:
     """Memory and documents, fetched for a message before its turn begins.
@@ -363,12 +384,18 @@ async def prepare_turn(
     # latency change in the milestone is judged against these numbers.
     timings: dict[str, int] = {}
 
+    # "Yes" to Nexus's own "Want me to check online?": the search is asked
+    # for, and it is for the question that prompted the offer.
+    offered_question = None
+    if not use_web and not WEB_TRIGGER.search(content) and accepts(content):
+        offered_question = await question_offered_a_search(session, chat.id)
+
     # Only asked when nothing cheaper has already decided: the button and the
     # trigger phrases settle most web requests without a model.
     intent = None
     ask_laya = (
         decisions is not None and laya_web_intent in ("shadow", "live")
-        and not use_web and not WEB_TRIGGER.search(content)
+        and not use_web and not WEB_TRIGGER.search(content) and offered_question is None
     )
     shadow_intent: asyncio.Task | None = None
     if ask_laya and laya_web_intent == "live":
@@ -382,6 +409,7 @@ async def prepare_turn(
 
     route = await select_route(
         content=content, attachments=attachments, rag=rag, use_web=use_web,
+        accepted_web_offer=offered_question is not None,
         web_intent_p=intent.p("asks_for_web") if intent and laya_web_intent == "live" else None,
         web_intent_above=laya_web_intent_above,
     )
@@ -442,7 +470,7 @@ async def prepare_turn(
     facts, rag_result, web_search = await asyncio.gather(
         done(retrieval.facts),
         done(retrieval.documents),
-        _timed(timings, "web_ms", _search_web(web, content, known_names, user_id, chat))
+        _timed(timings, "web_ms", _search_web(web, offered_question or content, known_names, user_id, chat))
         if route.handler == "web" else nothing(),
     )
     timings.update(retrieval.timings)

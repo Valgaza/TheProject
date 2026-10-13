@@ -17,12 +17,12 @@ local models. Vision is being developed separately on `feature/vision-v1`.
 
 ```
                        frontend :3000
-                             │   session cookie; voice over a websocket
+                             │   session cookie; voice over WebRTC
                              ▼
         ┌──────────────── core :8100 ─────────────────┐
         │  auth, chats, projects, documents, routing,  │
         │  prompt assembly, the memory write queue,    │
-        │  voice sessions (turn-taking, barge-in)      │
+        │  voice sessions (Pipecat, Smart Turn)        │
         └───┬──────────────┬──────────────┬───────┬────┘
             │              │ service token│       │      only when asked
             ▼              ▼              ▼       ▼
@@ -123,15 +123,18 @@ log, and shown on the message. Why it works this way: flag 1 in
 
 ### Talking to it
 
-The mic button opens a hands-free conversation in the same chat: speak, pause,
-and the answer is spoken back a sentence at a time while the rest is still
-being written. Talk over it and it stops, keeping only what you heard. Voice
-turns are ordinary messages, with the same memory, documents and web.
+The mic button opens a hands-free conversation in the same chat, over WebRTC:
+speak, pause, and the answer is spoken back a piece at a time while the rest
+is still being written. Smart Turn listens to how you said something to tell a
+finished sentence from a pause. Talk over it and it stops, keeping only what
+you heard; "mm-hmm" doesn't stop it. Ask it to look something up and it says
+so first, then searches. Voice turns are ordinary messages, with the same
+memory, documents and web.
 
 ### Decisions that do not need an LLM
 
 Several choices in a turn are classifications: is this worth remembering, is
-it asking for the web, has the speaker finished, was that an interruption.
+it asking for the web, does this query still identify someone.
 Laya, a small decision model in the runtime, answers them in milliseconds.
 Each one runs in shadow first, logged beside the existing logic, and goes live
 only after measuring well on hand-labelled examples (`RUNBOOK.md`).

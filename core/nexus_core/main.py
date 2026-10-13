@@ -26,6 +26,7 @@ from .rag_client import RagClient
 from .web_client import WebClient
 from .write_queue import Activity, WriteQueue
 from .decisions import DecisionsClient, runtime_root
+from .routers.voice_rtc import close_voice
 from .routers import (
     auth_router,
     chats_router,
@@ -33,7 +34,7 @@ from .routers import (
     graph_router,
     maintenance_router,
     projects_router,
-    voice_router,
+    voice_rtc_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -121,6 +122,7 @@ async def lifespan(app: FastAPI):
     )
     yield
 
+    await close_voice(app)
     await write_queue.stop()
     await engine.dispose()
     await http.aclose()
@@ -167,7 +169,7 @@ app.include_router(projects_router)
 app.include_router(chats_router)
 app.include_router(documents_router)
 app.include_router(graph_router)
-app.include_router(voice_router)
+app.include_router(voice_rtc_router)
 app.include_router(maintenance_router)
 
 
