@@ -186,6 +186,42 @@ set `OPENAI_BASE_URL=http://localhost:11434/v1` and Ollama tags for the model
 names (`gpt-oss:20b`, `nomic-embed-text`), and `start.sh` starts Ollama instead
 of the runtime. Switching embedding models either way means re-embedding.
 
+### How a fact becomes memory (rebuilt 2026-10-13)
+
+Measured with `scripts/memory_scenarios.py` (a throwaway user, 19 statements
+across loose chats and two projects, 19 recall questions from every place;
+reports in `docs/benchmarks/2026-10-13-memory-scenarios.md`): recall went from
+11/18 to 19/19 in three runs in a row, the graph from 4 relationships to 26-28.
+
+1. **The write gate** (core, `write_gate.py`) keeps facts, each as a sentence
+   and a triple (subject, relation, object), with checks in code around the
+   model: questions and hypotheticals skipped; dates must come from the
+   message (relative ones resolved in `clock.py`); split words healed and
+   garbled names repaired from the sentence; a second pass naming any words
+   of the message the facts left out; the message kept verbatim if a detail
+   is still missing, or if the decision model is sure it holds a fact the
+   model declined.
+2. **Tier** (`memory_writer._rescope`): in a project chat, a fact filed as
+   personal goes back to the project if it names the work or the project, or
+   if Laya's tier question says so.
+3. **Corrections**: "switched from X to Y" / "instead of X" / "no longer X"
+   retire the known facts naming X; the model's own "replaces" is kept only
+   where it fits; verbatim lines are never retired automatically.
+4. **The memory service** stores each fact in the **ledger** (`ledger.py`,
+   `NexusFact` nodes with EmbeddingGemma embeddings, in the same tier) and
+   writes the **graph** from the triples (`graph_writer.py`: entities matched
+   by name, variant or name embedding; one edge per fact). No LLM pass, so a
+   write takes milliseconds; graphiti's extraction remains for writes without
+   triples (`MEMORY_GRAPH_MODE`).
+5. **Recall** ranks ledger facts by meaning (cosine with EmbeddingGemma's query
+   and document prompts, plus a keyword bonus), then graph relationships;
+   summaries and old episodes that only repeat ledger facts are skipped. Each
+   ledger fact carries its score to core, which says "nothing in memory
+   answers this" next to a personal question whose best match is under 0.29.
+
+Old memories written before the ledger have no ledger facts; they are still
+found through the graph and their episodes.
+
 ### Graphiti needs the generic client
 
 `memory/nexus_memory/main.py` builds `OpenAIGenericClient`, **not**
