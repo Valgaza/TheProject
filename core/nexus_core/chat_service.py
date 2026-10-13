@@ -272,6 +272,13 @@ def build_prompt(
     latest = turns[-1] if turns and turns[-1].role == "user" else None
     if facts:
         context.append(render_memory(facts, person))
+        unmatched = unmatched_words(latest.content, facts) if latest is not None else []
+        best = max((f.score for f in facts if getattr(f, "score", None) is not None), default=0.0)
+        if unmatched and best < STRONG_MATCH and latest_is_personal(history):
+            # "When is my driving test?" with only Kavya's job recalled was
+            # answered with an invented date.
+            context.append(f"None of the facts above mentions {', '.join(unmatched)}. If they don't "
+                           "answer the question, reply \"I don't know\".")
     elif latest_is_personal(history):
         context.append(NOTHING_RECALLED)
     if rag_result is not None and rag_result.prompt:
@@ -349,6 +356,28 @@ NOTHING_RECALLED = (
     "work or plans, reply \"I don't know\" rather than making anything up."
 )
 _PERSONAL = re.compile(r"\b(i|i'm|me|my|mine|we|our|us)\b", re.IGNORECASE)
+
+
+_QUESTION_STOP = set("""what when where which who whom whose why how does did do is are was were have has had will would
+could should can any some about tell know remember please there that this these those with from into your mine
+ours their them they then than also just really very much many more most like""".split())
+
+
+# A recalled fact scoring this well is about the question, even with no word
+# in common ("dietary restrictions" / "is vegetarian" 0.34). Measured: answerable
+# questions' best fact 0.32 and up, unanswerable ones' 0.25 and down.
+STRONG_MATCH = 0.29
+
+
+def unmatched_words(question: str, facts) -> list[str]:
+    """The question's key words when no recalled fact contains any of them."""
+    words = [w for w in re.findall(r"[a-z][a-z-]{3,}", question.lower()) if w not in _QUESTION_STOP]
+    if not words:
+        return []
+    text = " ".join(f.fact.lower() for f in facts)
+    if any(w in text or w.rstrip("s") in text for w in words):
+        return []
+    return list(dict.fromkeys(words))[:4]
 
 
 def latest_is_personal(history) -> bool:

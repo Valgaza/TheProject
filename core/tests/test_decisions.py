@@ -32,7 +32,7 @@ class FakeMemory:
     async def search(self, query, *, user_id, project_id=None, limit=None):
         return []
 
-    async def ingest(self, statement, *, scope, user_id, project_id):
+    async def ingest(self, statement, *, scope, user_id, project_id, facts=None):
         self.calls.append(statement)
         return IngestResult(ok=True, group_id="g", episode_uuid=uuid.uuid4())
 
@@ -48,7 +48,8 @@ class CountingProvider:
 
 def _gate(persist=True):
     return json.dumps({"persist": persist, "reason": "r",
-                       "facts": [{"statement": "Aarya uses Neo4j.", "scope": "user"}] if persist else []})
+                       "facts": [{"statement": "Aarya switched the project to Qdrant.", "scope": "user"}]
+                       if persist else []})
 
 
 def test_the_runtime_root_comes_from_the_openai_url():

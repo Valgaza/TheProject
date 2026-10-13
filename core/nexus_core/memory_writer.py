@@ -19,7 +19,9 @@ they were said.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -28,10 +30,10 @@ from typing import Sequence
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .memory_client import MemoryClient
-from .models import GateDecisionRecord, MemoryEpisode, Profile
+from .models import GateDecisionRecord, MemoryEpisode, Profile, Project
 from .providers.base import Provider
 from .decisions import GATE_QUESTIONS, DecisionsClient, log_entry
-from .write_gate import GateDecision, GateFact, decide, looks_trivial
+from .write_gate import GateDecision, GateFact, decide, looks_trivial, replaced_terms, uncovered_words
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +88,7 @@ async def _ingest_episode(
     scope: str,
     user_id: uuid.UUID,
     project_id: uuid.UUID | None,
+    triples: list[dict] | None = None,
 ) -> bool:
     """Send one stored episode to the graph and record the outcome."""
     started = time.perf_counter()
@@ -94,6 +97,7 @@ async def _ingest_episode(
         scope=scope,
         user_id=user_id,
         project_id=project_id if scope == "project" else None,
+        facts=triples,
     )
     async with session_factory() as session:
         stored = await session.get(MemoryEpisode, episode_id)
@@ -130,6 +134,74 @@ def _by_tier(facts: Sequence[GateFact], project_id: uuid.UUID | None, chat_id) -
             scope = "user"
         tiers.setdefault(scope, []).append(fact.statement)
     return tiers
+
+
+def _verbatim(fact: str, subject_name: str) -> bool:
+    """A message kept in the person's own words: it may hold several facts,
+    so it is never retired automatically (retiring "We're using PyTorch and
+    the dataset is CheXpert" for a switch to JAX lost the dataset)."""
+    return fact.startswith(f"{subject_name} said:")
+
+
+def _plausibly_replaced(candidates, message: str, new_statements: list[str], subject_name: str) -> list:
+    """The model's own "this replaces fact 3", kept only where it makes sense.
+    Once it pointed at the supervisor fact for "we switched from PyTorch to
+    JAX". A replaced fact must mention what the person switched away from, or,
+    with no such words, share a word with what they said now."""
+    terms = [t.split()[0].lower() for t in replaced_terms(message)]
+    new_words = set(re.findall(r"[a-z0-9]{4,}", " ".join(new_statements + [message]).lower()))
+    new_words -= set(re.findall(r"[a-z0-9]+", subject_name.lower()))
+    kept = []
+    for fact in candidates:
+        text = fact.fact.lower()
+        if _verbatim(fact.fact, subject_name):
+            continue
+        if terms:
+            if any(re.search(rf"\b{re.escape(t)}\b", text) for t in terms):
+                kept.append(fact)
+        elif new_words & set(re.findall(r"[a-z0-9]{4,}", text)):
+            kept.append(fact)
+    if len(kept) < len(candidates):
+        logger.info("ignored %d replacement(s) that didn't fit the change", len(candidates) - len(kept))
+    return kept
+
+
+# The decision model's "worth remembering" at or above which a turn the LLM
+# declined is kept anyway, in the person's words. Its scores are saturated: real
+# facts sit near 0.98 (docs/benchmarks/laya-decision.md).
+KEEP_ANYWAY_ABOVE = 0.9
+
+# Words that make a fact about the work, not the person, in a project chat.
+_WORK = re.compile(
+    r"\b(thesis|project|startup|company|product|beta|launch|release|deadline|supervisor|advisor|"
+    r"co-?founder|client|customer|teammate|team|colleague|investor|seed|funding|stack|dataset|repo)\b",
+    re.IGNORECASE)
+
+
+async def _rescope(facts: Sequence[GateFact], project_name: str | None, decisions) -> list[GateFact]:
+    """In a project chat, move back to the project what the model filed under
+    the person. Its mistakes went one way: "Meera is using JAX for her
+    thesis" and "Arjun is Meera's co-founder", said in project chats, filed
+    as personal, and so answered in every other chat. A fact naming the
+    project or the work moves; otherwise the decision model's tier call
+    decides (98% on labelled turns; its own misses were the same kind of
+    fact, which the words catch)."""
+    out = []
+    for fact in facts:
+        scope = fact.scope
+        if scope == "user":
+            names_work = _WORK.search(fact.statement) or (
+                project_name and re.search(rf"\b{re.escape(project_name)}\b", fact.statement, re.IGNORECASE))
+            if names_work:
+                scope = "project"
+            elif decisions is not None:
+                d = await decisions.decide({"person_said": fact.statement}, {"tier": GATE_QUESTIONS["tier"]})
+                if d is not None and d.label("tier") == "project":
+                    scope = "project"
+            if scope != fact.scope:
+                logger.info("rescoped to the project: %s", fact.statement[:80])
+        out.append(dataclasses.replace(fact, scope=scope))
+    return out
 
 
 async def _retire(session_factory, memory: MemoryClient, decision_id: uuid.UUID,
@@ -195,6 +267,12 @@ async def process_decision(
     known = await memory.search(user_message, user_id=user_id, project_id=project_id)
     known_texts = [f.fact for f in known] if known else recalled
 
+    project_name = None
+    if project_id is not None:
+        async with session_factory() as session:
+            project = await session.get(Project, project_id)
+            project_name = getattr(project, "name", None)
+
     started = time.perf_counter()
     laya = None
     laya_state = {"person_said": user_message, "assistant_replied": assistant_message[:400]}
@@ -203,7 +281,15 @@ async def process_decision(
         laya = await decisions.decide(laya_state, GATE_QUESTIONS)
     worth = laya.p("worth_remembering") if laya else None
 
-    if laya_gate == "live" and worth is not None and worth < laya_skip_below:
+    # A date or "remember" means the person is telling us something, however
+    # it's phrased: "Can you remember that my driving test is on 9 November?"
+    # scored as a question and was skipped (2026-10-13).
+    from .clock import dates_in, relative_dates
+
+    today = (said_at or _now()).astimezone().date()
+    tells_something = bool(re.search(r"\bremember\b", user_message, re.IGNORECASE)
+                           or dates_in(user_message, today) or relative_dates(user_message, today))
+    if laya_gate == "live" and worth is not None and worth < laya_skip_below and not tells_something:
         decision = GateDecision.skip(f"decision model: not worth remembering (p={worth:.2f})")
         decided_by = "laya"
     else:
@@ -215,11 +301,35 @@ async def process_decision(
             known_facts=known_texts,
             model=gate_model,
             said_at=said_at,
+            project_name=project_name,
         )
         decided_by = "prefilter" if decision.reason.startswith(PREFILTER_PREFIX) else "llm"
+        if not decision.persist and decided_by == "llm" and worth is not None and worth >= KEEP_ANYWAY_ABOVE:
+            # The LLM declined a turn the decision model is sure holds a
+            # lasting fact: it did so once in eight identical runs for "Our
+            # seed round target is 50 lakh rupees". Keep the words rather than
+            # lose them; the tier is the decision model's call.
+            scope = "project" if project_id is not None and laya.label("tier") == "project" else "user"
+            decision = GateDecision(persist=True, reason=f"kept in their words; the model declined ({decision.reason})",
+                                    facts=(GateFact(f'{subject_name} said: "{" ".join(user_message.split())}"', scope),),
+                                    replaces=decision.replaces)
+            decided_by = "laya"
     gate_ms = round((time.perf_counter() - started) * 1000)
 
+    if decision.persist and project_id is not None:
+        decision = GateDecision(persist=True, reason=decision.reason, replaces=decision.replaces,
+                                facts=tuple(await _rescope(decision.facts, project_name, decisions)))
     tiers = _by_tier(decision.facts, project_id, chat_id) if decision.persist else {}
+    if tiers:
+        # Nothing the person said is lost to a model that summarised too
+        # hard: "it's a recycling marketplace" kept as "GreenLoop is a
+        # startup". Their own words go in too, in the tier the facts went to,
+        # so recall can still find the detail (memory's ledger stores each line).
+        missing = uncovered_words(user_message, [f.statement for f in decision.facts])
+        if missing:
+            scope = "project" if "project" in tiers else "user"
+            tiers[scope].append(f'{subject_name} said: "{" ".join(user_message.split())}"')
+            logger.info("gate facts left out %s; keeping the message too", missing[:6])
     episodes: list[tuple[uuid.UUID, str, str]] = []
     async with session_factory() as session:
         record = await session.get(GateDecisionRecord, decision_id)
@@ -229,7 +339,8 @@ async def process_decision(
             logger.info("gate: turn %s vanished while being decided; dropping it", decision_id)
             return
         record.persist = bool(decision.persist)
-        record.facts = [{"statement": f.statement, "scope": f.scope} for f in decision.facts]
+        record.facts = [{"statement": f.statement, "scope": f.scope, "subject": f.subject,
+                         "relation": f.relation, "object": f.object} for f in decision.facts]
         record.reason = decision.reason
         record.decided_by = decided_by
         record.gate_ms = gate_ms
@@ -267,7 +378,17 @@ async def process_decision(
 
     # What this turn made untrue, by id. Only from the searched facts: the
     # fallback recall has no ids to retire by.
-    superseded = [known[n - 1] for n in decision.replaces if known and n <= len(known)]
+    superseded = _plausibly_replaced(
+        [known[n - 1] for n in decision.replaces if known and n <= len(known)],
+        user_message, [f.statement for f in decision.facts], subject_name)
+    if not superseded and known:
+        # "Switched from PyTorch to JAX" with nothing named to replace: every
+        # known fact that mentions PyTorch is the old value.
+        terms = [t.split()[0].lower() for t in replaced_terms(user_message)]
+        superseded = [f for f in known if not _verbatim(f.fact, subject_name)
+                      and any(re.search(rf"\b{re.escape(t)}\b", f.fact.lower()) for t in terms)]
+        if superseded:
+            logger.info("change of mind %s retires %d known facts", terms, len(superseded))
 
     if not decision.persist:
         logger.info("gate declined chat=%s by=%s gate_ms=%d reason=%s",
@@ -282,9 +403,12 @@ async def process_decision(
     # entity resolution (the same entity created twice).
     written: set[tuple[str, uuid.UUID | None]] = set()
     for episode_id, scope, body in episodes:
+        lines = set(body.splitlines())
         ok = await _ingest_episode(
             session_factory=session_factory, memory=memory, episode_id=episode_id,
             body=body, scope=scope, user_id=user_id, project_id=project_id,
+            triples=[{"statement": f.statement, "subject": f.subject, "relation": f.relation, "object": f.object}
+                     for f in decision.facts if f.statement in lines and f.subject and f.object],
         )
         if ok:
             written.add((scope, project_id if scope == "project" else None))

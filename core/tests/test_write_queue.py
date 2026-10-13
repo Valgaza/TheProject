@@ -35,7 +35,7 @@ class FakeMemory:
     async def search(self, query, *, user_id, project_id=None, limit=None):
         return []
 
-    async def ingest(self, statement, *, scope, user_id, project_id):
+    async def ingest(self, statement, *, scope, user_id, project_id, facts=None):
         self.calls.append({"statement": statement, "scope": scope, "project_id": project_id})
         return IngestResult(ok=True, group_id="g", episode_uuid=uuid.uuid4())
 
@@ -156,7 +156,7 @@ async def test_the_worker_waits_while_anything_is_live(db_client, session_factor
     cannot serve two concurrent users."""
     _, _, record = await _queued_turn(db_client, session_factory)
     activity = Activity()
-    provider = ScriptedProvider(_gate(("Aarya uses Neo4j.", "user")))
+    provider = ScriptedProvider(_gate(("Aarya uses Neo4j.", "user"), ("Aarya uses Qdrant.", "user")))
     memory = FakeMemory()
     queue = _queue(session_factory, provider, memory, activity)
 

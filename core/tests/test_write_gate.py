@@ -184,7 +184,7 @@ class FakeMemory:
         self.retired.append(list(facts))
         return [f"item-{n}" for n, _ in enumerate(facts)]
 
-    async def ingest(self, statement, *, scope, user_id, project_id):
+    async def ingest(self, statement, *, scope, user_id, project_id, facts=None):
         self.calls.append(
             {"statement": statement, "scope": scope, "project_id": project_id}
         )
