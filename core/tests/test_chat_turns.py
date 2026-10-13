@@ -72,7 +72,8 @@ async def test_the_prompt_carries_prior_turns(db_client, provider):
     assert [m["content"] for m in second_prompt[:-1]] == [SYSTEM_PROMPT, "first", "fake reply"]
     # The latest message carries the date and time, then what was said.
     latest = second_prompt[-1]["content"]
-    assert latest.startswith("Right now it is ") and latest.endswith("\nsecond")
+    assert latest.startswith("The person's name is Demo User.")
+    assert "Right now it is " in latest and latest.endswith("\nsecond")
 
 
 async def test_every_turn_knows_the_date_and_time():

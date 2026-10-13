@@ -40,7 +40,14 @@ SYSTEM_PROMPT = (
     # The web runs only when the person asks (flag 1), so the model is told
     # it exists and how to offer it, rather than claiming it can't.
     "Nexus can search the web, but only when the person asks, so you never "
-    "browse on your own. Never say you have no way to reach the internet."
+    "browse on your own. Never say you have no way to reach the internet. "
+    "When asked for a name, number or detail you weren't given and don't "
+    "know, say you don't know rather than guessing. Never invent an amount, "
+    "total, price or date; if asked about something you haven't been shown "
+    "(a receipt, an image, a file), say you can't see it and ask for it. "
+    "About the person's own life, work and plans, say only what you have been "
+    "told (in memory or this conversation), including every relevant thing "
+    "you were told; if it isn't there, reply \"I don't know\"."
 )
 
 # The offer to search is asked for only on a question that sounds
@@ -131,7 +138,7 @@ async def _load_history(session: AsyncSession, chat_id: uuid.UUID) -> list[Messa
     return list(result.scalars())
 
 
-def render_memory(facts: Sequence[Fact]) -> str:
+def render_memory(facts: Sequence[Fact], person: str | None = None) -> str:
     """Recalled facts as a system message.
 
     Framed as things already known rather than as instructions, and explicitly
@@ -145,26 +152,59 @@ def render_memory(facts: Sequence[Fact]) -> str:
     lines = "\n".join(f"- {fact.render()}" for fact in ordered)
     return (
         "What you already know about this person and their work, recalled from "
-        "earlier conversations, most recently learned first:\n"
+        "earlier conversations, most recently learned first"
+        + (f" (facts about {person} are about the person you're talking to)" if person else "")
+        + ":\n"
         f"{lines}\n\n"
         "Use it where it is relevant and say nothing about it where it is not. "
         "When two of these disagree, the one listed first is current and the "
         "other is out of date: the person changed their mind. "
         "It may be incomplete or out of date; if the user contradicts it, they "
-        "are right."
+        "are right. If they ask about their own life, work or plans and none of "
+        "these says it (other facts about them don't count), reply that you "
+        "don't know (\"I don't know\"); never work it out or fill it in."
     )
 
 
+_SOURCE_HEADER = re.compile(r"^\[Source: (?P<file>[^|\]]+?)(?: \| Chunk (?P<chunk>\d+))?\]\s*$", re.MULTILINE)
+
+
+def document_passages(rag_result: RagResult) -> str:
+    """Only the passages from the RAG service's assembled prompt, each
+    labelled with its document and section.
+
+    The assembled prompt is written for a model of its own: "You are a
+    knowledgeable assistant... using ONLY the provided context... Cite the
+    source", then the question again. Passed on whole, those instructions
+    made answers say "the context provided does not mention", copy
+    "[Source: ... | Chunk 4]" into the reply, and miss a name given only as
+    the section heading ("## Pellinore" over "the dog died in 1919").
+    """
+    text = rag_result.prompt
+    start, end = text.find("--- Retrieved Context ---"), text.find("--- End of Context ---")
+    if start != -1:
+        text = text[start + len("--- Retrieved Context ---"): end if end != -1 else None]
+    sections = {str(src.chunk_index): src.heading_path for src in rag_result.sources}
+
+    def label(m: re.Match) -> str:
+        path = sections.get(m["chunk"] or "", "")
+        return f"From {m['file'].strip()}" + (f", section \"{path}\":" if path else ":")
+
+    return _SOURCE_HEADER.sub(label, text).strip()
+
+
 def render_rag_context(rag_result: RagResult) -> str:
-    """Retrieved document passages as a system message, same framing rule as
-    render_memory: presented as material to use, not as instructions, and
-    explicitly allowed to be irrelevant."""
+    """Retrieved document passages, presented as material to use, not as
+    instructions, and explicitly allowed to be irrelevant."""
     return (
-        "Passages retrieved from this project's documents, relevant to what "
-        "was just asked:\n"
-        f"{rag_result.prompt}\n\n"
-        "Use them where they answer the question. If they don't, say so rather "
-        "than guessing from them anyway."
+        "Passages retrieved from this person's documents, relevant to what "
+        "was just asked. A section title is part of the text: a section "
+        "titled with a name is about that name.\n\n"
+        f"{document_passages(rag_result)}\n\n"
+        "Use them where they answer the question, in your own words, without "
+        "mentioning passages, chunks or sources (those are shown separately). "
+        "If they don't answer it, say the documents don't say, rather than "
+        "guessing."
     )
 
 
@@ -204,6 +244,7 @@ def build_prompt(
     spoken: bool = False,
     now: datetime | None = None,
     images: Sequence[str] = (),
+    person: str | None = None,
 ) -> list[ProviderMessage]:
     """The system prompt, the conversation so far, then the message being
     answered with what was recalled and retrieved for it.
@@ -230,7 +271,9 @@ def build_prompt(
     turns = [m for m in history if m.role != "system"]
     latest = turns[-1] if turns and turns[-1].role == "user" else None
     if facts:
-        context.append(render_memory(facts))
+        context.append(render_memory(facts, person))
+    elif latest_is_personal(history):
+        context.append(NOTHING_RECALLED)
     if rag_result is not None and rag_result.prompt:
         context.append(render_rag_context(rag_result))
     if web is not None:
@@ -245,6 +288,8 @@ def build_prompt(
         # And the counting done for it: weekdays and days-away for the dates
         # the recent conversation mentions, which the models get wrong alone.
         context.insert(1, calendar_note([_with_image_notes(m) for m in turns[-6:]], now))
+        if person:
+            context.insert(0, f"The person's name is {person}.")
     if recent and web is None and not (rag_result is not None and rag_result.prompt):
         context.append(OFFER_NOTE)
     if images:
@@ -268,6 +313,19 @@ def build_prompt(
     return prompt
 
 
+_NAME = re.compile(r"\b(?:my name is|my name's|call me|i'm called|i am called)\s+([A-Za-z][A-Za-z'-]{1,30})\b",
+                   re.IGNORECASE)
+_NOT_NAMES = {"not", "just", "actually", "also", "still", "the", "a", "an", "no"}
+
+
+def stated_name(text: str) -> str | None:
+    """The name in "my name is Aarya" / "call me Aarya", or None."""
+    m = _NAME.search(text)
+    if not m or m[1].lower() in _NOT_NAMES:
+        return None
+    return m[1][0].upper() + m[1][1:]
+
+
 # A question about when something is, or how long until it: worth reading an
 # image's dates before answering (prepare_turn).
 TIME_QUESTION = re.compile(
@@ -282,6 +340,25 @@ IMAGE_NOTE = (
     "exactly as printed, add no currency, place or date that isn't visible, "
     "and don't link images to each other or to the person unless they clearly do."
 )
+
+# A question about the person with nothing recalled for it: said outright,
+# next to the question, because the system prompt's "say you don't know" alone
+# didn't stop "What is my thesis about?" being answered with an invented one.
+NOTHING_RECALLED = (
+    "Nothing in memory matches this. If it asks about the person's own life, "
+    "work or plans, reply \"I don't know\" rather than making anything up."
+)
+_PERSONAL = re.compile(r"\b(i|i'm|me|my|mine|we|our|us)\b", re.IGNORECASE)
+
+
+def latest_is_personal(history) -> bool:
+    """About the person or their own work, so only memory can answer it."""
+    turns = [m for m in history if m.role != "system"]
+    if not turns or turns[-1].role != "user":
+        return False
+    text = turns[-1].content
+    return bool(_PERSONAL.search(text))
+
 
 # What an image sent with no text is taken to ask.
 IMAGE_ONLY_PROMPT = "What's in this image?"
@@ -556,6 +633,12 @@ async def prepare_turn(
                     logger.exception("reading an image ahead of its answer failed")
             timings["image_read_ms"] = _ms_since(stage)
     user_message = Message(chat_id=chat.id, role="user", content=content, meta=user_meta)
+    profile = await session.get(Profile, user_id)
+    if profile is not None and (stated := stated_name(content)) and stated != profile.display_name:
+        # "My name is Aarya": the account takes the name, so memory writes
+        # about Aarya from here on, not about whatever the sign-up said.
+        logger.info("display name changed by the person: %r -> %r", profile.display_name, stated)
+        profile.display_name = stated
     session.add(user_message)
     await session.flush()
 
@@ -645,7 +728,8 @@ async def prepare_turn(
 
     urls = [await asyncio.to_thread(image_store.data_url, user_id, img) for img in images] \
         if images and image_store is not None else []
-    prompt = build_prompt(history, facts, rag_result, web_search, spoken=spoken, images=urls)
+    prompt = build_prompt(history, facts, rag_result, web_search, spoken=spoken, images=urls,
+                          person=getattr(profile, "display_name", None))
     return PreparedTurn(
         chat=chat, content=content, user_id=user_id, route=route, user_message=user_message,
         history=history, facts=facts, rag_result=rag_result, web_search=web_search,

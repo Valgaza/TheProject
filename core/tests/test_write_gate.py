@@ -714,3 +714,55 @@ async def test_a_number_outside_the_list_retires_nothing(db_client, session_fact
         known=[("n14", "The project deadline is the 14th of November.")],
     )
     assert memory.retired == [] and record.retired == []
+
+
+
+# ── Checks in code, after the model has decided (2026-10-12 demo run) ────────
+
+
+def test_questions_about_something_else_never_reach_the_model():
+    from nexus_core.write_gate import only_asks
+
+    assert only_asks("Who climbed them, and how often?")
+    assert only_asks("What was the keeper's dog called?")
+    assert not only_asks("What was the name of my first pet?")       # about the person
+    assert not only_asks("My viva is on 3 November. How many days away is that?")
+    assert not only_asks("Can you remember my deadline is Friday?")
+
+
+def _facts(*statements):
+    from nexus_core.write_gate import GateDecision, GateFact
+
+    return GateDecision(persist=True, reason="r", facts=[GateFact(s, "project") for s in statements])
+
+
+def test_a_fact_may_not_carry_a_date_the_person_didnt_give():
+    """The model wrote "presenting on 3 November" (a date from memory) and
+    "a meeting on 26 October" for "next Friday" said on 12 October."""
+    from datetime import datetime, timezone
+
+    from nexus_core.write_gate import _drop_unsaid_dates
+
+    said = datetime(2026, 10, 12, 8, 0, tzinfo=timezone.utc)
+    kept = _drop_unsaid_dates(_facts(
+        "Aarya's project deadline is 14 November 2026.",
+        "Aarya is presenting the project to the department on 3 November 2026."),
+        "For this project, the deadline is the fourteenth of November, and I'm presenting it to the department.",
+        said)
+    assert [f.statement for f in kept.facts] == ["Aarya's project deadline is 14 November 2026."]
+
+    assert not _drop_unsaid_dates(_facts("Aarya has a supervisor meeting on 26 October 2026."),
+                                  "My next supervisor meeting is next Friday.", said).persist
+    assert _drop_unsaid_dates(_facts("Aarya has a supervisor meeting on 23 October 2026."),
+                              "My next supervisor meeting is next Friday.", said).persist
+    assert _drop_unsaid_dates(_facts("The deadline is 21 November 2026."),
+                              "Actually the deadline moved to the 21st.", said).persist
+
+
+
+def test_the_person_s_own_name_is_not_stored_as_a_fact():
+    from nexus_core.write_gate import _drop_own_name
+
+    kept = _drop_own_name(_facts("Aarya's name is Aarya.", "Aarya prefers short answers."), "Aarya")
+    assert [f.statement for f in kept.facts] == ["Aarya prefers short answers."]
+    assert not _drop_own_name(_facts("Aarya's name is Aarya."), "Aarya").persist

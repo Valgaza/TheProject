@@ -121,7 +121,13 @@ project scope, below.
 Persist nothing for: greetings, thanks, acknowledgements, questions that carry
 no new information about the person, requests for explanation of general topics,
 and anything the assistant said that is general knowledge rather than a fact
-about this person or their work.
+about this person or their work. A question about a document ("who climbed
+them?") is not a fact about the person, even when the reply answers it.
+
+Never carry a detail from the facts already in memory, or from the reply, into
+a new fact. Each statement holds only what this message says: "I'm presenting
+it to the department" is "presenting to the department", with no date, even if
+a date appears in memory. Don't record the person's own name; it is known.
 
 facts: a list, because one message can carry more than one durable fact. "My
 name is Ada and I'm using Rust for this" is two facts in two different scopes.
@@ -190,6 +196,62 @@ _TRIVIAL = {
     "ok", "okay", "k", "cool", "nice", "great", "perfect", "got it", "sounds good",
     "yes", "no", "yep", "nope", "sure", "please", "bye", "goodbye", "see you",
 }
+
+
+_FIRST_PERSON = re.compile(r"\b(i|i'm|im|i've|i'll|i'd|me|my|mine|we|we're|our|ours)\b", re.IGNORECASE)
+
+
+def only_asks(text: str) -> bool:
+    """Every sentence a question, and none of them about the person: "Who
+    climbed them, and how often?" ("Can you remember my deadline is
+    Friday?" still goes to the model)."""
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
+    return bool(sentences) and all(s.endswith("?") for s in sentences) and not _FIRST_PERSON.search(text)
+
+
+def _drop_unsaid_dates(decision: "GateDecision", user_message: str, said_at) -> "GateDecision":
+    """A fact may only carry dates the message gives, written out or relative
+    ("next Friday", worked out in clock.py). The model once copied a date from
+    memory into a new fact ("presenting on 3 November", said with no date)
+    and once miscounted "next Friday" as a Monday."""
+    from .clock import ORDINALS, dates_in, relative_dates
+
+    if not decision.persist:
+        return decision
+    today = (said_at or datetime.now().astimezone()).astimezone().date()
+    allowed = set(dates_in(user_message, today)) | {d for _, d in relative_dates(user_message, today)}
+    # "Moved to the 21st" (or "the twenty-first"): a day with no month still
+    # vouches for that day.
+    days = {int(m[1]) for m in re.finditer(r"\b(\d{1,2})(?:st|nd|rd|th)\b", user_message)}
+    days |= {n for word, n in ORDINALS.items() if re.search(rf"\b{re.escape(word)}\b", user_message, re.I)}
+    kept = []
+    for fact in decision.facts:
+        unsaid = [d for d in dates_in(fact.statement, today) if d not in allowed and d.day not in days]
+        if unsaid:
+            logger.info("gate fact dropped, dates not in the message %s: %s", unsaid, fact.statement)
+            continue
+        kept.append(fact)
+    if len(kept) == len(decision.facts):
+        return decision
+    if not kept:
+        return GateDecision.skip(f"facts carried dates the person didn't give ({decision.reason})",
+                                 decision.replaces)
+    return GateDecision(persist=True, reason=decision.reason, facts=kept, replaces=decision.replaces)
+
+
+def _drop_own_name(decision: "GateDecision", subject_name: str) -> "GateDecision":
+    """"Aarya's name is Aarya": the account already holds the name (core sets
+    it when the person states it), and the model writes it anyway."""
+    if not decision.persist or not subject_name:
+        return decision
+    own = re.compile(rf"^\s*{re.escape(subject_name)}(?:'s name is| is called| goes by)\s+{re.escape(subject_name)}\W*$",
+                     re.IGNORECASE)
+    kept = [f for f in decision.facts if not own.match(f.statement)]
+    if len(kept) == len(decision.facts):
+        return decision
+    if not kept:
+        return GateDecision.skip(f"only the person's own name ({decision.reason})", decision.replaces)
+    return GateDecision(persist=True, reason=decision.reason, facts=kept, replaces=decision.replaces)
 
 
 def looks_trivial(text: str) -> bool:
@@ -334,6 +396,8 @@ async def decide(
     """
     if looks_trivial(user_message):
         return GateDecision.skip("pre-filtered: message is a pleasantry")
+    if only_asks(user_message):
+        return GateDecision.skip("pre-filtered: only questions, nothing said about the person")
 
     sections = [
         f"The person is named: {subject_name}",
@@ -375,6 +439,8 @@ async def decide(
         return GateDecision.skip(f"gate call failed: {exc.__class__.__name__}")
 
     decision = _parse(raw)
+    decision = _drop_unsaid_dates(decision, user_message, said_at)
+    decision = _drop_own_name(decision, subject_name)
 
     if decision.persist and known_facts:
         surviving, dropped = drop_known(decision.facts, known_facts)

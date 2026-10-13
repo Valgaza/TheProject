@@ -99,7 +99,7 @@ async def test_draining_decides_writes_and_records(db_client, session_factory):
 
 
 async def test_a_declined_turn_is_still_recorded(db_client, session_factory):
-    _, _, record = await _queued_turn(db_client, session_factory, content="what's the time?")
+    _, _, record = await _queued_turn(db_client, session_factory, content="Nice weather this evening.")
     queue = _queue(session_factory, ScriptedProvider(_gate(persist=False, reason="a question")),
                    FakeMemory())
 
