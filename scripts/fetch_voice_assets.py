@@ -1,12 +1,13 @@
-"""Download everything voice and the decision model need, ahead of time.
+"""Download everything voice, images and the decision model need, ahead of time.
 
 The runtime never downloads an optional model at startup or on first use (a
-slow connection would hold the whole stack hostage), so voice and Laya are
-fetched here once.
+slow connection would hold the whole stack hostage), so voice, vision and
+Laya are fetched here once.
 (Voice activity detection and Smart Turn come bundled with pipecat-ai.)
 
   speech-to-text      RUNTIME_STT_MODEL  (Parakeet, ~2.5 GB)
   text-to-speech      RUNTIME_TTS_MODEL  (Kokoro, ~350 MB)
+  vision              CORE_VISION_MODEL  (Qwen3.5-4B, ~3 GB)
   decision model      RUNTIME_DECIDE_MODEL / RUNTIME_DECIDE_SUBFOLDER (~1.7 GB),
                       unless it is a local fine-tune
 
@@ -29,7 +30,9 @@ def main() -> int:
     env = {**dotenv_values(ROOT / ".env"), **os.environ}
 
     for label, repo in (("STT", env.get("RUNTIME_STT_MODEL") or "mlx-community/parakeet-tdt-0.6b-v2"),
-                        ("TTS", env.get("RUNTIME_TTS_MODEL") or "mlx-community/Kokoro-82M-bf16")):
+                        ("TTS", env.get("RUNTIME_TTS_MODEL") or "mlx-community/Kokoro-82M-bf16"),
+                        ("vision", env.get("RUNTIME_VISION_MODEL") or env.get("CORE_VISION_MODEL")
+                         or "mlx-community/Qwen3.5-4B-MLX-4bit")):
         print(f"{label}: {repo}", flush=True)
         snapshot_download(repo)
 
