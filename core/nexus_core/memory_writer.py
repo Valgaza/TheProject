@@ -184,6 +184,7 @@ async def process_decision(
             record.chat_id, record.project_id, record.user_id, record.message_id
         )
         user_message, assistant_message = record.user_message, record.assistant_message
+        said_at = record.created_at
         recalled = list(record.recalled_facts or [])
 
     # What memory holds on this subject now, with ids: the gate must not
@@ -213,6 +214,7 @@ async def process_decision(
             subject_name=subject_name,
             known_facts=known_texts,
             model=gate_model,
+            said_at=said_at,
         )
         decided_by = "prefilter" if decision.reason.startswith(PREFILTER_PREFIX) else "llm"
     gate_ms = round((time.perf_counter() - started) * 1000)

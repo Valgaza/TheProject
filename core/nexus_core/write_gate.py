@@ -40,9 +40,11 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Literal, Sequence
 
+from .clock import describe_now
 from .providers.base import Provider
 
 logger = logging.getLogger(__name__)
@@ -322,6 +324,7 @@ async def decide(
     subject_name: str,
     known_facts: Sequence[str] = (),
     model: str | None = None,
+    said_at: datetime | None = None,
 ) -> GateDecision:
     """What this turn leaves behind, and where each piece of it goes.
 
@@ -332,7 +335,19 @@ async def decide(
     if looks_trivial(user_message):
         return GateDecision.skip("pre-filtered: message is a pleasantry")
 
-    sections = [f"The person is named: {subject_name}"]
+    sections = [
+        f"The person is named: {subject_name}",
+        # The gate runs from the write queue, possibly long after the turn:
+        # when it was said is what "tomorrow" and "next Friday" mean.
+        f"This was said on {describe_now(said_at)}.",
+    ]
+    # Relative dates resolved here, by rule: the model miscounts them.
+    from .clock import relative_dates
+
+    resolved = relative_dates(user_message, (said_at or datetime.now().astimezone()).astimezone().date())
+    if resolved:
+        sections.append("Relative dates in it, as actual dates (write these): " + "; ".join(
+            f"\"{phrase}\" = {d.strftime('%A')} {d.day} {d.strftime('%B %Y')}" for phrase, d in resolved))
     if known_facts:
         already = "\n".join(f"[{n}] {f}" for n, f in enumerate(known_facts, 1))
         sections.append(f"Already in memory, numbered; do not restate:\n{already}")

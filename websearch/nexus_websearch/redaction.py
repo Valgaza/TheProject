@@ -22,6 +22,7 @@ raw message is never the fallback.
 from __future__ import annotations
 
 import re
+from datetime import date
 
 MAX_QUERY_CHARS = 200
 
@@ -35,11 +36,40 @@ employer, case number, record number, or any other detail that identifies a
 specific person, client or matter. Keep only the subject a public search
 engine needs: the condition, the legal concept, the technology, the event.
 
-Example
-  Message: search the internet for the latest treatment options for Priya
-           Nair's stage 3 lymphoma, MRN 00482913
-  Query:   latest treatment options stage 3 lymphoma
+The message may follow on from earlier ones ("look it up", "get me this
+year's results"): search for what it refers to, taken from them. Today is
+{today}. Keep words that say which one is meant ("latest", "last", "next",
+"current"), and for the latest, current or this year's news, results or
+figures, also put the month and year in the query.
+
+Examples
+  Message: search the internet for treatment options for Priya Nair's
+           stage 3 lymphoma, MRN 00482913
+  Query:   stage 3 lymphoma treatment options
+
+  Earlier messages:
+  - who won the latest Monaco Grand Prix?
+  Message: check online
+  Query:   Monaco Grand Prix {year} results
+
+  Message: check online who won the last F1 race
+  Query:   latest F1 race result {month_year}
 """
+
+MAX_CONTEXT_MESSAGES = 3
+
+
+def rewrite_messages(message: str, context: list[str], today: date) -> list[dict]:
+    """The rewrite's prompt. ``context`` is the person's earlier messages,
+    oldest first, so a follow-up can be searched for what it means; they are
+    only read here, never sent, and the output is stripped like any other."""
+    system = REWRITE_PROMPT.format(today=today.strftime("%-d %B %Y"), year=today.year,
+                                   month_year=today.strftime("%B %Y"))
+    earlier = [m.strip() for m in context if m.strip()][-MAX_CONTEXT_MESSAGES:]
+    user = message if not earlier else (
+        "Earlier messages:\n" + "\n".join(f"- {m}" for m in earlier) + f"\n\nMessage: {message}")
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
 
 _EMAIL = re.compile(r"\S+@\S+")
 _TOKEN = re.compile(r"\S+")

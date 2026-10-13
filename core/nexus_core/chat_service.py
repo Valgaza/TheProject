@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import AsyncIterator, Sequence
 
 from sqlalchemy import func, select
@@ -24,7 +26,8 @@ from .orchestrator import Attachment, Route, select_route
 from .providers.base import Message as ProviderMessage
 from .providers.base import Provider
 from .rag_client import RagClient, RagResult, RagSource
-from .web_client import WEB_TRIGGER, WebClient, WebSearch
+from .web_client import WEB_TRIGGER, WebClient, WebSearch, accepts, offers_web
+from .clock import calendar_note, now_note
 from .decisions import WEB_INTENT_QUESTIONS, DecisionsClient, log_entry
 
 logger = logging.getLogger(__name__)
@@ -32,7 +35,33 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = (
     "You are Nexus, a local-first assistant. Answer directly and concretely. "
     "Prefer specifics over generalities, admit what you do not know, and keep "
-    "formatting plain unless the answer genuinely needs structure."
+    "formatting plain unless the answer genuinely needs structure. "
+    # The web runs only when the person asks (flag 1), so the model is told
+    # it exists and how to offer it, rather than claiming it can't.
+    "Nexus can search the web, but only when the person asks, so you never "
+    "browse on your own. Never say you have no way to reach the internet."
+)
+
+# The offer to search is asked for only on a question that sounds
+# time-sensitive. Told on every turn, the model ended nearly every answer with
+# it, documents and the person's own facts included. It goes with the turn's
+# context, not the system prompt, so the cached prefix stays the same. A bare
+# year is not a cue ("my viva is on 3 November 2026" is the person's own date),
+# and nor is "today": every turn carries the date, so "what's the date today?"
+# needs no search.
+RECENT_CUE = re.compile(
+    r"\b(current(ly)?|latest|recent(ly)?|news|this (week|month|year)|"
+    r"prices?|weather|scores?|won|winner|released?|president|prime minister|ceo|stocks?)\b",
+    re.IGNORECASE,
+)
+OFFER_NOTE = (
+    "This question may depend on recent or changing facts and no web results "
+    "are attached. What you know stops well before today, so never state an "
+    "event, result or figure from after that as if you knew it; say briefly what "
+    "you last knew and that it may be out of date, or that you don't know, and "
+    "end with exactly: \"Want me to check online?\" This is only about outside "
+    "events: working things out from dates the person gives you, or from today's "
+    "date, is fine, and needs no offer."
 )
 
 # Added for a spoken turn (voice/). Every word is waited for twice over, once
@@ -152,9 +181,17 @@ def render_web_context(web: WebSearch) -> str:
         f"[{i}] {r.title}\n{r.url}\n{r.snippet}" for i, r in enumerate(web.results, 1)
     )
     return (
-        f"Web search results for \"{web.query_sent}\":\n\n{lines}\n\n"
-        "Use them where they answer the question and cite them by number, "
-        "e.g. [2]. They are from the open web: weigh them, don't trust them."
+        f"Web search results for \"{web.query_sent}\" (the query that was sent, "
+        "with any names and identifying numbers already removed):\n\n"
+        f"{lines}\n\n"
+        "Answer from these results and cite them by number, e.g. [2]. Use only "
+        "what they actually say: never state a name, date, winner or figure "
+        "they don't contain. Where they disagree with anything said earlier in "
+        "this conversation, the results are right and the earlier answer was "
+        "wrong: say so. If they don't give the answer, say what they do show and "
+        "that you couldn't find the rest. The search has already run, on a "
+        "query with personal details removed: answer from the results, and "
+        "don't say you can't search for or look up the person."
     )
 
 
@@ -164,6 +201,7 @@ def build_prompt(
     rag_result: RagResult | None = None,
     web: WebSearch | None = None,
     spoken: bool = False,
+    now: datetime | None = None,
 ) -> list[ProviderMessage]:
     """The system prompt, the conversation so far, then the message being
     answered with what was recalled and retrieved for it.
@@ -183,6 +221,8 @@ def build_prompt(
     system = SYSTEM_PROMPT + (SPOKEN_PROMPT if spoken else "")
     prompt: list[ProviderMessage] = [{"role": "system", "content": system}]
     context: list[str] = []
+    turns = [m for m in history if m.role != "system"]
+    latest = turns[-1] if turns and turns[-1].role == "user" else None
     if facts:
         context.append(render_memory(facts))
     if rag_result is not None and rag_result.prompt:
@@ -190,19 +230,27 @@ def build_prompt(
     if web is not None:
         context.append(render_web_context(web))
 
-    turns = [m for m in history if m.role != "system"]
-    latest = turns[-1] if turns and turns[-1].role == "user" else None
+    recent = latest is not None and RECENT_CUE.search(latest.content)
+    if latest is not None:
+        # Every turn, first: without it the model takes its training cutoff
+        # for the present (clock.py). Here, not in the system prompt, so the
+        # cached prefix doesn't change every minute.
+        context.insert(0, now_note(now))
+        # And the counting done for it: weekdays and days-away for the dates
+        # the recent conversation mentions, which the models get wrong alone.
+        context.insert(1, calendar_note([m.content for m in turns[-6:]], now))
+    if recent and web is None and not (rag_result is not None and rag_result.prompt):
+        context.append(OFFER_NOTE)
     for message in turns[:-1] if latest is not None else turns:
         prompt.append({"role": message.role, "content": message.content})
     if latest is None:
         # Nothing to attach it to (not a real turn); keep it next to the
         # system prompt.
         prompt[1:1] = [{"role": "system", "content": block} for block in context]
-    elif context:
-        prompt.append({"role": "user", "content": "\n\n".join(context)
-                       + f"\n\n{CONTEXT_DIVIDER}\n{latest.content}"})
-    else:
-        prompt.append({"role": "user", "content": latest.content})
+        return prompt
+    said = latest.content
+    text = "\n\n".join(context) + f"\n\n{CONTEXT_DIVIDER}\n{said}" if context else said
+    prompt.append({"role": "user", "content": text})
     return prompt
 
 
@@ -282,18 +330,40 @@ async def _query_documents(
 
 async def _search_web(
     web: WebClient | None, content: str, known_names: list[str], user_id, chat: Chat,
+    context: list[str] = (),
 ) -> WebSearch:
     # Only when asked for, and only through the websearch service, which
     # redacts: what goes out is its rewrite, never the raw message.
     if web is None:
         return WebSearch(query_sent=None, error="web search is not configured")
     try:
-        return await web.search(content, known_names=known_names, user_id=str(user_id))
+        return await web.search(content, known_names=known_names, user_id=str(user_id), context=context)
     except Exception:
         # WebClient.search() already turns its own failures into an error;
         # this catches anything else, same as memory and RAG.
         logger.exception("Web search raised for chat=%s", chat.id)
         return WebSearch(query_sent=None, error="web search failed")
+
+
+def _earlier_user_messages(history: list[Message], limit: int = 3) -> list[str]:
+    """What the person said before this message: "check it online" means
+    nothing to the search rewrite without the question it follows. Their own
+    words only, read by the local rewrite; nothing here is sent as is."""
+    said = [m.content for m in history if m.role == "user"]
+    return said[:-1][-limit:]
+
+
+async def question_offered_a_search(session: AsyncSession, chat_id: uuid.UUID) -> str | None:
+    """If the chat's last answer offered to check online, the question it
+    was answering; otherwise None."""
+    rows = (await session.execute(
+        select(Message).where(Message.chat_id == chat_id, Message.role != "system")
+        .order_by(Message.created_at.desc()).limit(2)
+    )).scalars().all()
+    if len(rows) == 2 and rows[0].role == "assistant" and rows[1].role == "user" \
+            and offers_web(rows[0].content):
+        return rows[1].content
+    return None
 
 
 @dataclass
@@ -363,12 +433,18 @@ async def prepare_turn(
     # latency change in the milestone is judged against these numbers.
     timings: dict[str, int] = {}
 
+    # "Yes" to Nexus's own "Want me to check online?": the search is asked
+    # for, and it is for the question that prompted the offer.
+    offered_question = None
+    if not use_web and not WEB_TRIGGER.search(content) and accepts(content):
+        offered_question = await question_offered_a_search(session, chat.id)
+
     # Only asked when nothing cheaper has already decided: the button and the
     # trigger phrases settle most web requests without a model.
     intent = None
     ask_laya = (
         decisions is not None and laya_web_intent in ("shadow", "live")
-        and not use_web and not WEB_TRIGGER.search(content)
+        and not use_web and not WEB_TRIGGER.search(content) and offered_question is None
     )
     shadow_intent: asyncio.Task | None = None
     if ask_laya and laya_web_intent == "live":
@@ -382,6 +458,7 @@ async def prepare_turn(
 
     route = await select_route(
         content=content, attachments=attachments, rag=rag, use_web=use_web,
+        accepted_web_offer=offered_question is not None,
         web_intent_p=intent.p("asks_for_web") if intent and laya_web_intent == "live" else None,
         web_intent_above=laya_web_intent_above,
     )
@@ -442,7 +519,8 @@ async def prepare_turn(
     facts, rag_result, web_search = await asyncio.gather(
         done(retrieval.facts),
         done(retrieval.documents),
-        _timed(timings, "web_ms", _search_web(web, content, known_names, user_id, chat))
+        _timed(timings, "web_ms", _search_web(web, offered_question or content, known_names, user_id, chat,
+                                              context=_earlier_user_messages(history)))
         if route.handler == "web" else nothing(),
     )
     timings.update(retrieval.timings)

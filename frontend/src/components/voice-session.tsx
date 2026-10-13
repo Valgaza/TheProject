@@ -4,9 +4,10 @@
  * The bar that replaces the composer while someone is talking to a chat.
  *
  * Hands-free: there is no button to press to speak. Core hears when they
- * start and stop (lib/voice.ts has the plumbing); talking over the answer
- * stops it. The thread above fills in exactly as for typed messages, through
- * the same callbacks the page uses for a streamed answer.
+ * have finished and when they are interrupting (lib/voice.ts has the
+ * plumbing); a few words over the answer stop it, "mm-hmm" doesn't. The
+ * thread above fills in exactly as for typed messages, through the same
+ * callbacks the page uses for a streamed answer.
  */
 
 import React, { useEffect, useRef, useState } from "react";
@@ -14,12 +15,13 @@ import { Icon } from "@/components/icons";
 import { VoiceClient, type VoiceEvents, type VoiceState } from "@/lib/voice";
 
 const LABEL: Record<VoiceState, string> = {
-  connecting: "Connecting…",
+  connecting: "Getting ready…",
   loading: "Loading the speech models…",
   listening: "Listening",
   hearing: "Hearing you",
   thinking: "Thinking",
-  speaking: "Speaking · talk to interrupt",
+  searching: "Looking it up online…",
+  speaking: "Speaking · talk over it to interrupt",
   closed: "Ended",
 };
 
@@ -53,6 +55,7 @@ export function VoiceSession({
       onDone: (turn, m, title) => latest.current.events.onDone?.(turn, m, title),
       onInterrupted: turn => latest.current.events.onInterrupted?.(turn),
       onError: detail => latest.current.events.onError?.(detail),
+      onEnd: error => latest.current.onEnd(error),
     });
     client.current = c;
     c.start().catch(err => {

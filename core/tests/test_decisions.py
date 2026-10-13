@@ -86,7 +86,7 @@ async def test_live_web_intent_routes_a_paraphrased_request_to_the_web(db_client
     db_client._transport.app.state.decisions = FakeDecisions({"asks_for_web": {"p": 0.97}})
     _settings(db_client, "live")
 
-    turn = await _turn(db_client, "can you check online what changed in raft lately?")
+    turn = await _turn(db_client, "what are people saying about raft lately?")
 
     assert turn["route"]["handler"] == "web"
     assert "decision model" in turn["route"]["reason"]
@@ -106,7 +106,7 @@ async def test_shadow_web_intent_is_recorded_and_ignored(db_client, session_fact
     db_client._transport.app.state.decisions = FakeDecisions({"asks_for_web": {"p": 0.99}})
     _settings(db_client, "shadow")
 
-    turn = await _turn(db_client, "can you check online what changed in raft lately?")
+    turn = await _turn(db_client, "what are people saying about raft lately?")
 
     assert turn["route"]["handler"] == "general"
     row = (await _log(session_factory, "web_intent", turn["user_message"]["chat_id"]))[-1]
@@ -125,7 +125,7 @@ async def test_the_trigger_phrase_never_asks_the_model(db_client):
 async def test_an_absent_decision_model_changes_nothing(db_client):
     db_client._transport.app.state.decisions = FakeDecisions(None)  # unreachable
     _settings(db_client, "live")
-    assert (await _turn(db_client, "can you check online?"))["route"]["handler"] == "general"
+    assert (await _turn(db_client, "what are people saying about raft lately?"))["route"]["handler"] == "general"
 
 
 # ── the write gate ───────────────────────────────────────────────────────────

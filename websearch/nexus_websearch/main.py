@@ -1,6 +1,6 @@
 """The web search service: the one component allowed to reach the internet.
 
-    POST /search   {"message", "known_names", "user_id"}  -> what was sent, and results
+    POST /search   {"message", "known_names", "user_id", "context"}  -> what was sent, and results
     GET  /audit    the most recent entries of the audit log
     GET  /health   liveness (open)
 
@@ -22,6 +22,7 @@ import logging
 import time
 from collections import deque
 from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
 
 import httpx
@@ -29,7 +30,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from .config import Settings
-from .redaction import REWRITE_PROMPT, strip_identifiers
+from .redaction import rewrite_messages, strip_identifiers
 
 logger = logging.getLogger("nexus_websearch")
 
@@ -55,6 +56,8 @@ class SearchRequest(BaseModel):
     message: str
     known_names: list[str] = Field(default_factory=list)
     user_id: str | None = None
+    # The person's earlier messages in the chat, for a follow-up's meaning.
+    context: list[str] = Field(default_factory=list)
 
 
 class Result(BaseModel):
@@ -112,14 +115,13 @@ class Searcher:
         window.append(now)
         return True
 
-    async def _rewrite(self, message: str) -> str | None:
+    async def _rewrite(self, message: str, context: list[str]) -> str | None:
         try:
             r = await self.http.post(
                 f"{self.s.runtime_url}/v1/chat/completions",
                 json={
                     "model": self.s.rewrite_model,
-                    "messages": [{"role": "system", "content": REWRITE_PROMPT},
-                                 {"role": "user", "content": message}],
+                    "messages": rewrite_messages(message, context, date.today()),
                     "temperature": 0.0,
                     "max_tokens": 64,
                 },
@@ -187,7 +189,7 @@ class Searcher:
         if not self._rate_ok(req.user_id or "anonymous"):
             return SearchResponse(query_sent=None, error="too many web searches in the last minute")
 
-        rewritten = await self._rewrite(req.message)
+        rewritten = await self._rewrite(req.message, req.context)
         if not rewritten:
             return SearchResponse(query_sent=None, error="could not prepare a safe query")
         query, removed = strip_identifiers(rewritten, req.known_names)
