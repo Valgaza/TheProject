@@ -39,7 +39,7 @@ async def test_core_sends_the_message_and_the_names_to_redact():
     result = await web.search("Priya's lymphoma, MRN 00482913", known_names=["Aarya Patil"], user_id="u1")
 
     assert seen == [{"message": "Priya's lymphoma, MRN 00482913", "known_names": ["Aarya Patil"],
-                     "user_id": "u1"}]
+                     "user_id": "u1", "context": []}]
     assert result.query_sent == "stage 3 lymphoma treatment options"
     assert result.results[0].url == "https://example.org/a"
     assert result.stripped == ("00482913",)
@@ -145,9 +145,11 @@ def test_no_web_search_means_no_web_message():
 class FakeWeb:
     def __init__(self) -> None:
         self.messages: list[str] = []
+        self.contexts: list[list[str]] = []
 
-    async def search(self, message, *, known_names, user_id=None) -> WebSearch:
+    async def search(self, message, *, known_names, user_id=None, context=()) -> WebSearch:
         self.messages.append(message)
+        self.contexts.append(list(context))
         return WebSearch(
             query_sent="raft consensus",
             results=(WebResult(title="Raft", url="https://raft.github.io", snippet="..."),),
@@ -172,6 +174,22 @@ async def test_a_web_turn_records_exactly_what_was_sent(db_client, provider):
     assert body["assistant_message"]["metadata"]["web"]["query_sent"] == "raft consensus"
     prompt_text = "\n".join(m["content"] for m in provider.chat_calls[-1])
     assert "https://raft.github.io" in prompt_text
+
+
+async def test_a_follow_up_search_gets_the_question_it_follows(db_client):
+    """"Check it online" says nothing about what to search for; the rewrite
+    gets the person's earlier messages to work that out."""
+    web = FakeWeb()
+    db_client._transport.app.state.web = web
+    chat = await _make_chat(db_client)
+
+    await db_client.post(f"/chats/{chat['id']}/messages",
+                         json={"content": "What happened at the latest Singapore Grand Prix?"})
+    await db_client.post(f"/chats/{chat['id']}/messages",
+                         json={"content": "Check it online and get me this year's results.", "use_web": True})
+
+    assert web.messages == ["Check it online and get me this year's results."]
+    assert web.contexts == [["What happened at the latest Singapore Grand Prix?"]]
 
 
 async def test_without_the_button_nothing_goes_to_the_web(db_client):
@@ -213,7 +231,7 @@ async def test_documents_and_the_web_can_inform_one_turn(db_client, provider):
 
 async def test_a_web_client_that_raises_still_answers(db_client, provider):
     class ExplodingWeb:
-        async def search(self, message, *, known_names, user_id=None) -> WebSearch:
+        async def search(self, message, *, known_names, user_id=None, context=()) -> WebSearch:
             raise RuntimeError("searxng is down")
 
     db_client._transport.app.state.web = ExplodingWeb()

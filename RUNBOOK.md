@@ -227,10 +227,22 @@ error and refuses everything.
 
 ## Web search
 
-Off unless asked for, per message: the globe button in the composer, or
-asking in words ("search the web for…", and, once the decision model is live
-for it, other phrasings too). Nothing in core talks to the internet. Core
-sends the message to the websearch container (`websearch/`, :8004), which:
+Off unless asked for, per message. Three ways to ask:
+
+- the globe button in the composer;
+- saying so in words, typed or spoken: "search the web for…", "check online",
+  "look it up", "look up …", "google that", "reference the web", "what does
+  the internet say…" (`WEB_TRIGGER` in `core/nexus_core/web_client.py`).
+  Mentioning the internet is not asking ("I read online that…");
+- saying yes to Nexus's own offer. For anything that depends on recent facts
+  the model answers from what it knows and ends with "Want me to check
+  online?"; a plain "yes" (or "sure", "go ahead") to that searches the
+  question that prompted it. "Yes, but…" with a new question is a new turn.
+
+In voice, a turn that will search is answered with a word first ("Give me a
+second, I'll look that up.") while the search runs. Nothing in core talks to
+the internet. Core sends the message to the websearch container
+(`websearch/`, :8004), which:
 
 1. has the runtime's LLM rewrite it as a generic topic, then strips your
    name, your email and anything with five or more digits from the rewrite;

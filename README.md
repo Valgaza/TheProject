@@ -112,7 +112,8 @@ knows you have something on a topic without holding a lossy copy of it.
 
 ### Web search is the one thing that leaves the machine
 
-It runs only when you ask: the composer's globe button, or saying so in words.
+It runs only when you ask: the composer's globe button, saying so in words
+("look it up", "check online"), or saying yes when Nexus offers to check.
 Core hands the message to the websearch container, the only component with a
 route to SearXNG. There a model rewrites it into a generic topic query, your
 own names, email addresses and long ID-like numbers are stripped from the

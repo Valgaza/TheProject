@@ -100,14 +100,16 @@ class WebClient:
         self._base_url = base_url.rstrip("/")
 
     async def search(
-        self, message: str, *, known_names: list[str], user_id: str | None = None
+        self, message: str, *, known_names: list[str], user_id: str | None = None,
+        context: list[str] = (),
     ) -> WebSearch:
         """Ask the websearch service. Never raises: a failed search degrades
         a turn, it does not fail one."""
         try:
             response = await self._http.post(
                 f"{self._base_url}/search",
-                json={"message": message, "known_names": known_names, "user_id": user_id},
+                json={"message": message, "known_names": known_names, "user_id": user_id,
+                      "context": list(context)},
                 timeout=SEARCH_TIMEOUT_SECONDS,
             )
             response.raise_for_status()
