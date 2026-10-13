@@ -143,7 +143,7 @@ def _reset_optional_clients() -> None:
     not error — it silently changes behaviour, which is worse. A test that
     wants one sets it explicitly; a test that doesn't should see none.
     """
-    for attribute in ("memory", "rag", "web"):
+    for attribute in ("memory", "rag", "web", "images"):
         if hasattr(app.state, attribute):
             delattr(app.state, attribute)
 

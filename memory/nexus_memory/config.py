@@ -65,3 +65,7 @@ class Settings:
         # Cosine floor for retrieval, measured rather than guessed. See
         # retrieval.py for the sweep this number came from.
         self.search_min_score = float(_optional("MEMORY_SEARCH_MIN_SCORE", str(DEFAULT_MIN_SCORE)))
+        # "triples": the graph is written from the gate's facts directly, in
+        # code (graph_writer.py). "extract": graphiti's LLM extraction, the
+        # old route, still used for any write that comes without triples.
+        self.graph_mode = _optional("MEMORY_GRAPH_MODE", "triples")

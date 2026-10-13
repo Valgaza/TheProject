@@ -15,7 +15,7 @@ import pytest
 from nexus_core.chat_service import CONTEXT_DIVIDER, build_prompt
 from nexus_core.orchestrator import select_route
 from nexus_core.rag_client import RagResult, RagSource
-from nexus_core.web_client import WebClient, WebResult, WebSearch
+from nexus_core.web_client import WebClient, WebResult, WebSearch, accepts, offers_web
 
 
 # ── The client (redaction itself is tested in websearch/tests) ───────────────
@@ -39,7 +39,7 @@ async def test_core_sends_the_message_and_the_names_to_redact():
     result = await web.search("Priya's lymphoma, MRN 00482913", known_names=["Aarya Patil"], user_id="u1")
 
     assert seen == [{"message": "Priya's lymphoma, MRN 00482913", "known_names": ["Aarya Patil"],
-                     "user_id": "u1"}]
+                     "user_id": "u1", "context": []}]
     assert result.query_sent == "stage 3 lymphoma treatment options"
     assert result.results[0].url == "https://example.org/a"
     assert result.stripped == ("00482913",)
@@ -68,9 +68,47 @@ async def test_the_web_only_runs_when_asked_for():
     "Search The Web for raft",
     "can you look it up online?",
     "look this up online please",
+    "Reference the web for this because I think you have outdated information.",
+    "Check online who the president is",
+    "look it up",
+    "google that for me",
+    "what does the internet say about Qdrant vs Milvus?",
+    "look up the news online",
+    "Look up who the prime minister is",
+    "could you look up the train times?",
 ])
 async def test_every_trigger_phrase_routes_to_the_web(content):
     assert (await select_route(content=content)).handler == "web"
+
+
+@pytest.mark.parametrize("content", [
+    "I read online that MLX is fast, is that true?",
+    "I look up to my father",
+    "Look at the web page I sent",
+    "I looked it up yesterday",
+    "what is the boiling point of water",
+])
+async def test_mentioning_the_internet_is_not_asking_for_it(content):
+    assert (await select_route(content=content)).handler == "general"
+
+
+@pytest.mark.parametrize("answer,offer", [
+    ("Joe Biden, as of my training. Want me to check online?", True),
+    ("Would you like me to look that up?", True),
+    ("Do you want me to search the web for the latest?", True),
+    ("Anything else?", False),
+    ("Want me to tell you more?", False),
+])
+def test_an_offer_to_check(answer, offer):
+    assert offers_web(answer) is offer
+
+
+@pytest.mark.parametrize("reply,yes", [
+    ("Yes.", True), ("Yeah, go ahead", True), ("Sure, please do.", True), ("Okay", True),
+    ("No thanks", False), ("Not now", False), ("Yes, but what about the dog and the keeper?", False),
+])
+def test_a_plain_yes(reply, yes):
+    assert accepts(reply) is yes
 
 
 # ── The prompt ───────────────────────────────────────────────────────────────
@@ -107,9 +145,11 @@ def test_no_web_search_means_no_web_message():
 class FakeWeb:
     def __init__(self) -> None:
         self.messages: list[str] = []
+        self.contexts: list[list[str]] = []
 
-    async def search(self, message, *, known_names, user_id=None) -> WebSearch:
+    async def search(self, message, *, known_names, user_id=None, context=()) -> WebSearch:
         self.messages.append(message)
+        self.contexts.append(list(context))
         return WebSearch(
             query_sent="raft consensus",
             results=(WebResult(title="Raft", url="https://raft.github.io", snippet="..."),),
@@ -134,6 +174,22 @@ async def test_a_web_turn_records_exactly_what_was_sent(db_client, provider):
     assert body["assistant_message"]["metadata"]["web"]["query_sent"] == "raft consensus"
     prompt_text = "\n".join(m["content"] for m in provider.chat_calls[-1])
     assert "https://raft.github.io" in prompt_text
+
+
+async def test_a_follow_up_search_gets_the_question_it_follows(db_client):
+    """"Check it online" says nothing about what to search for; the rewrite
+    gets the person's earlier messages to work that out."""
+    web = FakeWeb()
+    db_client._transport.app.state.web = web
+    chat = await _make_chat(db_client)
+
+    await db_client.post(f"/chats/{chat['id']}/messages",
+                         json={"content": "What happened at the latest Singapore Grand Prix?"})
+    await db_client.post(f"/chats/{chat['id']}/messages",
+                         json={"content": "Check it online and get me this year's results.", "use_web": True})
+
+    assert web.messages == ["Check it online and get me this year's results."]
+    assert web.contexts == [["What happened at the latest Singapore Grand Prix?"]]
 
 
 async def test_without_the_button_nothing_goes_to_the_web(db_client):
@@ -175,7 +231,7 @@ async def test_documents_and_the_web_can_inform_one_turn(db_client, provider):
 
 async def test_a_web_client_that_raises_still_answers(db_client, provider):
     class ExplodingWeb:
-        async def search(self, message, *, known_names, user_id=None) -> WebSearch:
+        async def search(self, message, *, known_names, user_id=None, context=()) -> WebSearch:
             raise RuntimeError("searxng is down")
 
     db_client._transport.app.state.web = ExplodingWeb()
@@ -201,3 +257,33 @@ async def test_an_unconfigured_web_search_tells_the_model_so(db_client, provider
     assert response.json()["assistant_message"]["metadata"]["web"]["error"]
     prompt_text = "\n".join(m["content"] for m in provider.chat_calls[-1])
     assert "could not check the web" in prompt_text
+
+
+async def test_yes_to_the_offer_searches_the_question_it_was_about(db_client, provider):
+    web = FakeWeb()
+    db_client._transport.app.state.web = web
+    chat = await _make_chat(db_client)
+    replies = iter(["Joe Biden, but that may be out of date. Want me to check online?", "fake reply"])
+    answer = provider.chat
+
+    async def offering(messages, **kwargs):
+        reply = await answer(messages, **kwargs)
+        return next(replies, reply) if reply == "fake reply" else reply
+
+    provider.chat = offering
+    first = (await db_client.post(f"/chats/{chat['id']}/messages", json={"content": "who's the US president?"})).json()
+    assert first["route"]["handler"] == "general" and web.messages == []
+
+    second = (await db_client.post(f"/chats/{chat['id']}/messages", json={"content": "Yes please"})).json()
+    assert second["route"]["handler"] == "web"
+    assert "said yes" in second["route"]["reason"]
+    assert web.messages == ["who's the US president?"]
+
+
+async def test_yes_without_an_offer_goes_nowhere(db_client):
+    web = FakeWeb()
+    db_client._transport.app.state.web = web
+    chat = await _make_chat(db_client)
+    await db_client.post(f"/chats/{chat['id']}/messages", json={"content": "is raft a consensus algorithm?"})
+    body = (await db_client.post(f"/chats/{chat['id']}/messages", json={"content": "Yes"})).json()
+    assert body["route"]["handler"] == "general" and web.messages == []

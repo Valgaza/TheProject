@@ -9,14 +9,12 @@ identifying left the machine) holds either way.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import sys
 from pathlib import Path
 
 import httpx
 import pytest
-import websockets
 
 from conftest import CORE_URL, ENV, RUNTIME_URL, WEBSEARCH_URL
 
@@ -66,8 +64,8 @@ async def test_a_web_search_never_sends_the_identifying_details(client):
 
 
 async def test_a_spoken_question_is_heard_answered_aloud_and_stored(client):
-    """The voice loopback: the runtime's own TTS asks a question, streamed in
-    real time into the voice socket as a microphone would."""
+    """The voice loopback: the runtime's own TTS asks a question, sent in real
+    time as a WebRTC microphone track, as the browser would."""
     sys.path.insert(0, str(ROOT / "scripts"))
     from voice_bench import Browser, synthesise
 
@@ -75,21 +73,17 @@ async def test_a_spoken_question_is_heard_answered_aloud_and_stored(client):
     async with httpx.AsyncClient(base_url=RUNTIME_URL, headers=SERVICE) as runtime:
         question = await synthesise(runtime, "How many steps are there to the lamp room?")
 
-    cookie = "; ".join(f"{k}={v}" for k, v in client.cookies.items())
-    url = CORE_URL.replace("http", "ws", 1) + f"/ws/voice/{chat}"
-    async with websockets.connect(url, additional_headers={"Origin": "http://localhost:3000", "Cookie": cookie},
-                                  max_size=None) as ws:
-        browser = Browser(ws)
-        speakers = asyncio.create_task(browser.speakers())
-        await browser.until("ready", timeout=600)
-        mic = asyncio.create_task(browser.microphone())
+    browser = await Browser.connect(client, chat, core=CORE_URL)
+    try:
+        await browser.until("bot-ready", timeout=600)
         browser.say(question)
-        _, transcript = await browser.until("transcript")
-        first_at, _ = await browser.until("audio")
-        latency = first_at - browser.spoke_last_at
-        _, done = await browser.until("done", timeout=120)
-        mic.cancel()
-        speakers.cancel()
+        spoke_end = await browser.said()
+        transcript_at, transcript = await browser.until("transcript")
+        first_at, _ = await browser.until("audio", after=spoke_end)
+        latency = first_at - spoke_end
+        _, done = await browser.until("done", after=transcript_at, timeout=120)
+    finally:
+        await browser.close()
 
     assert "lamp room" in transcript["text"].lower(), transcript
     stored = done["assistant_message"]

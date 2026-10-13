@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..auth import current_user_id as _current_user_id
 from ..chat_service import Turn, generate_turn, stream_turn
 from ..db import session_dependency
+from ..images import delete_chat_images, schedule_captions
 from ..models import Chat, MemoryEpisode, Message, Project
 from ..memory_client import MemoryClient
 from ..memory_writer import enqueue_turn
@@ -169,7 +170,10 @@ async def delete_chat(
     extracted into the knowledge graph survives -- Postgres holds what was
     said, Neo4j holds what was learned, deliberately separate stores, and
     deleting a conversation shouldn't unlearn a fact that came from it."""
-    chat = await _get_chat(session, chat_id, _current_user_id(request))
+    user_id = _current_user_id(request)
+    chat = await _get_chat(session, chat_id, user_id)
+    # Its images go with it; they are part of what was said.
+    await delete_chat_images(request.app, session, user_id, [chat.id])
     await session.delete(chat)
 
 
@@ -191,10 +195,14 @@ async def list_messages(
 logger = logging.getLogger(__name__)
 
 
-def _turn_kwargs(request: Request, chat: Chat, content: str, use_web: bool, user_id: uuid.UUID) -> dict:
+def _turn_kwargs(request: Request, chat: Chat, content: str, use_web: bool, user_id: uuid.UUID,
+                 images: tuple = ()) -> dict:
     """Everything a turn needs from the app. ``request`` may also be a
-    WebSocket (routers/voice.py): only ``.app`` is read."""
+    stand-in holding only ``.app`` (routers/voice_rtc.py)."""
     return dict(
+        images=images,
+        image_store=getattr(request.app.state, "images", None),
+        vision_model=getattr(_settings(request), "vision_model", None),
         chat=chat,
         content=content,
         provider=_provider(request),
@@ -270,6 +278,17 @@ def _turn_out(turn: Turn, chat: Chat) -> TurnOut:
     )
 
 
+def _attached_images(request: Request, body: MessageCreate, user_id: uuid.UUID) -> tuple:
+    """The message's images, each checked to be this person's upload."""
+    if not body.images:
+        return ()
+    store = getattr(request.app.state, "images", None)
+    found = [store.get(user_id, image_id) if store is not None else None for image_id in body.images]
+    if any(img is None for img in found):
+        raise HTTPException(status_code=422, detail="an attached image was not found; attach it again")
+    return tuple(found)
+
+
 def _validate_post(body: MessageCreate) -> None:
     if body.role != "user":
         raise HTTPException(
@@ -293,11 +312,14 @@ async def create_message(
     _validate_post(body)
     user_id = _current_user_id(request)
     chat = await _get_chat(session, chat_id, user_id)
+    images = _attached_images(request, body, user_id)
     async with _live(request):
-        turn = await generate_turn(session, **_turn_kwargs(request, chat, body.content, body.use_web, user_id))
+        turn = await generate_turn(session, **_turn_kwargs(request, chat, body.content, body.use_web, user_id,
+                                                           images))
     _queue_for_memory(request, session, chat, turn, user_id)
     await session.commit()
     _wake_queue(request)
+    schedule_captions(request.app, user_id, turn.user_message)
     return _turn_out(turn, chat)
 
 
@@ -332,13 +354,15 @@ async def stream_message(
     async with factory() as session:
         # Checked before the 200 goes out, so a missing chat is still a 404.
         await _get_chat(session, chat_id, user_id)
+    images = _attached_images(request, body, user_id)
 
     async def events():
         async with factory() as session, _live(request):
             try:
                 chat = await _get_chat(session, chat_id, user_id)
                 turn = None
-                async for event in stream_turn(session, **_turn_kwargs(request, chat, body.content, body.use_web, user_id)):
+                async for event in stream_turn(session, **_turn_kwargs(request, chat, body.content, body.use_web,
+                                                                       user_id, images)):
                     if event.kind == "prepared":
                         p = event.prepared
                         yield _sse("prepared", {
@@ -360,6 +384,7 @@ async def stream_message(
                 _queue_for_memory(request, session, chat, turn, user_id)
                 await session.commit()
                 _wake_queue(request)
+                schedule_captions(request.app, user_id, turn.user_message)
                 yield _sse("done", _turn_out(turn, chat).model_dump(mode="json", by_alias=True))
             except Exception as exc:
                 logger.exception("streamed turn failed for chat=%s", chat_id)

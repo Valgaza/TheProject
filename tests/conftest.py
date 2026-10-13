@@ -73,7 +73,45 @@ async def client():
             await _remove_user(c, user["id"])
 
 
+# Every user (and its projects) a test removed. Writes to the graph can land
+# after the test's own clean-up (a document's facts are written in the
+# background), so the session sweeps their tiers once more at the end. Without
+# it every full run left a project tier in the live graph.
+_REMOVED: list[tuple[str, list[str]]] = []
+
+
+def _sweep_graph_tiers() -> None:
+    """Delete the removed users' graph tiers until they stay empty: a
+    document's three facts arrive seconds apart, after the test is gone."""
+    import time
+
+    if not _REMOVED:
+        return
+    views = [(u, {"view": "user"}) for u, _ in _REMOVED] + [
+        (u, {"view": "project", "project_id": p}) for u, projects in _REMOVED for p in projects]
+    with httpx.Client(base_url=MEMORY_URL, headers={"X-Service-Token": ENV["SERVICE_TOKEN"]}, timeout=30) as m:
+        empty_in_a_row, deadline = 0, time.monotonic() + 45
+        while empty_in_a_row < 2 and time.monotonic() < deadline:
+            time.sleep(5)
+            found = 0
+            for user_id, params in views:
+                try:
+                    found += len(m.get("/graph", params={"user_id": user_id, **params}).json().get("nodes", []))
+                    m.delete("/graph", params={"user_id": user_id, **params})
+                except Exception:
+                    pass
+            empty_in_a_row = empty_in_a_row + 1 if found == 0 else 0
+    _REMOVED.clear()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _graph_sweep_at_the_end():
+    yield
+    _sweep_graph_tiers()
+
+
 async def _remove_user(c: httpx.AsyncClient, user_id: str) -> None:
+    _REMOVED.append((user_id, [p["id"] for p in (await c.get(f"{CORE_URL}/projects")).json()]))
     for doc in (await c.get(f"{CORE_URL}/documents")).json():
         await c.delete(f"{CORE_URL}/documents/{doc['id']}")
     for project in (await c.get(f"{CORE_URL}/projects")).json():
