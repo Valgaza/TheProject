@@ -609,8 +609,8 @@ _retired: set[str] = set()
 
 # Every live item in some groups, with the text a search would return for it.
 _LIVE_NODES = """
-MATCH (n) WHERE n.group_id IN $groups AND (n:Entity OR n:Episodic) AND n.nexus_retired_at IS NULL
-RETURN n.uuid AS uuid, 'Entity' IN labels(n) AS entity, coalesce(n.summary, n.content, '') AS text
+MATCH (n) WHERE n.group_id IN $groups AND (n:Entity OR n:Episodic OR n:NexusFact) AND n.nexus_retired_at IS NULL
+RETURN n.uuid AS uuid, 'Entity' IN labels(n) AS entity, coalesce(n.summary, n.content, n.statement, '') AS text
 """
 
 _LIVE_EDGES = """

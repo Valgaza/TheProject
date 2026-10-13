@@ -20,7 +20,7 @@ def ingested(monkeypatch) -> list[tuple[str, str, str | None]]:
     """Capture what would have been written, without a 20s graphiti round trip."""
     calls: list[tuple[str, str, str | None]] = []
 
-    async def _run(text, group_id, speaker=None):
+    async def _run(text, group_id, speaker=None, triples=None, occurred_at=None):
         calls.append((text, group_id, speaker))
         return "00000000-0000-0000-0000-0000000000ff", None
 
@@ -165,7 +165,7 @@ async def test_a_waited_ingest_returns_the_uuid_graphiti_minted(client, ingested
 
 
 async def test_wait_reports_the_real_outcome(client, monkeypatch):
-    async def _ok(text, group_id, speaker=None):
+    async def _ok(text, group_id, speaker=None, triples=None, occurred_at=None):
         return "00000000-0000-0000-0000-0000000000ff", None
 
     monkeypatch.setattr(memory_main, "_run_ingest", _ok)
@@ -181,7 +181,7 @@ async def test_wait_reports_the_real_outcome(client, monkeypatch):
 
 
 async def test_wait_surfaces_a_failure_instead_of_swallowing_it(client, monkeypatch):
-    async def _boom(text, group_id, speaker=None):
+    async def _boom(text, group_id, speaker=None, triples=None, occurred_at=None):
         return None, "RuntimeError: neo4j is down"
 
     monkeypatch.setattr(memory_main, "_run_ingest", _boom)
