@@ -1,11 +1,13 @@
-"""Download everything voice and the decision model need, ahead of time.
+"""Download everything voice, images and the decision model need, ahead of time.
 
-The runtime never downloads an optional model at startup (a slow connection
-would hold the whole stack hostage), so voice and Laya are fetched here once:
+The runtime never downloads an optional model at startup or on first use (a
+slow connection would hold the whole stack hostage), so voice, vision and
+Laya are fetched here once.
+(Voice activity detection and Smart Turn come bundled with pipecat-ai.)
 
-  Silero VAD          ~/.cache/nexus/silero_vad.onnx (2 MB, read by core)
   speech-to-text      RUNTIME_STT_MODEL  (Parakeet, ~2.5 GB)
   text-to-speech      RUNTIME_TTS_MODEL  (Kokoro, ~350 MB)
+  vision              CORE_VISION_MODEL  (Qwen3.5-4B, ~3 GB)
   decision model      RUNTIME_DECIDE_MODEL / RUNTIME_DECIDE_SUBFOLDER (~1.7 GB),
                       unless it is a local fine-tune
 
@@ -16,28 +18,21 @@ from __future__ import annotations
 
 import os
 import sys
-import urllib.request
 from pathlib import Path
 
 from dotenv import dotenv_values
 from huggingface_hub import snapshot_download
 
 ROOT = Path(__file__).resolve().parent.parent
-SILERO_URL = "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx"
-SILERO_PATH = Path(os.getenv("NEXUS_VAD_MODEL", Path.home() / ".cache" / "nexus" / "silero_vad.onnx"))
 
 
 def main() -> int:
     env = {**dotenv_values(ROOT / ".env"), **os.environ}
-    if SILERO_PATH.exists():
-        print(f"VAD: already at {SILERO_PATH}")
-    else:
-        SILERO_PATH.parent.mkdir(parents=True, exist_ok=True)
-        urllib.request.urlretrieve(SILERO_URL, SILERO_PATH)
-        print(f"VAD: saved to {SILERO_PATH}")
 
     for label, repo in (("STT", env.get("RUNTIME_STT_MODEL") or "mlx-community/parakeet-tdt-0.6b-v2"),
-                        ("TTS", env.get("RUNTIME_TTS_MODEL") or "mlx-community/Kokoro-82M-bf16")):
+                        ("TTS", env.get("RUNTIME_TTS_MODEL") or "mlx-community/Kokoro-82M-bf16"),
+                        ("vision", env.get("RUNTIME_VISION_MODEL") or env.get("CORE_VISION_MODEL")
+                         or "mlx-community/Qwen3.5-4B-MLX-4bit")):
         print(f"{label}: {repo}", flush=True)
         snapshot_download(repo)
 

@@ -69,12 +69,29 @@ async def test_the_prompt_carries_prior_turns(db_client, provider):
     await db_client.post(f"/chats/{chat['id']}/messages", json={"content": "second"})
 
     second_prompt = provider.chat_calls[1]
-    assert [m["content"] for m in second_prompt] == [
-        SYSTEM_PROMPT,
-        "first",
-        "fake reply",
-        "second",
-    ]
+    assert [m["content"] for m in second_prompt[:-1]] == [SYSTEM_PROMPT, "first", "fake reply"]
+    # The latest message carries the date and time, then what was said.
+    latest = second_prompt[-1]["content"]
+    assert latest.startswith("The person's name is Demo User.")
+    assert "Right now it is " in latest and latest.endswith("\nsecond")
+
+
+async def test_every_turn_knows_the_date_and_time():
+    """A 2026 deadline in a photo read as "hypothetical" before this."""
+    from datetime import datetime, timezone
+
+    from nexus_core.chat_service import build_prompt
+
+    class Row:
+        def __init__(self, role, content):
+            self.role, self.content, self.meta = role, content, {}
+
+    at = datetime(2026, 10, 12, 9, 30, tzinfo=timezone.utc)
+    plain = build_prompt([Row("user", "When is it due?")], now=at)[-1]["content"]
+    with_image = build_prompt([Row("user", "When is it due?")], now=at,
+                              images=["data:image/png;base64,AA=="])[-1]["content"][0]["text"]
+    for text in (plain, with_image):
+        assert "Monday, 12 October 2026" in text and "real present" in text
 
 
 async def test_chats_do_not_leak_into_each_other(db_client, provider):

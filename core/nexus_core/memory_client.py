@@ -44,6 +44,8 @@ class Fact:
     subject: str | None = None
     # When the graph learned it (the edge's valid_at). None for summaries.
     learned_at: datetime | None = None
+    # How well it matched the question, for ledger facts (memory's ledger.py).
+    score: float | None = None
 
     def render(self) -> str:
         """One line, tagged with the tier it came from.
@@ -112,6 +114,7 @@ class MemoryClient:
                 kind=item.get("kind", "relationship"),
                 subject=item.get("subject"),
                 learned_at=_when(item.get("valid_at")),
+                score=item.get("score"),
             )
             for item in body.get("facts", [])
         ]
@@ -144,6 +147,7 @@ class MemoryClient:
         scope: str,
         user_id: uuid.UUID,
         project_id: uuid.UUID | None,
+        facts: list[dict] | None = None,
     ) -> IngestResult:
         """Write one distilled statement into one scope, and wait for it.
 
@@ -161,6 +165,9 @@ class MemoryClient:
                     "project_id": str(project_id) if project_id else None,
                     "scope": scope,
                     "wait": True,
+                    # The gate's facts as triples: memory writes the graph from
+                    # them directly rather than extracting it again.
+                    "facts": facts or None,
                 },
                 timeout=INGEST_TIMEOUT_SECONDS,
             )

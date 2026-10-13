@@ -31,6 +31,7 @@ from .service_auth import ServiceTokenMiddleware
 from .hygiene import (
     group_lock, is_retired, is_suppressed, load_retired, load_suppressed, retire, sweep,
 )
+from . import graph_writer, ledger
 from .logging_config import configure_logging
 from .retrieval import DEFAULT_LIMIT, DEFAULT_MIN_SCORE, build_search_config
 from .scopes import Scope, View, read_groups, scope_of, view_groups, write_group
@@ -200,6 +201,7 @@ async def lifespan(app: FastAPI):
     global _graphiti
     configure_logging()
     cfg = Settings()
+    app.state.graph_mode = cfg.graph_mode
 
     app.state.search_min_score = cfg.search_min_score
     _graphiti = Graphiti(
@@ -266,6 +268,8 @@ async def lifespan(app: FastAPI):
         ),
     )
     await _graphiti.build_indices_and_constraints()
+    await _graphiti.driver.execute_query(
+        "CREATE INDEX nexus_fact_group IF NOT EXISTS FOR (n:NexusFact) ON (n.group_id, n.key)")
     # The suppression set lives in memory, so it has to be read back after a
     # restart or previously-hidden duplicate episodes reappear in search.
     suppressed = await load_suppressed(_graphiti.driver)
@@ -294,6 +298,13 @@ app.add_middleware(ServiceTokenMiddleware)
 # ── Models ────────────────────────────────────────────────────────────────────
 
 
+class TripleIn(BaseModel):
+    statement: str
+    subject: str = ""
+    relation: str = ""
+    object: str = ""
+
+
 class IngestRequest(BaseModel):
     text: str
     user_id: uuid.UUID
@@ -309,6 +320,12 @@ class IngestRequest(BaseModel):
     # This used to hardcode "user: " onto everything, which taught the graph
     # that a person literally named "user" was the subject of every fact.
     speaker: str | None = None
+    # The gate's facts as triples. Given, the graph is written from them
+    # directly (graph_writer.py); missing, graphiti extracts from the text.
+    facts: list[TripleIn] | None = None
+    # When it happened, for history written after the fact (a seeded record
+    # of past cases). Recall dates and orders facts by it. Default: now.
+    occurred_at: datetime | None = None
     # Block until the episode is actually in the graph. Off by default, because
     # extraction takes 12-30s and most callers are fire-and-forget. The write
     # gate turns it on: it already runs off the request path, and it needs a
@@ -407,9 +424,11 @@ class FactOut(BaseModel):
     fact: str
     # "relationship" when it came from an edge, "entity" when it came from a
     # node's summary. Standing facts about a person arrive as the latter.
-    kind: Literal["relationship", "entity", "episode"]
+    kind: Literal["fact", "relationship", "entity", "episode"]
     # The entity a summary describes; None for relationships.
     subject: str | None = None
+    # How well a ledger fact matches the query (ledger.py); None for graph items.
+    score: float | None = None
     group_id: str
     # Which tier it came from, so a caller can weigh a durable personal fact
     # differently from a project detail without parsing group ids.
@@ -435,6 +454,8 @@ async def _run_ingest(
     text: str,
     group_id: str,
     speaker: str | None = None,
+    triples: list | None = None,
+    occurred_at: datetime | None = None,
 ) -> tuple[str | None, str | None]:
     """Returns (episode_uuid, error). Exactly one of the two is set.
 
@@ -445,6 +466,28 @@ async def _run_ingest(
     fails every time.
     """
     graphiti = _require_graphiti()
+    if not speaker:
+        # The facts themselves first, so they can be recalled at once and
+        # whether or not graphiti extracts them well (ledger.py).
+        try:
+            await ledger.write(graphiti.driver, graphiti.embedder, group_id, ledger.statements_of(text),
+                               created_at=occurred_at)
+        except Exception:
+            logger.exception("Failed to write facts to the ledger for group=%s", group_id)
+    usable = [graph_writer.Triple(t.statement, t.subject, t.relation, t.object)
+              for t in (triples or []) if t.subject.strip() and t.object.strip()]
+    if not speaker and usable and getattr(app.state, "graph_mode", "triples") == "triples":
+        try:
+            async with group_lock(group_id):
+                episode_uuid = await graph_writer.write(graphiti, group_id, text, usable, occurred_at=occurred_at)
+        except Exception as exc:
+            logger.exception("Failed to write triples into group=%s", group_id)
+            return None, f"{exc.__class__.__name__}: {exc}"
+        try:
+            await _broadcast_write(group_id)
+        except Exception:
+            logger.exception("Failed to broadcast update for group=%s", group_id)
+        return episode_uuid, None
     if speaker:
         body = f"{speaker}: {text}"
         source = EpisodeType.message
@@ -493,7 +536,7 @@ async def ingest(req: IngestRequest, background_tasks: BackgroundTasks, response
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     if req.wait:
-        episode_uuid, error = await _run_ingest(req.text, group_id, req.speaker)
+        episode_uuid, error = await _run_ingest(req.text, group_id, req.speaker, req.facts, req.occurred_at)
         # 202 Accepted would be a lie here: the work is finished either way.
         response.status_code = 500 if error else 201
         return IngestResponse(
@@ -660,7 +703,30 @@ async def search(req: SearchRequest, request: Request):
         group_ids=groups,
     )
 
+    try:
+        facts_found, ledger_keys = await ledger.search_with_keys(
+            graphiti.driver, graphiti.embedder, req.query, groups, req.limit,
+        )
+    except Exception:
+        # Recall falls back to the graph alone rather than failing the turn.
+        logger.exception("ledger search failed for groups=%s", groups)
+        facts_found, ledger_keys = [], set()
+    # The ledger's facts first: every fact the gate accepted, ranked by
+    # meaning. Then what the graph adds (relationships, entity summaries) and,
+    # last, raw episodes from before the ledger existed.
     candidates: list[FactOut] = [
+        FactOut(
+            id=f.uuid,
+            fact=f.statement,
+            kind="fact",
+            group_id=f.group_id,
+            scope=scope_of(f.group_id),
+            valid_at=f.created_at,
+            score=f.score,
+        )
+        for f in facts_found
+        if not is_retired(f.uuid)
+    ] + [
         FactOut(
             id=edge.uuid,
             fact=edge.fact,
@@ -693,7 +759,8 @@ async def search(req: SearchRequest, request: Request):
             valid_at=getattr(node, "created_at", None),
         )
         for node in results.nodes
-        if node.summary and not is_retired(node.uuid)
+        # A summary that only repeats ledger facts adds nothing but length.
+        if node.summary and not is_retired(node.uuid) and not ledger.covered(node.summary, ledger_keys)
     ] + [
         # Last in the candidate list, so an edge or a node summary wins the
         # dedupe over the raw episode it was extracted from. Episodes are here
@@ -712,14 +779,16 @@ async def search(req: SearchRequest, request: Request):
         # graphiti's EpisodicNode is a fixed model, so the property the sweep
         # sets on the node never reaches these results.
         if episode.content and not is_suppressed(episode.uuid) and not is_retired(episode.uuid)
+        and not ledger.covered(episode.content, ledger_keys)
     ]
 
     facts = _dedupe(candidates)[: req.limit]
 
     logger.info(
-        "search groups=%s query=%r edges=%d nodes=%d episodes=%d -> %d after dedupe",
+        "search groups=%s query=%r facts=%d edges=%d nodes=%d episodes=%d -> %d after dedupe",
         groups,
         req.query[:80],
+        len(facts_found),
         len(results.edges),
         len(results.nodes),
         len(getattr(results, "episodes", [])),

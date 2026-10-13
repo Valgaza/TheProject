@@ -64,9 +64,43 @@ export type Message = {
     voice?: Record<string, number | string>;
     // Cut off by the person; the content is only what they heard.
     interrupted?: boolean;
+    // On a user message: the images attached to it. The caption arrives a
+    // moment after the answer, written by the vision model.
+    images?: ImageMeta[];
   };
   created_at: string;
 };
+
+export type ImageMeta = {
+  id: string;
+  name: string;
+  width: number;
+  height: number;
+  mime_type: string;
+  caption?: string;
+};
+
+/** Where an attached image is shown from: core, behind the session cookie. */
+export const imageUrl = (id: string) => `${CORE_URL}/images/${id}`;
+
+/** Attach an image: stored by core (re-encoded, so a photo's location data
+ * is dropped) and named by id in the message that follows. */
+export async function uploadImage(file: File): Promise<ImageMeta> {
+  const body = new FormData();
+  body.append("file", file);
+  const response = await fetch(`${CORE_URL}/images`, { method: "POST", credentials: "include", body });
+  if (!response.ok) {
+    let message = response.statusText;
+    try {
+      const parsed = await response.json();
+      if (typeof parsed?.detail === "string") message = parsed.detail;
+    } catch {
+      // not JSON
+    }
+    throw new ApiError(response.status, message);
+  }
+  return response.json() as Promise<ImageMeta>;
+}
 
 export type WebMeta = {
   query_sent: string | null;
@@ -237,10 +271,14 @@ export const listMessages = (chatId: string) =>
   core<Message[]>(`/chats/${chatId}/messages`);
 
 /** Send a message and wait for the answer. The reply is the response. */
-export const sendMessage = (chatId: string, content: string, { useWeb = false } = {}) =>
+export const sendMessage = (
+  chatId: string,
+  content: string,
+  { useWeb = false, images = [] as string[] } = {}
+) =>
   core<Turn>(`/chats/${chatId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content, use_web: useWeb }),
+    body: JSON.stringify({ content, use_web: useWeb, images }),
   });
 
 /** What the server knows before the first word: the stored user message,
@@ -264,11 +302,14 @@ export async function streamMessage(
   content: string,
   {
     useWeb = false,
+    images = [],
     onPrepared,
     onToken,
     signal,
   }: {
     useWeb?: boolean;
+    /** Ids from uploadImage. */
+    images?: string[];
     onPrepared?: (prepared: PreparedTurn) => void;
     onToken?: (text: string) => void;
     signal?: AbortSignal;
@@ -278,7 +319,7 @@ export async function streamMessage(
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content, use_web: useWeb }),
+    body: JSON.stringify({ content, use_web: useWeb, images }),
     signal,
   });
   if (!response.ok || !response.body) {

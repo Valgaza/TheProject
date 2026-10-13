@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import AsyncIterator, Sequence
 
 from sqlalchemy import func, select
@@ -24,7 +26,9 @@ from .orchestrator import Attachment, Route, select_route
 from .providers.base import Message as ProviderMessage
 from .providers.base import Provider
 from .rag_client import RagClient, RagResult, RagSource
-from .web_client import WEB_TRIGGER, WebClient, WebSearch
+from .web_client import WEB_TRIGGER, WebClient, WebSearch, accepts, offers_web
+from .clock import calendar_note, now_note
+from .images import ImageStore, StoredImage, caption, caption_note
 from .decisions import WEB_INTENT_QUESTIONS, DecisionsClient, log_entry
 
 logger = logging.getLogger(__name__)
@@ -32,7 +36,40 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = (
     "You are Nexus, a local-first assistant. Answer directly and concretely. "
     "Prefer specifics over generalities, admit what you do not know, and keep "
-    "formatting plain unless the answer genuinely needs structure."
+    "formatting plain unless the answer genuinely needs structure. "
+    # The web runs only when the person asks (flag 1), so the model is told
+    # it exists and how to offer it, rather than claiming it can't.
+    "Nexus can search the web, but only when the person asks, so you never "
+    "browse on your own. Never say you have no way to reach the internet. "
+    "When asked for a name, number or detail you weren't given and don't "
+    "know, say you don't know rather than guessing. Never invent an amount, "
+    "total, price or date; if asked about something you haven't been shown "
+    "(a receipt, an image, a file), say you can't see it and ask for it. "
+    "About the person's own life, work and plans, say only what you have been "
+    "told (in memory or this conversation), including every relevant thing "
+    "you were told; if it isn't there, reply \"I don't know\"."
+)
+
+# The offer to search is asked for only on a question that sounds
+# time-sensitive. Told on every turn, the model ended nearly every answer with
+# it, documents and the person's own facts included. It goes with the turn's
+# context, not the system prompt, so the cached prefix stays the same. A bare
+# year is not a cue ("my viva is on 3 November 2026" is the person's own date),
+# and nor is "today": every turn carries the date, so "what's the date today?"
+# needs no search.
+RECENT_CUE = re.compile(
+    r"\b(current(ly)?|latest|recent(ly)?|news|this (week|month|year)|"
+    r"prices?|weather|scores?|won|winner|released?|president|prime minister|ceo|stocks?)\b",
+    re.IGNORECASE,
+)
+OFFER_NOTE = (
+    "This question may depend on recent or changing facts and no web results "
+    "are attached. What you know stops well before today, so never state an "
+    "event, result or figure from after that as if you knew it; say briefly what "
+    "you last knew and that it may be out of date, or that you don't know, and "
+    "end with exactly: \"Want me to check online?\" This is only about outside "
+    "events: working things out from dates the person gives you, or from today's "
+    "date, is fine, and needs no offer."
 )
 
 # Added for a spoken turn (voice/). Every word is waited for twice over, once
@@ -101,7 +138,7 @@ async def _load_history(session: AsyncSession, chat_id: uuid.UUID) -> list[Messa
     return list(result.scalars())
 
 
-def render_memory(facts: Sequence[Fact]) -> str:
+def render_memory(facts: Sequence[Fact], person: str | None = None) -> str:
     """Recalled facts as a system message.
 
     Framed as things already known rather than as instructions, and explicitly
@@ -115,26 +152,59 @@ def render_memory(facts: Sequence[Fact]) -> str:
     lines = "\n".join(f"- {fact.render()}" for fact in ordered)
     return (
         "What you already know about this person and their work, recalled from "
-        "earlier conversations, most recently learned first:\n"
+        "earlier conversations, most recently learned first"
+        + (f" (facts about {person} are about the person you're talking to)" if person else "")
+        + ":\n"
         f"{lines}\n\n"
         "Use it where it is relevant and say nothing about it where it is not. "
         "When two of these disagree, the one listed first is current and the "
         "other is out of date: the person changed their mind. "
         "It may be incomplete or out of date; if the user contradicts it, they "
-        "are right."
+        "are right. If they ask about their own life, work or plans and none of "
+        "these says it (other facts about them don't count), reply that you "
+        "don't know (\"I don't know\"); never work it out or fill it in."
     )
 
 
+_SOURCE_HEADER = re.compile(r"^\[Source: (?P<file>[^|\]]+?)(?: \| Chunk (?P<chunk>\d+))?\]\s*$", re.MULTILINE)
+
+
+def document_passages(rag_result: RagResult) -> str:
+    """Only the passages from the RAG service's assembled prompt, each
+    labelled with its document and section.
+
+    The assembled prompt is written for a model of its own: "You are a
+    knowledgeable assistant... using ONLY the provided context... Cite the
+    source", then the question again. Passed on whole, those instructions
+    made answers say "the context provided does not mention", copy
+    "[Source: ... | Chunk 4]" into the reply, and miss a name given only as
+    the section heading ("## Pellinore" over "the dog died in 1919").
+    """
+    text = rag_result.prompt
+    start, end = text.find("--- Retrieved Context ---"), text.find("--- End of Context ---")
+    if start != -1:
+        text = text[start + len("--- Retrieved Context ---"): end if end != -1 else None]
+    sections = {str(src.chunk_index): src.heading_path for src in rag_result.sources}
+
+    def label(m: re.Match) -> str:
+        path = sections.get(m["chunk"] or "", "")
+        return f"From {m['file'].strip()}" + (f", section \"{path}\":" if path else ":")
+
+    return _SOURCE_HEADER.sub(label, text).strip()
+
+
 def render_rag_context(rag_result: RagResult) -> str:
-    """Retrieved document passages as a system message, same framing rule as
-    render_memory: presented as material to use, not as instructions, and
-    explicitly allowed to be irrelevant."""
+    """Retrieved document passages, presented as material to use, not as
+    instructions, and explicitly allowed to be irrelevant."""
     return (
-        "Passages retrieved from this project's documents, relevant to what "
-        "was just asked:\n"
-        f"{rag_result.prompt}\n\n"
-        "Use them where they answer the question. If they don't, say so rather "
-        "than guessing from them anyway."
+        "Passages retrieved from this person's documents, relevant to what "
+        "was just asked. A section title is part of the text: a section "
+        "titled with a name is about that name.\n\n"
+        f"{document_passages(rag_result)}\n\n"
+        "Use them where they answer the question, in your own words, without "
+        "mentioning passages, chunks or sources (those are shown separately). "
+        "If they don't answer it, say the documents don't say, rather than "
+        "guessing."
     )
 
 
@@ -152,9 +222,17 @@ def render_web_context(web: WebSearch) -> str:
         f"[{i}] {r.title}\n{r.url}\n{r.snippet}" for i, r in enumerate(web.results, 1)
     )
     return (
-        f"Web search results for \"{web.query_sent}\":\n\n{lines}\n\n"
-        "Use them where they answer the question and cite them by number, "
-        "e.g. [2]. They are from the open web: weigh them, don't trust them."
+        f"Web search results for \"{web.query_sent}\" (the query that was sent, "
+        "with any names and identifying numbers already removed):\n\n"
+        f"{lines}\n\n"
+        "Answer from these results and cite them by number, e.g. [2]. Use only "
+        "what they actually say: never state a name, date, winner or figure "
+        "they don't contain. Where they disagree with anything said earlier in "
+        "this conversation, the results are right and the earlier answer was "
+        "wrong: say so. If they don't give the answer, say what they do show and "
+        "that you couldn't find the rest. The search has already run, on a "
+        "query with personal details removed: answer from the results, and "
+        "don't say you can't search for or look up the person."
     )
 
 
@@ -164,9 +242,16 @@ def build_prompt(
     rag_result: RagResult | None = None,
     web: WebSearch | None = None,
     spoken: bool = False,
+    now: datetime | None = None,
+    images: Sequence[str] = (),
+    person: str | None = None,
 ) -> list[ProviderMessage]:
     """The system prompt, the conversation so far, then the message being
     answered with what was recalled and retrieved for it.
+
+    ``images`` are data URLs to show the vision model with the latest
+    message. Images on earlier messages appear as their captions, which is
+    all the chat model can take in (images.caption_note).
 
     The context travels with the latest message rather than above the
     transcript: it changes every turn, and anything that changes ends the
@@ -183,27 +268,143 @@ def build_prompt(
     system = SYSTEM_PROMPT + (SPOKEN_PROMPT if spoken else "")
     prompt: list[ProviderMessage] = [{"role": "system", "content": system}]
     context: list[str] = []
+    turns = [m for m in history if m.role != "system"]
+    latest = turns[-1] if turns and turns[-1].role == "user" else None
     if facts:
-        context.append(render_memory(facts))
+        context.append(render_memory(facts, person))
+        unmatched = unmatched_words(latest.content, facts) if latest is not None else []
+        best = max((f.score for f in facts if getattr(f, "score", None) is not None), default=0.0)
+        if unmatched and best < STRONG_MATCH and latest_is_personal(history):
+            # "When is my driving test?" with only Kavya's job recalled was
+            # answered with an invented date.
+            context.append(f"None of the facts above mentions {', '.join(unmatched)}. If they don't "
+                           "answer the question, reply \"I don't know\".")
+    elif latest_is_personal(history):
+        context.append(NOTHING_RECALLED)
     if rag_result is not None and rag_result.prompt:
         context.append(render_rag_context(rag_result))
     if web is not None:
         context.append(render_web_context(web))
 
-    turns = [m for m in history if m.role != "system"]
-    latest = turns[-1] if turns and turns[-1].role == "user" else None
+    recent = latest is not None and RECENT_CUE.search(latest.content)
+    if latest is not None:
+        # Every turn, first: without it the model takes its training cutoff
+        # for the present (clock.py). Here, not in the system prompt, so the
+        # cached prefix doesn't change every minute.
+        context.insert(0, now_note(now))
+        # And the counting done for it: weekdays and days-away for the dates
+        # the recent conversation mentions, which the models get wrong alone.
+        context.insert(1, calendar_note([_with_image_notes(m) for m in turns[-6:]], now))
+        if person:
+            context.insert(0, f"The person's name is {person}.")
+    if recent and web is None and not (rag_result is not None and rag_result.prompt):
+        context.append(OFFER_NOTE)
+    if images:
+        context.append(IMAGE_NOTE)
     for message in turns[:-1] if latest is not None else turns:
-        prompt.append({"role": message.role, "content": message.content})
+        prompt.append({"role": message.role, "content": _with_image_notes(message)})
     if latest is None:
         # Nothing to attach it to (not a real turn); keep it next to the
         # system prompt.
         prompt[1:1] = [{"role": "system", "content": block} for block in context]
-    elif context:
-        prompt.append({"role": "user", "content": "\n\n".join(context)
-                       + f"\n\n{CONTEXT_DIVIDER}\n{latest.content}"})
+        return prompt
+    said = (latest.content.strip() or IMAGE_ONLY_PROMPT) if images else _with_image_notes(latest)
+    text = "\n\n".join(context) + f"\n\n{CONTEXT_DIVIDER}\n{said}" if context else said
+    if images:
+        prompt.append({"role": "user", "content": [
+            {"type": "text", "text": text},
+            *({"type": "image_url", "image_url": {"url": url}} for url in images),
+        ]})
     else:
-        prompt.append({"role": "user", "content": latest.content})
+        prompt.append({"role": "user", "content": text})
     return prompt
+
+
+_NAME = re.compile(r"\b(?:my name is|my name's|call me|i'm called|i am called)\s+([A-Za-z][A-Za-z'-]{1,30})\b",
+                   re.IGNORECASE)
+_NOT_NAMES = {"not", "just", "actually", "also", "still", "the", "a", "an", "no"}
+
+
+def stated_name(text: str) -> str | None:
+    """The name in "my name is Aarya" / "call me Aarya", or None."""
+    m = _NAME.search(text)
+    if not m or m[1].lower() in _NOT_NAMES:
+        return None
+    return m[1][0].upper() + m[1][1:]
+
+
+# A question about when something is, or how long until it: worth reading an
+# image's dates before answering (prepare_turn).
+TIME_QUESTION = re.compile(
+    r"\b(when|how long|how many (days|weeks|months)|due|deadline|until|left|days?|weeks?|"
+    r"dates?|expir\w*|overdue|time)\b", re.IGNORECASE)
+
+# With images attached. Asked "what do these two show?" about a receipt and
+# a sign, the vision model priced the receipt in rupees and decided the person
+# was "visiting Kestrel Point today, and the receipt is from this visit".
+IMAGE_NOTE = (
+    "Images are attached. Say only what they show: read text and amounts "
+    "exactly as printed, add no currency, place or date that isn't visible, "
+    "and don't link images to each other or to the person unless they clearly do."
+)
+
+# A question about the person with nothing recalled for it: said outright,
+# next to the question, because the system prompt's "say you don't know" alone
+# didn't stop "What is my thesis about?" being answered with an invented one.
+NOTHING_RECALLED = (
+    "Nothing in memory matches this. If it asks about the person's own life, "
+    "work or plans, reply \"I don't know\" rather than making anything up."
+)
+_PERSONAL = re.compile(r"\b(i|i'm|me|my|mine|we|our|us)\b", re.IGNORECASE)
+
+
+_QUESTION_STOP = set("""what when where which who whom whose why how does did do is are was were have has had will would
+could should can any some about tell know remember please there that this these those with from into your mine
+ours their them they then than also just really very much many more most like""".split())
+
+
+# A recalled fact scoring this well is about the question, even with no word
+# in common ("dietary restrictions" / "is vegetarian" 0.34). Measured: answerable
+# questions' best fact 0.32 and up, unanswerable ones' 0.25 and down.
+STRONG_MATCH = 0.29
+
+
+def unmatched_words(question: str, facts) -> list[str]:
+    """The question's key words when no recalled fact contains any of them."""
+    words = [w for w in re.findall(r"[a-z][a-z-]{3,}", question.lower()) if w not in _QUESTION_STOP]
+    if not words:
+        return []
+    text = " ".join(f.fact.lower() for f in facts)
+    if any(w in text or w.rstrip("s") in text for w in words):
+        return []
+    return list(dict.fromkeys(words))[:4]
+
+
+# A question about one specific record is as much about the person's own work:
+# "What is patient P-1063 using now?" asked in another project was answered
+# with an invented prescription.
+_RECORD = re.compile(r"\b[A-Z]{1,3}-?\d{3,}\b|\b(patient|client|customer|case|matter)\b", re.IGNORECASE)
+
+
+def latest_is_personal(history) -> bool:
+    """About the person, their work or one of their records, so only memory
+    can answer it."""
+    turns = [m for m in history if m.role != "system"]
+    if not turns or turns[-1].role != "user":
+        return False
+    text = turns[-1].content
+    return bool(_PERSONAL.search(text) or _RECORD.search(text))
+
+
+# What an image sent with no text is taken to ask.
+IMAGE_ONLY_PROMPT = "What's in this image?"
+
+
+def _with_image_notes(message: Message) -> str:
+    notes = caption_note(getattr(message, "meta", None) or {})
+    if not notes:
+        return message.content
+    return f"{message.content}\n{notes}".strip()
 
 
 @dataclass
@@ -225,6 +426,9 @@ class PreparedTurn:
     title_task: asyncio.Task | None
     timings: dict[str, int] = field(default_factory=dict)
     started: float = field(default_factory=time.perf_counter)
+    # The model that answers: None for the chat model, the vision model's id
+    # when the turn has images.
+    model: str | None = None
 
 
 async def _timed(timings: dict[str, int], key: str, coro):
@@ -282,18 +486,56 @@ async def _query_documents(
 
 async def _search_web(
     web: WebClient | None, content: str, known_names: list[str], user_id, chat: Chat,
+    context: list[str] = (),
 ) -> WebSearch:
     # Only when asked for, and only through the websearch service, which
     # redacts: what goes out is its rewrite, never the raw message.
     if web is None:
         return WebSearch(query_sent=None, error="web search is not configured")
     try:
-        return await web.search(content, known_names=known_names, user_id=str(user_id))
+        return await web.search(content, known_names=known_names, user_id=str(user_id), context=context)
     except Exception:
         # WebClient.search() already turns its own failures into an error;
         # this catches anything else, same as memory and RAG.
         logger.exception("Web search raised for chat=%s", chat.id)
         return WebSearch(query_sent=None, error="web search failed")
+
+
+def _earlier_user_messages(history: list[Message], limit: int = 3) -> list[str]:
+    """What the person said before this message: "check it online" means
+    nothing to the search rewrite without the question it follows. Their own
+    words only, read by the local rewrite; nothing here is sent as is."""
+    said = [m.content for m in history if m.role == "user"]
+    return said[:-1][-limit:]
+
+
+async def _images_just_shown(
+    session: AsyncSession, chat_id: uuid.UUID, user_id: uuid.UUID, store: ImageStore,
+) -> list[StoredImage]:
+    """The images on the previous message, if the last exchange was about
+    images: a question straight after one is usually about them too. Only one
+    turn on; after that the image is known by its caption."""
+    rows = (await session.execute(
+        select(Message).where(Message.chat_id == chat_id, Message.role != "system")
+        .order_by(Message.created_at.desc()).limit(2)
+    )).scalars().all()
+    if len(rows) != 2 or rows[0].role != "assistant" or rows[1].role != "user":
+        return []
+    found = (store.get(user_id, uuid.UUID(img["id"])) for img in (rows[1].meta or {}).get("images", []))
+    return [img for img in found if img is not None]
+
+
+async def question_offered_a_search(session: AsyncSession, chat_id: uuid.UUID) -> str | None:
+    """If the chat's last answer offered to check online, the question it
+    was answering; otherwise None."""
+    rows = (await session.execute(
+        select(Message).where(Message.chat_id == chat_id, Message.role != "system")
+        .order_by(Message.created_at.desc()).limit(2)
+    )).scalars().all()
+    if len(rows) == 2 and rows[0].role == "assistant" and rows[1].role == "user" \
+            and offers_web(rows[0].content):
+        return rows[1].content
+    return None
 
 
 @dataclass
@@ -352,23 +594,41 @@ async def prepare_turn(
     laya_web_intent_above: float = 0.9,
     spoken: bool = False,
     retrieval: Retrieval | None = None,
+    images: Sequence[StoredImage] = (),
+    image_store: ImageStore | None = None,
+    vision_model: str | None = None,
 ) -> PreparedTurn:
     """Store the user message and gather everything the answer needs.
 
     ``retrieval``, if given and for this same text, supplies memory and
     documents already fetched (see Retrieval); otherwise they are fetched here.
+
+    ``images`` (already checked to be this person's) make it a vision turn:
+    the vision model answers, looking at them. So does a message straight
+    after one ("what does the sign say?"), which sees the same images again.
     """
     turn_started = time.perf_counter()
+    images = list(images)
+    carried = False
+    if not images and image_store is not None and vision_model:
+        images = await _images_just_shown(session, chat.id, user_id, image_store)
+        carried = bool(images)
     # Wall-clock per stage, in ms, stored on the answer as meta.timings. Every
     # latency change in the milestone is judged against these numbers.
     timings: dict[str, int] = {}
+
+    # "Yes" to Nexus's own "Want me to check online?": the search is asked
+    # for, and it is for the question that prompted the offer.
+    offered_question = None
+    if not use_web and not WEB_TRIGGER.search(content) and accepts(content):
+        offered_question = await question_offered_a_search(session, chat.id)
 
     # Only asked when nothing cheaper has already decided: the button and the
     # trigger phrases settle most web requests without a model.
     intent = None
     ask_laya = (
         decisions is not None and laya_web_intent in ("shadow", "live")
-        and not use_web and not WEB_TRIGGER.search(content)
+        and not use_web and not WEB_TRIGGER.search(content) and offered_question is None
     )
     shadow_intent: asyncio.Task | None = None
     if ask_laya and laya_web_intent == "live":
@@ -380,13 +640,41 @@ async def prepare_turn(
         # for: it runs alongside retrieval and is logged once that is done.
         shadow_intent = asyncio.create_task(decisions.decide({"message": content}, WEB_INTENT_QUESTIONS))
 
+    attachments = (*attachments, *({"kind": "image", "uri": f"/images/{img.id}", "mime_type": img.mime_type,
+                                    "name": img.name} for img in images))
     route = await select_route(
         content=content, attachments=attachments, rag=rag, use_web=use_web,
+        accepted_web_offer=offered_question is not None,
         web_intent_p=intent.p("asks_for_web") if intent and laya_web_intent == "live" else None,
         web_intent_above=laya_web_intent_above,
     )
 
-    user_message = Message(chat_id=chat.id, role="user", content=content, meta={"route": route.handler})
+    if carried and route.handler == "vision":
+        route = Route(handler="vision", reason="a follow-up about the image just shown")
+    user_meta: dict = {"route": route.handler}
+    if images and not carried:
+        user_meta["images"] = [img.meta() for img in images]
+        if TIME_QUESTION.search(content) and image_store is not None and vision_model:
+            # A question about when, in an image: read its text first, so the
+            # dates in it are counted here (clock.calendar_note) rather than
+            # by the vision model, which miscounts (39, 49, 50 and "10" days
+            # for a 40-day wait). The caption is the one written after the
+            # answer anyway, just earlier.
+            stage = time.perf_counter()
+            for meta, img in zip(user_meta["images"], images):
+                try:
+                    meta["caption"] = await caption(provider, vision_model,
+                                                    await asyncio.to_thread(image_store.data_url, user_id, img))
+                except Exception:
+                    logger.exception("reading an image ahead of its answer failed")
+            timings["image_read_ms"] = _ms_since(stage)
+    user_message = Message(chat_id=chat.id, role="user", content=content, meta=user_meta)
+    profile = await session.get(Profile, user_id)
+    if profile is not None and (stated := stated_name(content)) and stated != profile.display_name:
+        # "My name is Aarya": the account takes the name, so memory writes
+        # about Aarya from here on, not about whatever the sign-up said.
+        logger.info("display name changed by the person: %r -> %r", profile.display_name, stated)
+        profile.display_name = stated
     session.add(user_message)
     await session.flush()
 
@@ -405,7 +693,9 @@ async def prepare_turn(
     # Kicked off here, not awaited until after the answer, so a good title
     # costs nothing in wall-clock time: it runs alongside generation.
     title_task = (
-        asyncio.create_task(chat_title.generate(provider, user_message=content, model=title_model))
+        asyncio.create_task(chat_title.generate(
+            provider, user_message=(content.strip() or f"An image: {images[0].name}") if images else content,
+            model=title_model))
         if chat.title == DEFAULT_CHAT_TITLE
         else None
     )
@@ -430,8 +720,12 @@ async def prepare_turn(
         retrieval.discard()
         retrieval = None
     if retrieval is None:
-        retrieval = start_retrieval(content=content, chat=chat, user_id=user_id, memory=memory,
-                                    rag=rag, rag_min_score=rag_min_score)
+        # An image sent with no words has nothing to look up memory or
+        # documents with.
+        said = bool(content.strip())
+        retrieval = start_retrieval(content=content, chat=chat, user_id=user_id,
+                                    memory=memory if said else None, rag=rag if said else None,
+                                    rag_min_score=rag_min_score)
     else:
         timings["prefetched"] = 1
 
@@ -442,7 +736,8 @@ async def prepare_turn(
     facts, rag_result, web_search = await asyncio.gather(
         done(retrieval.facts),
         done(retrieval.documents),
-        _timed(timings, "web_ms", _search_web(web, content, known_names, user_id, chat))
+        _timed(timings, "web_ms", _search_web(web, offered_question or content, known_names, user_id, chat,
+                                              context=_earlier_user_messages(history)))
         if route.handler == "web" else nothing(),
     )
     timings.update(retrieval.timings)
@@ -459,7 +754,7 @@ async def prepare_turn(
     # label a person can act on. A web turn keeps its label even when
     # documents also helped: it is the one route that says words left the
     # machine.
-    if rag_result is not None and route.handler != "web":
+    if rag_result is not None and route.handler not in ("web", "vision"):
         n = len(rag_result.sources)
         route = Route(
             handler="rag",
@@ -467,11 +762,15 @@ async def prepare_turn(
                    f"(best {rag_result.best_score:.2f})",
         )
 
-    prompt = build_prompt(history, facts, rag_result, web_search, spoken=spoken)
+    urls = [await asyncio.to_thread(image_store.data_url, user_id, img) for img in images] \
+        if images and image_store is not None else []
+    prompt = build_prompt(history, facts, rag_result, web_search, spoken=spoken, images=urls,
+                          person=getattr(profile, "display_name", None))
     return PreparedTurn(
         chat=chat, content=content, user_id=user_id, route=route, user_message=user_message,
         history=history, facts=facts, rag_result=rag_result, web_search=web_search,
         prompt=prompt, title_task=title_task, timings=timings, started=turn_started,
+        model=vision_model if urls else None,
     )
 
 
@@ -585,7 +884,7 @@ async def generate_turn(session: AsyncSession, *, provider: Provider, **kwargs) 
     error: str | None = None
     try:
         # "live": the one call in a turn that someone is watching.
-        answer = await provider.chat(prepared.prompt, priority="live")
+        answer = await provider.chat(prepared.prompt, model=prepared.model, priority="live")
     except Exception as exc:
         logger.exception("Generation failed for chat=%s", prepared.chat.id)
         error = f"{exc.__class__.__name__}: {exc}"
@@ -620,7 +919,7 @@ async def stream_turn(session: AsyncSession, *, provider: Provider, **kwargs) ->
     error: str | None = None
     interrupted = False
     try:
-        async for piece in provider.chat_stream(prepared.prompt, priority="live"):
+        async for piece in provider.chat_stream(prepared.prompt, model=prepared.model, priority="live"):
             if not piece:
                 continue
             if first_token_ms is None:

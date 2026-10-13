@@ -76,6 +76,19 @@ class Settings:
         self.tts_voice = _optional("RUNTIME_TTS_VOICE", "af_heart")
         self.session_idle_seconds = int(_optional("RUNTIME_SESSION_IDLE_SECONDS", "300"))
 
+        # Vision: a separate, smaller model that answers turns with an image
+        # attached. Loaded when an image is attached (or on first use) and
+        # unloaded after the same idle time as voice, so it costs memory only
+        # while someone is working with images. Qwen3.5-4B: the strongest
+        # vision model that fits beside everything else (docs/benchmarks/).
+        self.vision_model = _optional(
+            "RUNTIME_VISION_MODEL", _optional("CORE_VISION_MODEL", "mlx-community/Qwen3.5-4B-MLX-4bit")
+        )
+        # Longest side an image is shrunk to before the model sees it. Image
+        # tokens, and so memory and prefill time, grow with the pixel count.
+        self.vision_max_side = int(_optional("RUNTIME_VISION_MAX_SIDE", "1280"))
+        self.vision_max_images = int(_optional("RUNTIME_VISION_MAX_IMAGES", "4"))
+
         self.default_max_tokens = int(_optional("RUNTIME_DEFAULT_MAX_TOKENS", "4096"))
         # A ceiling on what any caller may ask for. graphiti asks for 16384 on
         # every extraction call; a model that loops inside its JSON (seen with
