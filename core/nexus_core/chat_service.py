@@ -380,13 +380,20 @@ def unmatched_words(question: str, facts) -> list[str]:
     return list(dict.fromkeys(words))[:4]
 
 
+# A question about one specific record is as much about the person's own work:
+# "What is patient P-1063 using now?" asked in another project was answered
+# with an invented prescription.
+_RECORD = re.compile(r"\b[A-Z]{1,3}-?\d{3,}\b|\b(patient|client|customer|case|matter)\b", re.IGNORECASE)
+
+
 def latest_is_personal(history) -> bool:
-    """About the person or their own work, so only memory can answer it."""
+    """About the person, their work or one of their records, so only memory
+    can answer it."""
     turns = [m for m in history if m.role != "system"]
     if not turns or turns[-1].role != "user":
         return False
     text = turns[-1].content
-    return bool(_PERSONAL.search(text))
+    return bool(_PERSONAL.search(text) or _RECORD.search(text))
 
 
 # What an image sent with no text is taken to ask.
