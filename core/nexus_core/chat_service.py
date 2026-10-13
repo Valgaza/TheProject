@@ -12,6 +12,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import AsyncIterator, Sequence
 
 from sqlalchemy import func, select
@@ -25,6 +26,7 @@ from .providers.base import Message as ProviderMessage
 from .providers.base import Provider
 from .rag_client import RagClient, RagResult, RagSource
 from .web_client import WEB_TRIGGER, WebClient, WebSearch, accepts, offers_web
+from .clock import calendar_note, now_note
 from .decisions import WEB_INTENT_QUESTIONS, DecisionsClient, log_entry
 
 logger = logging.getLogger(__name__)
@@ -172,6 +174,7 @@ def build_prompt(
     rag_result: RagResult | None = None,
     web: WebSearch | None = None,
     spoken: bool = False,
+    now: datetime | None = None,
 ) -> list[ProviderMessage]:
     """The system prompt, the conversation so far, then the message being
     answered with what was recalled and retrieved for it.
@@ -191,6 +194,8 @@ def build_prompt(
     system = SYSTEM_PROMPT + (SPOKEN_PROMPT if spoken else "")
     prompt: list[ProviderMessage] = [{"role": "system", "content": system}]
     context: list[str] = []
+    turns = [m for m in history if m.role != "system"]
+    latest = turns[-1] if turns and turns[-1].role == "user" else None
     if facts:
         context.append(render_memory(facts))
     if rag_result is not None and rag_result.prompt:
@@ -198,19 +203,24 @@ def build_prompt(
     if web is not None:
         context.append(render_web_context(web))
 
-    turns = [m for m in history if m.role != "system"]
-    latest = turns[-1] if turns and turns[-1].role == "user" else None
+    if latest is not None:
+        # Every turn, first: without it the model takes its training cutoff
+        # for the present (clock.py). Here, not in the system prompt, so the
+        # cached prefix doesn't change every minute.
+        context.insert(0, now_note(now))
+        # And the counting done for it: weekdays and days-away for the dates
+        # the recent conversation mentions, which the models get wrong alone.
+        context.insert(1, calendar_note([m.content for m in turns[-6:]], now))
     for message in turns[:-1] if latest is not None else turns:
         prompt.append({"role": message.role, "content": message.content})
     if latest is None:
         # Nothing to attach it to (not a real turn); keep it next to the
         # system prompt.
         prompt[1:1] = [{"role": "system", "content": block} for block in context]
-    elif context:
-        prompt.append({"role": "user", "content": "\n\n".join(context)
-                       + f"\n\n{CONTEXT_DIVIDER}\n{latest.content}"})
-    else:
-        prompt.append({"role": "user", "content": latest.content})
+        return prompt
+    said = latest.content
+    text = "\n\n".join(context) + f"\n\n{CONTEXT_DIVIDER}\n{said}" if context else said
+    prompt.append({"role": "user", "content": text})
     return prompt
 
 
