@@ -130,24 +130,7 @@ class Settings:
         # the machine.
         self.laya_web_intent_above = float(_optional("CORE_LAYA_WEB_INTENT_ABOVE", "0.9"))
 
-        # ── Voice (voice/session.py) ────────────────────────────────────────
-        # A pause this long may end the person's turn; this long always does.
-        self.voice_eot_silence_ms = int(_optional("CORE_VOICE_EOT_SILENCE_MS", "500"))
-        self.voice_max_silence_ms = int(_optional("CORE_VOICE_MAX_SILENCE_MS", "1200"))
-        # Transcription and retrieval start at this much silence, so they are
-        # done when the turn ends; thrown away if speech resumes. 0 = off.
-        self.voice_speculate_silence_ms = int(_optional("CORE_VOICE_SPECULATE_SILENCE_MS", "250"))
-        # Speech over the assistant for this long pauses it to check whether
-        # it is an interruption.
-        self.voice_barge_in_ms = int(_optional("CORE_VOICE_BARGE_IN_MS", "300"))
-        # Speech-probability thresholds; the second applies while the
-        # assistant is talking, so its own voice leaking back is not speech.
-        self.voice_speech_threshold = float(_optional("CORE_VOICE_SPEECH_THRESHOLD", "0.5"))
-        self.voice_barge_threshold = float(_optional("CORE_VOICE_BARGE_THRESHOLD", "0.8"))
-        self.laya_end_of_turn = _optional("CORE_LAYA_END_OF_TURN", "shadow")
-        self.laya_barge_in = _optional("CORE_LAYA_BARGE_IN", "shadow")
-
-        # ── Voice over WebRTC (voice/pipeline.py) ───────────────────────────
+        # ── Voice (voice/pipeline.py) ───────────────────────────────────────
         # Silence before Smart Turn is asked whether the person has finished,
         # and how long it waits when it says they haven't.
         self.voice_vad_stop_ms = int(_optional("CORE_VOICE_VAD_STOP_MS", "200"))

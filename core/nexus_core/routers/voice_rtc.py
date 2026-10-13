@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
+from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -24,13 +27,89 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import current_user_id
+from ..chat_service import FAILED_ANSWER, PreparedTurn, finalize_turn, prepare_turn
 from ..db import session_dependency
 from ..decisions import runtime_root
-from .chats import _get_chat
+from ..schemas import MessageOut
+from ..voice.runtime import RuntimeVoice
+from .chats import _get_chat, _live, _queue_for_memory, _turn_kwargs, _wake_queue
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/voice", tags=["voice"])
+
+
+@dataclass
+class _Handle:
+    session: AsyncSession
+    prepared: PreparedTurn
+    error: str | None = None
+    first_token_ms: int | None = None
+    started: float = field(default_factory=time.perf_counter)
+
+
+class ChatTurns:
+    """A spoken turn, in the three steps voice holds apart, on the same
+    functions as typed chat: store the message and gather memory, documents
+    and the web; stream the answer; store what was said (only what was heard,
+    if interrupted) and queue the turn for memory."""
+
+    def __init__(self, app, chat_id: uuid.UUID, user_id: uuid.UUID) -> None:
+        self.app = app
+        self._holder = SimpleNamespace(app=app)  # what the chat helpers read: only .app
+        self.chat_id = chat_id
+        self.user_id = user_id
+
+    async def prepare(self, text: str):
+        session = self.app.state.session_factory()
+        try:
+            chat = await _get_chat(session, self.chat_id, self.user_id)
+            prepared = await prepare_turn(
+                session, **_turn_kwargs(self._holder, chat, text, False, self.user_id), spoken=True)
+        except BaseException:
+            await session.close()
+            raise
+        shown = {
+            "user_message": MessageOut.model_validate(prepared.user_message).model_dump(mode="json", by_alias=True),
+            "route": {"handler": prepared.route.handler, "reason": prepared.route.reason},
+            "recalled": [{"id": f.id, "fact": f.fact, "scope": f.scope, "kind": f.kind} for f in prepared.facts],
+            "rag_sources": [{"file_name": s.file_name, "page_number": s.page_number,
+                             "chunk_index": s.chunk_index, "heading_path": s.heading_path,
+                             "rerank_score": round(s.rerank_score, 4)}
+                            for s in (prepared.rag_result.sources if prepared.rag_result else ())],
+        }
+        return _Handle(session=session, prepared=prepared), shown
+
+    async def stream(self, handle: _Handle):
+        handle.started = time.perf_counter()
+        try:
+            async for piece in self.app.state.provider.chat_stream(handle.prepared.prompt, priority="live"):
+                if piece and handle.first_token_ms is None:
+                    handle.first_token_ms = round((time.perf_counter() - handle.prepared.started) * 1000)
+                yield piece
+        except Exception as exc:
+            logger.exception("voice generation failed for chat=%s", self.chat_id)
+            handle.error = f"{exc.__class__.__name__}: {exc}"
+            if handle.first_token_ms is None:
+                yield FAILED_ANSWER
+
+    async def finish(self, handle: _Handle, *, answer: str, interrupted: bool, voice: dict) -> dict:
+        session = handle.session
+        try:
+            turn = await finalize_turn(
+                session, handle.prepared, answer=answer, error=handle.error,
+                generation_ms=round((time.perf_counter() - handle.started) * 1000),
+                first_token_ms=handle.first_token_ms, interrupted=interrupted,
+                extra_meta={"voice": voice},
+            )
+            # Queued even when interrupted: what the person said still counts.
+            _queue_for_memory(self._holder, session, handle.prepared.chat, turn, self.user_id)
+            await session.commit()
+        finally:
+            await session.close()
+        _wake_queue(self._holder)
+        return {"assistant_message": MessageOut.model_validate(turn.assistant_message)
+                .model_dump(mode="json", by_alias=True), "chat_title": handle.prepared.chat.title}
 
 
 class Offer(BaseModel):
@@ -115,16 +194,38 @@ async def offer(
 
         # In the background: the browser is waiting for this request's answer
         # before the connection can carry any audio.
+        speech = getattr(app.state, "voice_speech", None) or RuntimeVoice(
+            app.state.http, runtime_root(app.state.settings.openai_base_url))
         task = asyncio.create_task(run_session(
-            connection, app=app, chat_id=chat_id, user_id=user_id,
+            connection, speech=speech, turns=ChatTurns(app, chat_id, user_id),
+            live=_live(SimpleNamespace(app=app)), chat_id=chat_id,
             settings=_voice_settings(app.state.settings)))
         app.state.voice_sessions.add(task)
         task.add_done_callback(app.state.voice_sessions.discard)
 
-    answer = await rtc.handle_web_request(
-        SmallWebRTCRequest(sdp=body.sdp, type=body.type, pc_id=body.pc_id, restart_pc=body.restart_pc),
-        start,
-    )
+    def request_for() -> SmallWebRTCRequest:
+        return SmallWebRTCRequest(sdp=body.sdp, type=body.type, pc_id=body.pc_id, restart_pc=body.restart_pc)
+
+    try:
+        answer = await rtc.handle_web_request(request_for(), start)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("voice offer failed; retrying with a new WebRTC handler")
+        # A new session never needs the old handler's connections, so a
+        # handler left in a bad state is replaced rather than kept failing.
+        # An unhandled error would also reach the browser without CORS
+        # headers, as a bare "Failed to fetch".
+        if body.pc_id:
+            raise HTTPException(status_code=409, detail="voice connection lost; start voice again")
+        request.app.state.webrtc = None
+        rtc = _rtc(request)
+        owners = app.state.webrtc_owners
+        try:
+            answer = await rtc.handle_web_request(request_for(), start)
+        except Exception as exc:
+            logger.exception("voice offer failed again")
+            raise HTTPException(status_code=503, detail=f"Voice could not start: {exc}") from exc
     owners[answer["pc_id"]] = user_id
     return answer
 

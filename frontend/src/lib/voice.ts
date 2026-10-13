@@ -17,6 +17,7 @@
  *   {type: "error", detail}
  */
 
+import Daily from "@daily-co/daily-js";
 import { PipecatClient } from "@pipecat-ai/client-js";
 import { SmallWebRTCTransport } from "@pipecat-ai/small-webrtc-transport";
 import { CORE_URL, type Message, type PreparedTurn } from "@/lib/api";
@@ -52,6 +53,12 @@ export class VoiceClient {
 
   async start(): Promise<void> {
     this.setState("connecting");
+    // The transport takes the microphone through Daily's call object, one
+    // per page, and ending a session stops its microphone track without
+    // discarding the object. A second session would reuse that stopped
+    // track and send silence, so the old object goes first.
+    await Daily.getCallInstance()?.destroy().catch(() => undefined);
+    if (this.stopped) return;
     const client = new PipecatClient({
       // Gathering every ICE candidate before the offer leaves keeps it to one
       // request; on localhost that takes milliseconds.
@@ -71,8 +78,10 @@ export class VoiceClient {
           if (this.state === "speaking") this.setState(this.turnPending ? (this.searching ? "searching" : "thinking") : "listening");
         },
         onServerMessage: data => this.receive(data as ServerMessage),
+        // The WebRTC transport reports the bot's track with no participant
+        // at all, so only a track marked local is the microphone.
         onTrackStarted: (track, participant) => {
-          if (track.kind === "audio" && participant && !participant.local) this.play(track);
+          if (track.kind === "audio" && !participant?.local) this.play(track);
         },
         onDeviceError: error => {
           this.end(error.type === "permissions" ? "Microphone access was refused." : "The microphone isn't available.");

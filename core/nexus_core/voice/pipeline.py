@@ -11,15 +11,18 @@ path (with the browser's echo cancellation), Silero VAD, and Smart Turn v3,
 which listens to *how* something was said to tell a finished sentence from a
 pause mid-thought. Everything a turn means stays Nexus's: the Nexus turn step
 hands each finished utterance to the same prepare/stream/finish functions as
-typed chat (routers/voice.py's ChatTurns), so memory, documents and the web
-apply, and the turn is stored as an ordinary message.
+typed chat (routers/voice_rtc.py's ChatTurns), so memory, documents and the
+web apply, and the turn is stored as an ordinary message.
 
 Interruptions. A turn starts the moment the VAD hears speech, but that never
 stops the answer by itself: speech over the assistant is first judged by the
 barge-in gate. A real interruption (a few words, or a second of sustained
 speech) stops it at once; "mm-hmm" doesn't, and a turn that was only a
 backchannel goes unanswered. An interrupted answer is stored as what was
-heard: the sentences that had finished playing.
+heard: every piece of it that had started playing.
+
+A spoken request to look something up is answered with a word first ("give
+me a second, I'll look that up") while the search runs.
 """
 
 from __future__ import annotations
@@ -30,7 +33,6 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Any
 
 from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
@@ -70,13 +72,25 @@ from pipecat.workers.runner import WorkerRunner
 
 from ..web_client import WEB_TRIGGER, accepts, offers_web
 from .runtime import RuntimeVoice
-from .session import is_backchannel
 from .speech_services import TTS_SAMPLE_RATE, RuntimeSTTService, RuntimeTTSService
 from .text import SentenceSplitter
 
 logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16_000
+
+# Said over the assistant to show attention, not to take the turn.
+BACKCHANNEL = re.compile(
+    r"(?:mm+[- ]?hmm+|uh[- ]?huh|mhm+|hmm+|yeah|yep|yes|okay|ok|right|sure|i see|got it|"
+    r"alright|cool|nice|wow|oh|ah|uh|um)(?:[ ,]+(?:yeah|yes|okay|ok|right|sure|got it))*",
+    re.IGNORECASE,
+)
+
+
+def is_backchannel(text: str) -> bool:
+    words = re.sub(r"[^\w\s'-]", " ", text).strip()
+    return not words or bool(BACKCHANNEL.fullmatch(" ".join(words.split())))
+
 
 # Said to stop the assistant rather than to ask it anything: worth stopping
 # for, not worth answering.
@@ -114,16 +128,32 @@ def not_worth_answering(text: str) -> bool:
 
 # Words a finished thought doesn't end on. Smart Turn judges by how something
 # was said; a sentence trailing off on one of these is unfinished whatever the
-# pitch did.
-DANGLING = frozenset(
-    "the a an and or but so to of about with for in on at from into my your his her their our "
-    "is are was were be because if that which than then like um uh er erm".split()
-)
+# pitch did. Only words that can't close a sentence: questions often end on a
+# preposition or a verb ("what's it about?", "who the PM is").
+DANGLING = frozenset("the a an and or but my your his her their our because if of um uh er erm".split())
+
+
+# Prepositions can end a finished sentence ("what's it about."), so they only
+# count when the transcript has no closing punctuation either: "Who was the
+# keeper at" is someone still talking.
+OPEN_ENDED = frozenset("at in on to for with about by into onto than".split())
 
 
 def ends_unfinished(text: str) -> bool:
+    text = text.rstrip()
+    if text.endswith("?"):
+        return False
     words = _words(text).lower().split()
-    return bool(words) and words[-1] in DANGLING
+    if not words:
+        return False
+    if words[-1] in DANGLING:
+        return True
+    return words[-1] in OPEN_ENDED and not text.endswith((".", "!"))
+
+
+# A continuation that never arrives as a turn (a cough, say) mustn't make some
+# later, unrelated turn look like one.
+CONTINUATION_EXPIRES_S = 10.0
 
 
 @dataclass
@@ -146,7 +176,9 @@ class Conversation:
     turn: int = 0            # which answer, so an interruption is judged once each
     bot_speaking: bool = False
     turn_ended_at: float = 0.0  # when the person's last turn ended (time.time())
-    continuing: bool = False    # their next turn finishes the last one
+    # Until when their next turn finishes the last one (set when they spoke
+    # again just after a turn ended); 0 when it doesn't.
+    continuing_until: float = 0.0
 
 
 class SmartTurnReadingTheWords(TurnAnalyzerUserTurnStopStrategy):
@@ -203,7 +235,7 @@ class BargeInGate(FrameProcessor):
             since_turn = time.time() - self._conversation.turn_ended_at
             if self._can_interrupt and since_turn * 1000 < self._settings.continue_within_ms:
                 # They hadn't finished: the turn detector cut them off.
-                self._conversation.continuing = True
+                self._conversation.continuing_until = time.time() + CONTINUATION_EXPIRES_S
                 await self._interrupt(f"speech resumed {since_turn:.2f}s after the turn ended")
             elif self._can_interrupt:
                 self._sustained = self.create_task(self._interrupt_if_sustained())
@@ -303,7 +335,7 @@ class Heard(FrameProcessor):
 
 class NexusTurn(FrameProcessor):
     """Where the LLM would sit in a stock Pipecat bot: answers each finished
-    utterance through Nexus's own turn (``turns`` is routers/voice.py's
+    utterance through Nexus's own turn (``turns`` is routers/voice_rtc.py's
     ChatTurns), streaming the answer on to text-to-speech."""
 
     # Longer than any answer takes to say; only reached if the output stalls.
@@ -325,6 +357,9 @@ class NexusTurn(FrameProcessor):
         self._said_over: list[bool] = []
         self._first_audio_at: float | None = None
         self._last_text = ""
+        # A turn cut off before any of its answer played: what was said is
+        # still unanswered, and goes with the next utterance.
+        self._unheard = ""
         self._last_answer = ""  # as stored, to know whether it offered to check online
         self._fillers = 0
 
@@ -338,8 +373,9 @@ class NexusTurn(FrameProcessor):
             said_over = self._said_over.pop(0) if self._said_over else False
             if not text:
                 return
-            if self._conversation.continuing:
-                self._conversation.continuing = False
+            continuing = time.time() < self._conversation.continuing_until
+            self._conversation.continuing_until = 0.0
+            if continuing:
                 text = f"{self._last_text} {text}".strip()
                 said_over = False
             if said_over or (self._conversation.answering and not_worth_answering(text)):
@@ -347,6 +383,12 @@ class NexusTurn(FrameProcessor):
                 # an interruption: "mm-hmm", or a misheard one ("Mamma.").
                 logger.info("voice: not answering %r, said over the answer", text)
                 return
+            if self._unheard and not continuing:
+                # "What won the latest Grand Prix? ... Check online." The
+                # second sentence stopped the first answer before a word of
+                # it was heard; answered alone, it has lost its question.
+                text = f"{self._unheard} {text}"
+            self._unheard = ""
             await self._respond(text)
             return
         if isinstance(frame, VADUserStoppedSpeakingFrame):
@@ -423,6 +465,8 @@ class NexusTurn(FrameProcessor):
             # answering from this moment, not once that is stored: what the
             # person goes on to say is their next turn, not talk over this one.
             self._conversation.answering = False
+            if not self._heard.text:
+                self._unheard = text
             await self._send({"type": "interrupted", "turn": turn})
             await asyncio.shield(self._store_interrupted(turn, prep, handle, "".join(parts), voice, stopped_at))
             raise
@@ -513,23 +557,18 @@ def build_pipeline(transport, *, speech: RuntimeVoice, turns, settings: VoiceSet
     ])
 
 
-async def run_session(connection, *, app, chat_id, user_id, settings: VoiceSettings) -> None:
+async def run_session(connection, *, speech: RuntimeVoice, turns, live, chat_id,
+                      settings: VoiceSettings) -> None:
     """Run one voice session on an established WebRTC connection, until the
-    browser disconnects. Called in the background by routers/voice_rtc.py."""
-    from ..routers.chats import _live
-    from ..routers.voice import ChatTurns
-    from ..decisions import runtime_root
-
-    root = runtime_root(app.state.settings.openai_base_url)
-    speech = getattr(app.state, "voice_speech", None) or RuntimeVoice(app.state.http, root)
-    holder = SimpleNamespace(app=app)  # what the chat helpers read: only .app
+    browser disconnects. ``turns`` answers each utterance; ``live`` is held for
+    the whole session, so the memory write queue waits. Called in the
+    background by routers/voice_rtc.py."""
     transport = SmallWebRTCTransport(
         webrtc_connection=connection,
         params=TransportParams(audio_in_enabled=True, audio_out_enabled=True,
                                audio_in_sample_rate=SAMPLE_RATE, audio_out_sample_rate=TTS_SAMPLE_RATE),
     )
-    pipeline = build_pipeline(transport, speech=speech, turns=ChatTurns(holder, chat_id, user_id),
-                              settings=settings)
+    pipeline = build_pipeline(transport, speech=speech, turns=turns, settings=settings)
     worker = PipelineWorker(pipeline, params=PipelineParams(
         audio_in_sample_rate=SAMPLE_RATE, audio_out_sample_rate=TTS_SAMPLE_RATE))
     runner = WorkerRunner(handle_sigint=False)
@@ -543,7 +582,7 @@ async def run_session(connection, *, app, chat_id, user_id, settings: VoiceSetti
     async def on_client_disconnected(transport, client):
         await runner.cancel()
 
-    async with _live(holder):
+    async with live:
         try:
             # The only model load voice waits for, before the first word and
             # never inside a turn.

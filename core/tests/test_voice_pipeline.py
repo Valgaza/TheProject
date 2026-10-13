@@ -41,16 +41,23 @@ from nexus_core.voice.pipeline import (
     Spoken,
     VoiceSettings,
     ends_unfinished,
+    is_backchannel,
     is_stop_command,
     not_worth_answering,
 )
+from nexus_core.main import app
+from nexus_core.routers.voice_rtc import ChatTurns
 from nexus_core.voice.speech_services import RuntimeSTTService, RuntimeTTSService
+from nexus_core.voice.text import SentenceSplitter, clean_for_speech
 
-from conftest import DEMO_USER_ID
+# The seeded demo user (db/seed.sql), as in core/tests/conftest.py. Not
+# imported from there: run from the repository root, "conftest" is the
+# scenario suite's tests/conftest.py.
+DEMO_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
 class FakeTurns:
-    """routers/voice.py's ChatTurns, without the database."""
+    """routers/voice_rtc.py's ChatTurns, without the database."""
 
     def __init__(self, answer=("The deadline is Friday. ", "It moved from Monday."), *,
                  heard=None, played: int = 0, block_after: int | None = None) -> None:
@@ -138,8 +145,15 @@ async def test_speech_that_ends_during_the_answer_without_stopping_it_is_not_ans
     conversation = Conversation(answering=True)
     pipeline, _, _ = turn_with(turns, conversation)
 
+    started = conversation.turn_ended_at
+
     async def answer_ends():
-        await asyncio.sleep(0.05)
+        # Once the speech's end has been seen (with the answer still going),
+        # not after a fixed 50 ms: with every package's tests loaded, the
+        # pipeline took longer than that to start, and the answer "ended"
+        # before the speech did.
+        while conversation.turn_ended_at == started:
+            await asyncio.sleep(0.005)
         conversation.answering = False
 
     task = asyncio.create_task(answer_ends())
@@ -180,21 +194,33 @@ async def test_speaking_again_just_after_a_turn_ended_continues_it():
     processor, conversation = gate()
     conversation.turn_ended_at = time.time()
     down, up = await run_test(processor, frames_to_send=[VADUserStartedSpeakingFrame()])
-    assert interruptions(down, up) and conversation.continuing
+    assert interruptions(down, up) and conversation.continuing_until > time.time()
 
 
 async def test_a_continued_turn_is_answered_whole():
     turns = FakeTurns()
     pipeline, conversation, _ = turn_with(turns)
     await run_test(pipeline, frames_to_send=[said("Tell me about the"), SleepFrame(sleep=0.2)])
-    conversation.continuing = True
+    conversation.continuing_until = time.time() + 5
     await run_test(pipeline, frames_to_send=[said("keeper's dog."), SleepFrame(sleep=0.2)])
     assert turns.prepared == ["Tell me about the", "Tell me about the keeper's dog."]
 
 
+async def test_a_continuation_that_never_came_does_not_merge_a_later_turn():
+    turns = FakeTurns()
+    pipeline, conversation, _ = turn_with(turns)
+    await run_test(pipeline, frames_to_send=[said("Who was the keeper?"), SleepFrame(sleep=0.2)])
+    conversation.continuing_until = time.time() - 1  # it expired
+    await run_test(pipeline, frames_to_send=[said("What about the dog?"), SleepFrame(sleep=0.2)])
+    assert turns.prepared == ["Who was the keeper?", "What about the dog?"]
+
+
 @pytest.mark.parametrize("text,unfinished", [
-    ("Tell me about the", True), ("I was thinking that, um", True), ("Compare it with", True),
+    ("Tell me about the", True), ("I was thinking that, um", True), ("Me and", True),
     ("Tell me about the keeper's dog.", False), ("What is the deadline?", False), ("", False),
+    ("Look up who the prime minister of India is.", False), ("What's it about?", False),
+    ("Where are you from", False), ("Is it the?", False),
+    ("Who was the keeper at", True), ("Tell me more about", True), ("What's it about.", False),
 ])
 def test_a_sentence_trailing_off_is_unfinished(text, unfinished):
     assert ends_unfinished(text) is unfinished
@@ -343,6 +369,21 @@ async def test_what_is_said_after_an_interruption_is_answered():
     assert turns.prepared == ["When is the deadline?", "What was the dog called?"]
 
 
+async def test_a_turn_cut_off_before_its_answer_played_goes_with_the_next():
+    """"What happened at the Singapore Grand Prix? ... Check it online." The
+    second sentence stopped the first answer before any of it played; on its
+    own it no longer says what to look up."""
+    turns = FakeTurns(heard=True, played=0, block_after=0)
+    pipeline, _, _ = turn_with(turns)
+    await run_test(pipeline, frames_to_send=[
+        said("What happened at the Singapore Grand Prix?"), SleepFrame(sleep=0.05), InterruptionFrame(),
+        SleepFrame(sleep=0.05), UserStoppedSpeakingFrame(), said("Check it online."), SleepFrame(sleep=0.3),
+        UserStoppedSpeakingFrame(), said("And the one before?"), SleepFrame(sleep=0.3)])
+    assert turns.prepared == ["What happened at the Singapore Grand Prix?",
+                              "What happened at the Singapore Grand Prix? Check it online.",
+                              "And the one before?"]
+
+
 def spoken_text(down) -> list[str]:
     return [f.text.strip() for f in down if isinstance(f, LLMTextFrame)]
 
@@ -386,3 +427,70 @@ async def test_the_filler_is_never_what_was_heard():
     spoken.add("It's Narendra Modi.", 0.01)
     heard.played_seconds = 0.015
     assert heard.text == "It's Narendra Modi."
+
+
+# ── Saying things (voice/text.py) ────────────────────────────────────────────
+
+
+def test_a_streamed_answer_is_cut_into_whole_sentences():
+    splitter = SentenceSplitter()
+    out = []
+    for piece in ["The dead", "line is **Friday**. It ", "moved, e.g. from Mon", "day! Version 3.5 is ", "out"]:
+        out += splitter.feed(piece)
+    out += splitter.flush()
+    assert out == ["The deadline is Friday.", "It moved, e.g. from Monday!", "Version 3.5 is out"]
+
+
+def test_a_long_first_sentence_is_spoken_from_its_first_clause():
+    splitter = SentenceSplitter()
+    first = splitter.feed("Start every email with a subject line that says what you need, then keep")
+    assert first == ["Start every email with a subject line that says what you need,"]
+    # Only the first: later sentences wait to be whole.
+    assert splitter.feed(" it short, because people skim, and end with one clear ask. Next") == [
+        "then keep it short, because people skim, and end with one clear ask."]
+
+
+def test_markdown_is_not_read_aloud():
+    assert clean_for_speech("## Steps\n- run `uv sync` [docs](http://x) [1]") == "Steps run uv sync docs"
+    assert clean_for_speech("There are 197 steps. [Source: kestrel-point.md]") == "There are 197 steps."
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("mm-hmm", True), ("Yeah.", True), ("okay, right", True), ("", True),
+    ("wait, stop", False), ("what about Tuesday", False), ("yes but why", False),
+])
+def test_backchannels(text, expected):
+    assert is_backchannel(text) is expected
+
+
+# ── The turn itself (routers/voice_rtc.py's ChatTurns) ───────────────────────
+
+
+class StreamingProvider:
+    name = "streaming"
+
+    async def chat(self, messages, **kwargs):
+        return "A Title"
+
+    async def chat_stream(self, messages, **kwargs):
+        for piece in ("Friday", "."):
+            yield piece
+
+    async def embed(self, texts, *, model=None):
+        return [[0.0] for _ in texts]
+
+
+async def test_a_voice_turn_is_an_ordinary_message_with_voice_timings(db_client):
+    app.state.provider = StreamingProvider()
+    chat = (await db_client.post("/chats", json={})).json()
+
+    turns = ChatTurns(app, uuid.UUID(chat["id"]), DEMO_USER_ID)
+    handle, shown = await turns.prepare("when is it due?")
+    assert shown["user_message"]["content"] == "when is it due?"
+    answer = "".join([p async for p in turns.stream(handle)])
+    stored = await turns.finish(handle, answer=answer, interrupted=False, voice={"first_audio_ms": 900})
+    assert stored["assistant_message"]["content"] == "Friday."
+
+    messages = (await db_client.get(f"/chats/{chat['id']}/messages")).json()
+    assert [m["role"] for m in messages] == ["user", "assistant"]
+    assert messages[1]["metadata"]["voice"] == {"first_audio_ms": 900}

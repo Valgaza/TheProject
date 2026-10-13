@@ -22,10 +22,8 @@ dependencies = [
     # Starlette's SessionMiddleware (Authlib's OAuth state storage) needs
     # this to sign its own cookie — not a direct import anywhere of ours.
     "itsdangerous>=2.2.0",
-    # Voice (nexus_core/voice): Silero VAD runs here on the CPU, per 32 ms of
-    # microphone audio -- too frequent to be a call to the runtime.
-    "numpy>=1.26",
-    "onnxruntime>=1.18",
+    # Voice (nexus_core/voice): the WebRTC audio path, Silero VAD and Smart
+    # Turn run here on the CPU; the speech models stay in the runtime.
     "pipecat-ai[webrtc]==1.12.0",
 ]
 
