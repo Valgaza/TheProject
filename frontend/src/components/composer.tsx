@@ -3,8 +3,11 @@
 /**
  * The one input box.
  *
- * The tool buttons are the adapter affordances — attach a document, search the
- * web, talk, pull in knowledge. Knowledge is still inert. They stay visible
+ * The tool buttons are the adapter affordances — attach a document or an
+ * image, search the web, talk, pull in knowledge. Knowledge is still inert.
+ * Images can also be pasted or dropped in. Each is uploaded the moment it is
+ * attached (which is also what tells the runtime to load the vision model),
+ * and goes with the next message sent. They stay visible
  * because the whole product direction is that you type, attach or speak here
  * and the system works out what to do, rather than making you pick a pipeline
  * first.
@@ -12,7 +15,20 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/icons";
-import { ApiError, uploadDocument } from "@/lib/api";
+import { ApiError, type ImageMeta, uploadDocument, uploadImage } from "@/lib/api";
+
+const MAX_IMAGES = 4;
+
+type PendingImage = {
+  key: string;
+  name: string;
+  preview: string;
+  status: "uploading" | "ready" | "error";
+  meta?: ImageMeta;
+  detail?: string;
+};
+
+const isImage = (file: File) => file.type.startsWith("image/") || /\.(heic|heif)$/i.test(file.name);
 
 type Upload = {
   id: string;
@@ -24,7 +40,9 @@ type Upload = {
 type ComposerProps = {
   value: string;
   onChange: (value: string) => void;
-  onSubmit: () => void;
+  /** Called with the images attached to this message (none if the page
+   * doesn't take images). */
+  onSubmit: (images: ImageMeta[]) => void;
   placeholder?: string;
   rows?: number;
   hint?: string;
@@ -42,6 +60,8 @@ type ComposerProps = {
   onWebChange?: (on: boolean) => void;
   /** Starts a hands-free voice conversation. The mic is inert without it. */
   onVoice?: () => void;
+  /** Whether images can be attached: only where the page sends them on. */
+  allowImages?: boolean;
 };
 
 export function Composer({
@@ -58,23 +78,55 @@ export function Composer({
   web = false,
   onWebChange,
   onVoice,
+  allowImages = false,
 }: ComposerProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploads, setUploads] = useState<Upload[]>([]);
+  const [images, setImages] = useState<PendingImage[]>([]);
+  const [dragging, setDragging] = useState(false);
 
   useEffect(() => {
     if (autoFocus) inputRef.current?.focus();
   }, [autoFocus]);
 
+  const ready = images.filter(i => i.status === "ready" && i.meta).map(i => i.meta as ImageMeta);
+  const uploadingImages = images.some(i => i.status === "uploading");
+  const canSend = !busy && !uploadingImages && (value.trim().length > 0 || ready.length > 0);
+
   const submit = () => {
-    if (busy || !value.trim()) return;
-    onSubmit();
+    if (!canSend) return;
+    onSubmit(ready);
+    images.forEach(i => URL.revokeObjectURL(i.preview));
+    setImages([]);
   };
 
-  const handleFiles = async (files: FileList | null) => {
+  const removeImage = (key: string) =>
+    setImages(prev => {
+      prev.filter(i => i.key === key).forEach(i => URL.revokeObjectURL(i.preview));
+      return prev.filter(i => i.key !== key);
+    });
+
+  const attachImage = async (file: File) => {
+    const key = `${file.name}-${Date.now()}-${Math.random()}`;
+    setImages(prev => [...prev, { key, name: file.name, preview: URL.createObjectURL(file), status: "uploading" }]);
+    try {
+      const meta = await uploadImage(file);
+      setImages(prev => prev.map(i => (i.key === key ? { ...i, status: "ready", meta } : i)));
+    } catch (err) {
+      const detail = err instanceof ApiError ? err.message : "upload failed";
+      setImages(prev => prev.map(i => (i.key === key ? { ...i, status: "error", detail } : i)));
+    }
+  };
+
+  const handleFiles = async (files: FileList | File[] | null) => {
     if (!files || files.length === 0) return;
+    let room = MAX_IMAGES - images.length;
     for (const file of Array.from(files)) {
+      if (allowImages && isImage(file)) {
+        if (room-- > 0) void attachImage(file);
+        continue;
+      }
       const id = `${file.name}-${Date.now()}`;
       setUploads(prev => [...prev, { id, name: file.name, status: "uploading" }]);
       try {
@@ -106,7 +158,21 @@ export function Composer({
 
   return (
     <div className="composer-wrap">
-      <div className="composer">
+      <div
+        className={`composer ${dragging ? "is-dragging" : ""}`}
+        onDragOver={e => {
+          if (!allowImages || !e.dataTransfer.types.includes("Files")) return;
+          e.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={e => {
+          if (!allowImages) return;
+          e.preventDefault();
+          setDragging(false);
+          void handleFiles(e.dataTransfer.files);
+        }}
+      >
         {(badge || hint) && (
           <div className="composer__top">
             {badge ?? <span />}
@@ -130,9 +196,31 @@ export function Composer({
               submit();
             }
           }}
+          onPaste={e => {
+            const pasted = Array.from(e.clipboardData.files).filter(isImage);
+            if (!allowImages || pasted.length === 0) return;
+            e.preventDefault();
+            void handleFiles(pasted);
+          }}
           rows={rows}
           disabled={busy}
         />
+        {images.length > 0 && (
+          <div className="composer__images">
+            {images.map(i => (
+              <div key={i.key} className={`image-chip image-chip--${i.status}`} title={i.detail ?? i.name}>
+                {/* eslint-disable-next-line @next/next/no-img-element -- a local blob preview */}
+                <img src={i.preview} alt={i.name} />
+                {i.status === "uploading" && <span className="image-chip__veil"><Icon name="spark" size={14} className="upload-chip__spin" /></span>}
+                {i.status === "error" && <span className="image-chip__veil image-chip__veil--error">{i.detail}</span>}
+                <button type="button" className="image-chip__remove" aria-label={`Remove ${i.name}`}
+                        onClick={() => removeImage(i.key)}>
+                  <Icon name="close" size={11} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         {uploads.length > 0 && (
           <div className="composer__uploads">
             {uploads.map(u => (
@@ -163,7 +251,7 @@ export function Composer({
             <input
               ref={fileInputRef}
               type="file"
-              accept=".pdf,.md,.markdown,.mdx"
+              accept={allowImages ? ".pdf,.md,.markdown,.mdx,image/*,.heic,.heif" : ".pdf,.md,.markdown,.mdx"}
               multiple
               style={{ display: "none" }}
               onChange={e => {
@@ -175,7 +263,7 @@ export function Composer({
             <button
               className="ctool"
               type="button"
-              title="Attach a document (.pdf, .md)"
+              title={allowImages ? "Attach an image, or a document (.pdf, .md) for the project" : "Attach a document (.pdf, .md)"}
               onClick={() => fileInputRef.current?.click()}
             >
               <Icon name="paper" size={16} />
@@ -210,7 +298,7 @@ export function Composer({
             className="btn btn--primary"
             type="button"
             onClick={submit}
-            disabled={busy || !value.trim()}
+            disabled={!canSend}
           >
             {busy ? "Thinking…" : <>Send <Icon name="arrow" size={14} /></>}
           </button>

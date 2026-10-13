@@ -60,17 +60,43 @@ def _backend(request: Request):
     return backend
 
 
-def _text_of(content: Any) -> str:
-    """OpenAI content is a string or a list of typed parts; the models here
-    take text, so the text parts are joined and anything else is refused."""
+def _parts_of(content: Any) -> tuple[str, list[str]]:
+    """OpenAI content is a string or a list of typed parts: the text parts
+    joined, and the image URLs in order. Anything else is refused."""
     if content is None or isinstance(content, str):
-        return content or ""
-    parts = []
+        return content or "", []
+    parts, images = [], []
     for part in content:
-        if part.get("type") != "text":
-            raise HTTPException(400, f"unsupported content part: {part.get('type')}")
-        parts.append(part.get("text", ""))
-    return "".join(parts)
+        kind = part.get("type")
+        if kind == "text":
+            parts.append(part.get("text", ""))
+        elif kind == "image_url":
+            url = part.get("image_url")
+            images.append(url.get("url", "") if isinstance(url, dict) else str(url or ""))
+        else:
+            raise HTTPException(400, f"unsupported content part: {kind}")
+    return "".join(parts), images
+
+
+def _decode_image(url: str, max_side: int):
+    """A data: URI to an RGB image no longer than ``max_side``. Only data:
+    URIs: the runtime never fetches anything, so a URL is refused rather
+    than downloaded (nothing but the websearch service reaches the internet)."""
+    import base64
+    import binascii
+    import io
+
+    from PIL import Image, ImageOps, UnidentifiedImageError
+
+    if not url.startswith("data:image/") or "," not in url:
+        raise HTTPException(400, "images must be sent inline as data:image/... URIs")
+    try:
+        image = Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1], validate=True)))
+        image = ImageOps.exif_transpose(image).convert("RGB")
+    except (binascii.Error, UnidentifiedImageError, OSError, ValueError) as exc:
+        raise HTTPException(400, f"could not read an attached image: {exc}") from exc
+    image.thumbnail((max_side, max_side))
+    return image
 
 
 def _schema_of(response_format: dict[str, Any] | None) -> dict | None:
@@ -110,24 +136,46 @@ def _params(body: ChatRequest, settings) -> GenParams:
 @router.post("/v1/chat/completions")
 async def chat_completions(body: ChatRequest, request: Request):
     backend = _backend(request)
-    slot = backend.resolve("chat", body.model)
-    if slot is None:
-        raise HTTPException(404, f"model {body.model!r} is not served here; this runtime serves "
-                                 f"{backend.slots['chat'].repo!r}")
-    if not slot.loaded:
-        # Checked before streaming starts: once a 200 is on the wire there is
-        # no way left to say "unavailable".
-        raise HTTPException(503, f"{slot.repo} is not loaded right now")
-    messages = [{"role": m.get("role", "user"), "content": _text_of(m.get("content"))}
-                for m in body.messages]
-    params = _params(body, request.app.state.settings)
+    settings = request.app.state.settings
+    split = [_parts_of(m.get("content")) for m in body.messages]
+    messages = [{"role": m.get("role", "user"), "content": text} for m, (text, _) in zip(body.messages, split)]
+    image_urls = [url for _, urls in split for url in urls]
+    # Images, or the vision model by name, go to the vision model; the rest
+    # to the chat model. Asking the chat model to look at an image is the
+    # one combination refused, rather than silently dropping the image.
+    vision = backend.resolve("vision", body.model) if body.model else None
+    if image_urls or vision is not None:
+        slot = backend.slots["vision"]
+        if body.model and vision is None:
+            raise HTTPException(400, f"{body.model!r} cannot see images; ask {slot.repo!r}")
+        if len(image_urls) > settings.vision_max_images:
+            raise HTTPException(400, f"at most {settings.vision_max_images} images per request")
+        if body.response_format:
+            raise HTTPException(400, "response_format is not supported with images")
+    else:
+        slot = backend.resolve("chat", body.model)
+        if slot is None:
+            raise HTTPException(404, f"model {body.model!r} is not served here; this runtime serves "
+                                     f"{backend.slots['chat'].repo!r} and {backend.slots['vision'].repo!r}")
+        if not slot.loaded:
+            # Checked before streaming starts: once a 200 is on the wire there
+            # is no way left to say "unavailable".
+            raise HTTPException(503, f"{slot.repo} is not loaded right now")
+    params = _params(body, settings)
     priority = Priority.parse(request.headers.get(PRIORITY_HEADER))
+    if slot.name == "vision":
+        images = [_decode_image(url, settings.vision_max_side) for url in image_urls]
+        # Loaded on first use if it isn't yet (core asks for it as soon as an
+        # image is attached, so normally it already is).
+        generate = lambda: backend.see(messages, images, params, priority)  # noqa: E731
+    else:
+        generate = lambda: backend.chat(messages, params, priority)  # noqa: E731
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(time.time())
 
     if not body.stream:
         text, done = [], None
-        async for event in backend.chat(messages, params, priority):
+        async for event in generate():
             if event.kind == "text":
                 text.append(event.text)
             elif event.kind == "error":
@@ -158,7 +206,7 @@ async def chat_completions(body: ChatRequest, request: Request):
             }) + "\n\n"
 
         yield chunk({"role": "assistant", "content": ""})
-        async for event in backend.chat(messages, params, priority):
+        async for event in generate():
             if event.kind == "text":
                 yield chunk({"content": event.text})
             elif event.kind == "error":

@@ -14,6 +14,19 @@ dependencies = [
     "nexus-websearch",
 ]
 
+[tool.uv]
+# pipecat-ai (core's voice pipeline) pins these to older releases than the
+# rest of the workspace was built and benchmarked on. Its Silero VAD, Smart
+# Turn model and WebRTC transport were checked against the newer ones
+# (2026-10-07), so the workspace keeps them rather than downgrading RAG's
+# embeddings and the runtime's audio stack for one dependency.
+override-dependencies = [
+    "onnxruntime>=1.29",
+    "protobuf>=7",
+    "soundfile>=0.14",
+    "soxr>=1.1",
+]
+
 [tool.uv.workspace]
 members = ["memory", "core", "rag", "runtime", "websearch"]
 

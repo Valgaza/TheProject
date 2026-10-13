@@ -23,6 +23,7 @@ import asyncio
 import gc
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
@@ -305,6 +306,107 @@ class GenerationJob:
         self._emit(Event("error", text=f"{exc.__class__.__name__}: {exc}"))
 
 
+# ── A generation that looks at images ────────────────────────────────────────
+
+
+class VisionJob:
+    """The vision model's answer, one token per step, like GenerationJob.
+
+    mlx-vlm's stream_generate does the work: the images through the vision
+    encoder and the whole prompt through prefill on the first step (the one
+    long step, a second or two), then a token per step. No prompt cache and
+    no JSON schema: image turns are one-off, and nothing parses them.
+    """
+
+    def __init__(self, backend: "MLXBackend", messages: list[dict], images: list, params: GenParams,
+                 priority: Priority, loop: asyncio.AbstractEventLoop, queue: asyncio.Queue) -> None:
+        self.backend = backend
+        self.messages = messages
+        self.images = images
+        self.params = params
+        self.priority = priority
+        self.loop = loop
+        self.queue = queue
+        self.cancelled = False
+        self.submitted = time.perf_counter()
+        self.started: float | None = None
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self._gen = None
+        self._think = ThinkFilter()
+        self._stop = StopFilter(params.stop)
+
+    def _emit(self, event: Event) -> None:
+        self.loop.call_soon_threadsafe(self.queue.put_nowait, event)
+
+    def _start(self) -> None:
+        from mlx_lm.sample_utils import make_sampler
+        from mlx_vlm import apply_chat_template, stream_generate
+
+        self.started = time.perf_counter()
+        model, processor = self.backend._ensure("vision")
+        prompt = apply_chat_template(
+            processor, model.config, self.messages, num_images=len(self.images),
+            enable_thinking=self.params.enable_thinking,
+        )
+        self._gen = stream_generate(
+            model, processor, prompt, image=self.images or None,
+            max_tokens=self.params.max_tokens,
+            sampler=make_sampler(temp=self.params.temperature, top_p=self.params.top_p),
+            prefill_step_size=self.backend.settings.prefill_step,
+            enable_thinking=self.params.enable_thinking,
+        )
+
+    def _text(self, segment: str) -> None:
+        text = self._stop.feed(self._think.feed(segment))
+        if text:
+            self._emit(Event("text", text))
+
+    def _finish(self, reason: str) -> bool:
+        tail = self._stop.feed(self._think.flush()) + self._stop.flush()
+        if tail:
+            self._emit(Event("text", tail))
+        self.close()
+        now = time.perf_counter()
+        running = now - (self.started or now)
+        logger.info(
+            "vision generation priority=%s images=%d prompt=%d out=%d finish=%s waited=%.2fs ran=%.2fs",
+            self.priority.name.lower(), len(self.images), self.prompt_tokens, self.completion_tokens,
+            reason, (self.started or now) - self.submitted, running,
+        )
+        self._emit(Event("done", finish_reason=reason, prompt_tokens=self.prompt_tokens,
+                         completion_tokens=self.completion_tokens))
+        return True
+
+    def step(self) -> bool:
+        if self._gen is None:
+            self._start()
+        try:
+            result = next(self._gen)
+        except StopIteration:
+            return self._finish("stop")
+        self.prompt_tokens = result.prompt_tokens
+        self.completion_tokens = result.generation_tokens
+        self._text(result.text or "")
+        if self._stop.hit:
+            return self._finish("stop")
+        if result.finish_reason:
+            return self._finish("length" if result.finish_reason == "length" else "stop")
+        if self.completion_tokens >= self.params.max_tokens:
+            return self._finish("length")
+        return False
+
+    def close(self) -> None:
+        # On the worker thread, for the same reason as GenerationJob.close.
+        if self._gen is not None:
+            self._gen.close()
+            self._gen = None
+
+    def fail(self, exc: BaseException) -> None:
+        self.close()
+        self._emit(Event("error", text=f"{exc.__class__.__name__}: {exc}"))
+
+
 # ── Residency ────────────────────────────────────────────────────────────────
 
 
@@ -342,6 +444,8 @@ class MLXBackend:
         # Voice: loaded per session (or on first use) and unloaded when idle.
         self.slots["stt"] = ModelSlot("stt", settings.stt_model, "session")
         self.slots["tts"] = ModelSlot("tts", settings.tts_model, "session")
+        # Images: loaded when one is attached, unloaded when idle, as voice.
+        self.slots["vision"] = ModelSlot("vision", settings.vision_model, "session")
         self.last_used: dict[str, float] = {}
         self.pronunciation: str | None = None
         self._compilers: dict[int, Any] = {}
@@ -412,6 +516,21 @@ class MLXBackend:
                 pass
             slot.obj = model
             slot.nbytes = max(0, mx.get_active_memory() - before)
+        elif name == "vision":
+            from huggingface_hub import snapshot_download
+            from mlx_vlm import load
+
+            try:
+                # Only from disk: a download here would hold the one GPU
+                # thread, and every other model with it, for minutes.
+                local = slot.repo if os.path.isdir(slot.repo) else snapshot_download(
+                    slot.repo, local_files_only=True)
+            except Exception as exc:
+                raise ModelNotLoaded(
+                    f"{slot.repo} is not downloaded yet; run scripts/fetch_voice_assets.py") from exc
+            model, processor = load(local)
+            slot.obj = (model, processor)
+            slot.nbytes = _param_bytes(model)
         elif name == "embed":
             from mlx_embeddings.utils import load
 
@@ -421,8 +540,6 @@ class MLXBackend:
         else:
             from huggingface_hub import snapshot_download
             from laya_mlx import Agent
-
-            import os
 
             sub = self.settings.decide_subfolder or None
             if os.path.isdir(slot.repo):
@@ -603,6 +720,26 @@ class MLXBackend:
             # A closed stream or a cancelled request stops the job at its
             # next step instead of generating into the void.
             job.cancelled = True
+
+    async def see(
+        self, messages: list[dict], images: list, params: GenParams, priority: Priority
+    ) -> AsyncIterator[Event]:
+        """An answer from the vision model. ``messages`` are text only;
+        ``images`` (PIL images, already shrunk) go with the last user message."""
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+        self.last_used["vision"] = time.monotonic()
+        job = VisionJob(self, messages, images, params, priority, loop, queue)
+        self.scheduler.submit(job)
+        try:
+            while True:
+                event = await queue.get()
+                yield event
+                if event.kind in ("done", "error"):
+                    return
+        finally:
+            job.cancelled = True
+            self.last_used["vision"] = time.monotonic()
 
     # ── decisions ────────────────────────────────────────────────────────────
 

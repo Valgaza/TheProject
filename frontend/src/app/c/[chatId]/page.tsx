@@ -22,8 +22,10 @@ import { domainById } from "@/lib/domains";
 import {
   ApiError,
   type Chat,
+  type ImageMeta,
   type Message,
   getChat,
+  imageUrl,
   listMessages,
   notifyChatsChanged,
   streamMessage,
@@ -54,6 +56,8 @@ function Thread({ chatId }: { chatId: string }) {
   // and the user watches it land here instead of waiting on the previous screen.
   const opening = searchParams.get("q");
   const openingWeb = searchParams.get("web") === "1";
+  // Images attached on the start screen, by id; uploaded there already.
+  const openingImages = searchParams.get("images");
 
   const [chat, setChat] = useState<Chat | null>(null);
   const [messages, setMessages] = useState<PendingMessage[]>([]);
@@ -70,9 +74,9 @@ function Thread({ chatId }: { chatId: string }) {
   const sentOpening = useRef(false);
 
   const send = useCallback(
-    async (content: string, useWeb = false) => {
+    async (content: string, useWeb = false, images: ImageMeta[] = []) => {
       const trimmed = content.trim();
-      if (!trimmed) return;
+      if (!trimmed && images.length === 0) return;
 
       setBusy(true);
       setError(null);
@@ -81,7 +85,7 @@ function Thread({ chatId }: { chatId: string }) {
         chat_id: chatId,
         role: "user",
         content: trimmed,
-        metadata: {},
+        metadata: images.length ? { images } : {},
         created_at: new Date().toISOString(),
         pending: true,
       };
@@ -93,6 +97,7 @@ function Thread({ chatId }: { chatId: string }) {
       try {
         const turn = await streamMessage(chatId, trimmed, {
           useWeb,
+          images: images.map(i => i.id),
           onPrepared: prepared => {
             setMessages(prev => [
               ...prev.filter(m => m.id !== optimistic.id),
@@ -196,9 +201,11 @@ function Thread({ chatId }: { chatId: string }) {
         setChat(loadedChat);
         setMessages(loadedMessages);
 
-        if (opening && !sentOpening.current && loadedMessages.length === 0) {
+        if ((opening || openingImages) && !sentOpening.current && loadedMessages.length === 0) {
           sentOpening.current = true;
-          void send(opening, openingWeb);
+          const images = (openingImages ?? "").split(",").filter(Boolean)
+            .map(id => ({ id, name: "image", width: 0, height: 0, mime_type: "" }));
+          void send(opening ?? "", openingWeb, images);
         }
       } catch (err) {
         if (cancelled) return;
@@ -215,7 +222,7 @@ function Thread({ chatId }: { chatId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [chatId, opening, openingWeb, send]);
+  }, [chatId, opening, openingWeb, openingImages, send]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -283,14 +290,15 @@ function Thread({ chatId }: { chatId: string }) {
         <Composer
           value={value}
           onChange={setValue}
-          onSubmit={() => {
+          onSubmit={images => {
             const content = value;
             setValue("");
             // One message at a time: leaving it on would send every later
             // message off the machine too, which nobody should do by accident.
             setWeb(false);
-            void send(content, web);
+            void send(content, web, images);
           }}
+          allowImages
           placeholder="Continue the conversation…"
           rows={2}
           busy={busy}
@@ -330,7 +338,18 @@ const UserMessage = ({ message }: { message: PendingMessage }) => (
       <strong>You</strong>
     </div>
     <div className="msg__body">
-      <p style={{ whiteSpace: "pre-wrap" }}>{message.content}</p>
+      {message.metadata.images?.length ? (
+        <div className="msg__images">
+          {message.metadata.images.map(img => (
+            <a key={img.id} href={imageUrl(img.id)} target="_blank" rel="noreferrer"
+               title={img.caption ? `What Nexus saw: ${img.caption}` : img.name}>
+              {/* eslint-disable-next-line @next/next/no-img-element -- served by core behind the session cookie */}
+              <img src={imageUrl(img.id)} alt={img.caption ?? img.name} loading="lazy" />
+            </a>
+          ))}
+        </div>
+      ) : null}
+      {message.content && <p style={{ whiteSpace: "pre-wrap" }}>{message.content}</p>}
     </div>
   </div>
 );

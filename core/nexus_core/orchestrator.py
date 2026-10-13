@@ -28,9 +28,8 @@ Handler = Literal["general", "rag", "web", "vision", "speech"]
 class Attachment(TypedDict, total=False):
     """Something the user attached to a turn.
 
-    Nothing produces these yet — the composer's attach and mic buttons are inert
-    this milestone. The type exists so the handlers that consume attachments can
-    be written against a settled shape rather than inventing one each.
+    Images are the one kind produced so far: each image named in a message
+    becomes one (chat_service.prepare_turn), and routes the turn to vision.
     """
 
     kind: Literal["file", "image", "audio"]
@@ -51,6 +50,7 @@ async def select_route(
     attachments: Sequence[Attachment] = (),
     rag: "RagClient | None" = None,
     use_web: bool = False,
+    accepted_web_offer: bool = False,
     web_intent_p: float | None = None,
     web_intent_above: float = 0.9,
 ) -> Route:
@@ -94,11 +94,21 @@ async def select_route(
         route = Route(handler="web", reason="web search requested from the composer")
     elif WEB_TRIGGER.search(content):
         route = Route(handler="web", reason="the message asks to search the web")
+    elif accepted_web_offer:
+        # Asked, in two steps: Nexus offered to check online, and the person
+        # said yes. The search is for the question that prompted the offer.
+        route = Route(handler="web", reason="the person said yes to checking online")
     elif web_intent_p is not None and web_intent_p >= web_intent_above:
         route = Route(
             handler="web",
             reason=f"the message asks to look something up online (decision model, p={web_intent_p:.2f})",
         )
+    elif images := sum(1 for a in attachments if a.get("kind") == "image"):
+        # The vision model answers; it is a different model, so this is a
+        # route, not context. (With the web asked for too, the route stays
+        # "web" -- the label that says words left the machine -- and the
+        # vision model still answers, because the image is there.)
+        route = Route(handler="vision", reason=f"{images} image{'s' if images > 1 else ''} attached")
     else:
         route = Route(handler="general", reason="no attachment requiring another pipeline")
     logger.info(

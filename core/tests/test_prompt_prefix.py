@@ -11,7 +11,10 @@ from nexus_core.memory_client import Fact
 from nexus_core.models import Chat, Message
 from nexus_core.rag_client import RagResult, RagSource
 
-from conftest import DEMO_USER_ID
+# The seeded demo user (db/seed.sql), as in core/tests/conftest.py. Not
+# imported from there: run from the repository root, "conftest" is the
+# scenario suite's tests/conftest.py.
+DEMO_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
 def _msg(role: str, content: str) -> Message:

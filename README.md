@@ -8,21 +8,20 @@ conversations.
 You never pick a pipeline. You type, or attach a document, or speak, and the
 system works out what to do with it.
 
-Four kinds of input are planned: documents, images (OCR and vision),
-conversational speech, and general chat. General chat, document Q&A, the memory
-layer, opt-in web search and hands-free voice are built and run entirely on
-local models. Vision is being developed separately on `feature/vision-v1`.
+Four kinds of input: documents, images, conversational speech, and general
+chat. All four are built, along with the memory layer and opt-in web search,
+and run entirely on local models.
 
 ## How it fits together
 
 ```
                        frontend :3000
-                             │   session cookie; voice over a websocket
+                             │   session cookie; voice over WebRTC
                              ▼
         ┌──────────────── core :8100 ─────────────────┐
         │  auth, chats, projects, documents, routing,  │
         │  prompt assembly, the memory write queue,    │
-        │  voice sessions (turn-taking, barge-in)      │
+        │  voice sessions (Pipecat, Smart Turn)        │
         └───┬──────────────┬──────────────┬───────┬────┘
             │              │ service token│       │      only when asked
             ▼              ▼              ▼       ▼
@@ -112,7 +111,8 @@ knows you have something on a topic without holding a lossy copy of it.
 
 ### Web search is the one thing that leaves the machine
 
-It runs only when you ask: the composer's globe button, or saying so in words.
+It runs only when you ask: the composer's globe button, saying so in words
+("look it up", "check online"), or saying yes when Nexus offers to check.
 Core hands the message to the websearch container, the only component with a
 route to SearXNG. There a model rewrites it into a generic topic query, your
 own names, email addresses and long ID-like numbers are stripped from the
@@ -123,15 +123,28 @@ log, and shown on the message. Why it works this way: flag 1 in
 
 ### Talking to it
 
-The mic button opens a hands-free conversation in the same chat: speak, pause,
-and the answer is spoken back a sentence at a time while the rest is still
-being written. Talk over it and it stops, keeping only what you heard. Voice
-turns are ordinary messages, with the same memory, documents and web.
+The mic button opens a hands-free conversation in the same chat, over WebRTC:
+speak, pause, and the answer is spoken back a piece at a time while the rest
+is still being written. Smart Turn listens to how you said something to tell a
+finished sentence from a pause. Talk over it and it stops, keeping only what
+you heard; "mm-hmm" doesn't stop it. Ask it to look something up and it says
+so first, then searches. Voice turns are ordinary messages, with the same
+memory, documents and web.
+
+### Looking at images
+
+Attach, paste or drop an image into the composer and ask about it: a photo, a
+screenshot, a chart, a receipt. A separate vision model (Qwen3.5-4B) answers
+that turn, with the same memory and documents as any other; it loads when the
+image is attached and unloads when idle. The question straight after sees the
+image again, and later turns know it by a caption the vision model writes, so
+"what was the total on that receipt?" works by voice too. Images stay on the
+machine, stripped of location data, and go when their chat is deleted.
 
 ### Decisions that do not need an LLM
 
 Several choices in a turn are classifications: is this worth remembering, is
-it asking for the web, has the speaker finished, was that an interruption.
+it asking for the web, does this query still identify someone.
 Laya, a small decision model in the runtime, answers them in milliseconds.
 Each one runs in shadow first, logged beside the existing logic, and goes live
 only after measuring well on hand-labelled examples (`RUNBOOK.md`).

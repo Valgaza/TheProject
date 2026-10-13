@@ -24,6 +24,8 @@ class FakeSettings:
     enable_thinking = False
     default_max_tokens = 256
     max_tokens_cap = 1024
+    vision_max_side = 64
+    vision_max_images = 2
 
 
 class FakeBackend:
@@ -32,8 +34,10 @@ class FakeBackend:
         self.slots = {
             "chat": ModelSlot("chat", "mlx-community/Fake-8B-4bit", "always", obj=object()),
             "embed": ModelSlot("embed", "mlx-community/fake-embed", "always", obj=object()),
+            "vision": ModelSlot("vision", "mlx-community/Fake-VL-4B", "session"),
         }
         self.calls: list[dict] = []
+        self.seen: list[dict] = []
 
     def resolve(self, kind, requested):
         slot = self.slots[kind]
@@ -46,6 +50,11 @@ class FakeBackend:
         for piece in ("Hello", ", world"):
             yield Event("text", piece)
         yield Event("done", finish_reason="stop", prompt_tokens=12, completion_tokens=3, cached_tokens=8)
+
+    async def see(self, messages, images, params, priority):
+        self.seen.append({"messages": messages, "images": images, "priority": priority})
+        yield Event("text", "A red square.")
+        yield Event("done", finish_reason="stop", prompt_tokens=300, completion_tokens=4)
 
     async def embed(self, texts, dimensions):
         return [[0.6, 0.8] for _ in texts], 7
@@ -212,3 +221,70 @@ async def test_no_caller_can_ask_for_more_than_the_cap(client, backend):
     await client.post("/v1/chat/completions", json={
         "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16384})
     assert backend.calls[-1]["params"].max_tokens == 1024
+
+
+# ── images ───────────────────────────────────────────────────────────────────
+
+
+def _png(width=200, height=100) -> str:
+    import base64
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), (200, 0, 0)).save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def _with_image(url: str, text: str = "What is this?") -> list[dict]:
+    return [{"role": "system", "content": "Be brief."},
+            {"role": "user", "content": [{"type": "text", "text": text},
+                                         {"type": "image_url", "image_url": {"url": url}}]}]
+
+
+async def test_an_image_goes_to_the_vision_model_shrunk(client, backend):
+    response = await client.post("/v1/chat/completions", json={"messages": _with_image(_png())},
+                                 headers={"X-Nexus-Priority": "live"})
+    assert response.status_code == 200, response.text
+    assert response.json()["choices"][0]["message"]["content"] == "A red square."
+    assert backend.calls == []
+    (seen,) = backend.seen
+    assert seen["messages"][-1] == {"role": "user", "content": "What is this?"}
+    assert seen["images"][0].size == (64, 32)  # longest side capped, shape kept
+    assert seen["priority"] == Priority.LIVE
+
+
+async def test_images_stream_like_any_answer(client, backend):
+    async with client.stream("POST", "/v1/chat/completions",
+                             json={"messages": _with_image(_png()), "stream": True}) as response:
+        body = "".join([chunk async for chunk in response.aiter_text()])
+    assert "A red square." in body and body.rstrip().endswith("[DONE]")
+
+
+async def test_the_runtime_never_fetches_an_image_url(client, backend):
+    response = await client.post("/v1/chat/completions",
+                                 json={"messages": _with_image("https://example.com/cat.jpg")})
+    assert response.status_code == 400
+    assert backend.seen == []
+
+
+async def test_a_broken_image_is_a_clear_400(client, backend):
+    response = await client.post("/v1/chat/completions",
+                                 json={"messages": _with_image("data:image/png;base64,bm90IGFuIGltYWdl")})
+    assert response.status_code == 400
+    assert "could not read" in response.json()["detail"]
+
+
+async def test_the_chat_model_is_not_asked_to_look_at_an_image(client, backend):
+    response = await client.post("/v1/chat/completions", json={
+        "model": "mlx-community/Fake-8B-4bit", "messages": _with_image(_png())})
+    assert response.status_code == 400
+    assert backend.seen == [] and backend.calls == []
+
+
+async def test_too_many_images_are_refused(client, backend):
+    content = [{"type": "image_url", "image_url": {"url": _png()}} for _ in range(3)]
+    response = await client.post("/v1/chat/completions",
+                                 json={"messages": [{"role": "user", "content": content}]})
+    assert response.status_code == 400

@@ -144,6 +144,7 @@ else:
 | `CORE_GATE_MODEL` | same |
 | `MEMORY_EXTRACTION_MODEL` | same |
 | `MEMORY_EMBEDDING_MODEL` | `mlx-community/embeddinggemma-300m-4bit` (768-d) |
+| `CORE_VISION_MODEL` | `mlx-community/Qwen3.5-4B-MLX-4bit`, only for turns with an image (see Images) |
 
 The chat model is chosen by benchmark (`scripts/bench.py` for latency,
 `scripts/extraction_check.py` for graph quality, `tests/test_scenarios.py` for
@@ -227,10 +228,22 @@ error and refuses everything.
 
 ## Web search
 
-Off unless asked for, per message: the globe button in the composer, or
-asking in words ("search the web for…", and, once the decision model is live
-for it, other phrasings too). Nothing in core talks to the internet. Core
-sends the message to the websearch container (`websearch/`, :8004), which:
+Off unless asked for, per message. Three ways to ask:
+
+- the globe button in the composer;
+- saying so in words, typed or spoken: "search the web for…", "check online",
+  "look it up", "look up …", "google that", "reference the web", "what does
+  the internet say…" (`WEB_TRIGGER` in `core/nexus_core/web_client.py`).
+  Mentioning the internet is not asking ("I read online that…");
+- saying yes to Nexus's own offer. For anything that depends on recent facts
+  the model answers from what it knows and ends with "Want me to check
+  online?"; a plain "yes" (or "sure", "go ahead") to that searches the
+  question that prompted it. "Yes, but…" with a new question is a new turn.
+
+In voice, a turn that will search is answered with a word first ("Give me a
+second, I'll look that up.") while the search runs. Nothing in core talks to
+the internet. Core sends the message to the websearch container
+(`websearch/`, :8004), which:
 
 1. has the runtime's LLM rewrite it as a generic topic, then strips your
    name, your email and anything with five or more digits from the rewrite;
@@ -264,8 +277,6 @@ mode, `off`, `shadow` or `live`:
 | Memory gate | `CORE_LAYA_GATE` | Worth remembering? If clearly not, the gate's LLM call is skipped |
 | Web intent | `CORE_LAYA_WEB_INTENT` | Is the message asking to search the web? Can only turn the web on |
 | Outgoing query | `WEBSEARCH_LAYA_QUERY` | Does the query still identify someone? Blocks it |
-| End of turn | `CORE_LAYA_END_OF_TURN` | Is a paused speaker finished, or about to go on? |
-| Barge-in | `CORE_LAYA_BARGE_IN` | Interruption, or "mm-hmm"? |
 
 In `shadow` its answer is written to `decision_log` beside what the existing
 logic decided, and the existing logic acts. A point goes `live` when
@@ -300,41 +311,98 @@ turn is an ordinary message in the chat (`meta.voice` holds its timings), with
 the same memory, documents and web as typed ones. An interrupted answer is
 stored as only what you heard.
 
-How it is wired:
+How it is wired (`core/nexus_core/voice/pipeline.py`, on Pipecat):
 
-- The browser streams 16 kHz microphone audio to core over `WS /ws/voice/{chat}`
-  (cookie and Origin checked as for `/ws/graph`) and plays back 24 kHz audio,
-  one sentence at a time.
-- Core runs voice activity detection (Silero, CPU, ~0.1 ms per 32 ms frame).
-  A 500 ms pause ends the turn; the decision model may hold it to 1.2 s if the
-  sentence sounds unfinished (live mode only).
+- The browser's Pipecat client (`frontend/src/lib/voice.ts`) posts a WebRTC
+  offer to core (`POST /voice/{chat}/offer`, session cookie and Origin
+  checked); microphone and answer audio then travel over the peer
+  connection, with the browser's own echo cancellation. Transcripts, the
+  streamed answer and the stored messages arrive as RTVI messages on its data
+  channel.
+- Core runs voice activity detection (Silero) and **Smart Turn v3**, a small
+  model that listens to *how* something was said to tell a finished sentence
+  from a pause mid-thought. A transcript that trails off ("tell me about
+  the…") is held for more, and speaking again within two seconds of a turn
+  ending continues that turn.
 - Speech-to-text (Parakeet) and text-to-speech (Kokoro) run in the runtime at
-  live priority. Each sentence of the answer is spoken while the model writes
-  the next.
-- Speech over the answer for 300 ms pauses playback; if it was only "mm-hmm" it
-  resumes, otherwise the answer stops.
+  live priority. A long first sentence is spoken from its first comma, and
+  each piece is synthesised while the previous one plays.
+- Speech over the answer stops it on three or more words, a stop phrase
+  ("stop", "wait", "hold on"), or a second of continuous speech. "Mm-hmm"
+  never does, and speech that ends while the answer is still going without
+  stopping it is not answered.
 - The memory write queue waits for the whole session.
 
-First time: `uv run python scripts/fetch_voice_assets.py` (VAD, speech models,
-decision model). Opening a session loads speech-to-text and text-to-speech
-(a few seconds); they unload after five idle minutes.
+First time: `uv run python scripts/fetch_voice_assets.py` (speech models and
+the decision model; VAD and Smart Turn come with Pipecat). Opening a session
+loads speech-to-text and text-to-speech (a few seconds); they unload after
+five idle minutes.
+
+Tuning, in `.env` (restart core):
+
+| Setting | Default | Raise it if |
+|---|---|---|
+| `CORE_VOICE_INCOMPLETE_WAIT_MS` | 2000 | it answers before you've finished a thought |
+| `CORE_VOICE_CONTINUE_WITHIN_MS` | 2000 | a long pause splits one question into two |
+| `CORE_VOICE_INTERRUPT_MIN_WORDS` | 3 | it stops on short remarks it should talk through |
+| `CORE_VOICE_INTERRUPT_AFTER_MS` | 1000 | background talk stops it |
+| `CORE_VOICE_VAD_STOP_MS` | 200 | (rarely) noise ends turns early |
 
 Troubleshooting:
 
 - **Nothing happens when I speak.** The browser must be allowed the mic
   (address-bar permission), and the page must be on `localhost` or https.
-  Core logs `no VAD model … using the loudness fallback` if the Silero file is
-  missing, which works but is easily fooled by noise.
-- **It interrupts itself.** Its own voice is coming back through the mic. Use
-  headphones, or raise `CORE_VOICE_BARGE_THRESHOLD` (0.8 → 0.9).
-- **It answers before I'm done.** Raise `CORE_VOICE_EOT_SILENCE_MS`.
+- **It interrupts itself.** Its own voice is coming back through the mic.
+  Use headphones; echo cancellation helps but speakers right next to the mic
+  can still leak.
+- **The mic button is greyed out.** It only works inside a chat, and not
+  while an answer is being written.
 - **Unknown words are spelled out letter by letter.** The espeak-ng that
   Kokoro's phonemizer ships with is broken on macOS, so the runtime falls back
   to spelling (`runtime/nexus_runtime/pronunciation.py`). `brew install
   espeak-ng` and restart the runtime for real pronunciation.
 - **Measure it:** `uv run python scripts/voice_bench.py --exchanges 20 --out
-  docs/benchmarks/<date>-voice` drives the socket like a browser and reports
-  end-of-speech to first audio, transcription accuracy, barge-in and memory.
+  docs/benchmarks/<date>-voice` drives the WebRTC endpoint like a browser and
+  reports end-of-speech to first audio, transcription accuracy, interruption
+  time, the hesitant / "mm-hmm" / spoken-web checks, and memory.
+
+## Images
+
+Images attached in a chat are answered by the vision model, not the chat
+model (`core/nexus_core/images.py`, `runtime/nexus_runtime/mlx_backend.py`
+`VisionJob`).
+
+- `POST /images` stores the upload under `CORE_IMAGE_DIR/<user id>/`,
+  re-encoded (so no EXIF: no GPS, no camera details) and no larger than 2048
+  px. It also asks the runtime to load the vision model, so it is ready by
+  the time the message is sent. `GET /images/{id}` serves it to its owner only.
+- A message names its images by id (`images` in the message body, up to 4),
+  and routes to `vision`. Core sends them to the runtime inline, as data URLs
+  in OpenAI's `image_url` parts; the runtime never fetches a URL. It shrinks
+  each to `RUNTIME_VISION_MAX_SIDE` (1280) before the model sees it.
+- The message straight after an image turn sees the same images again. After
+  that the image is known by its caption: the vision model writes one onto the
+  message (`meta.images[].caption`) after the answer, at interactive priority,
+  and the chat model reads it in the transcript. The caption itself is not
+  given to memory, but the turn goes through the write gate like any other:
+  what was said about the image, and the answer about it, can be remembered.
+- Deleting a chat or project deletes its image files.
+- The vision slot has the `session` lifetime: loaded on first use (or the
+  upload's warm-up), unloaded after `RUNTIME_SESSION_IDLE_SECONDS`. About
+  2.9 GB of weights.
+- A question about when ("how long until it's due?", matched by
+  `TIME_QUESTION` in `chat_service.py`) has its images read first: the
+  caption is written before the answer, and `clock.calendar_note` counts the
+  dates in it, because the vision model miscounts days on its own. About a
+  second more on those turns.
+- Every turn carries the date and time, and the dates in the recent
+  conversation counted out (`core/nexus_core/clock.py`).
+- HEIC photos are refused with a message saying to export as JPEG.
+- The model is never downloaded on first use (that would hold the GPU thread
+  for the whole download): fetch it with `scripts/fetch_voice_assets.py`.
+  Missing, an image turn answers that it couldn't reach the model.
+
+Check it: `curl -s localhost:8003/health | jq '.models[] | select(.name=="vision")'`.
 
 ## Documents and their tiers
 
@@ -409,7 +477,7 @@ cross-chat recall, cross-project isolation, personal facts following you between
 projects, the write gate keeping chit-chat out of the graph. And the eval
 (`tests/test_eval_scenarios.py`): a document question cited to the right file, a
 web search whose audit log holds no identifying detail, and a spoken question
-streamed into the voice socket and answered aloud. Each signs up a throwaway
+sent over WebRTC as a microphone would and answered aloud. Each signs up a throwaway
 user and removes it afterwards.
 
 Benchmarks, with the stack up. Reports go to `docs/benchmarks/`, which stays on

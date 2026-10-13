@@ -130,22 +130,25 @@ class Settings:
         # the machine.
         self.laya_web_intent_above = float(_optional("CORE_LAYA_WEB_INTENT_ABOVE", "0.9"))
 
-        # ── Voice (voice/session.py) ────────────────────────────────────────
-        # A pause this long may end the person's turn; this long always does.
-        self.voice_eot_silence_ms = int(_optional("CORE_VOICE_EOT_SILENCE_MS", "500"))
-        self.voice_max_silence_ms = int(_optional("CORE_VOICE_MAX_SILENCE_MS", "1200"))
-        # Transcription and retrieval start at this much silence, so they are
-        # done when the turn ends; thrown away if speech resumes. 0 = off.
-        self.voice_speculate_silence_ms = int(_optional("CORE_VOICE_SPECULATE_SILENCE_MS", "250"))
-        # Speech over the assistant for this long pauses it to check whether
-        # it is an interruption.
-        self.voice_barge_in_ms = int(_optional("CORE_VOICE_BARGE_IN_MS", "300"))
-        # Speech-probability thresholds; the second applies while the
-        # assistant is talking, so its own voice leaking back is not speech.
-        self.voice_speech_threshold = float(_optional("CORE_VOICE_SPEECH_THRESHOLD", "0.5"))
-        self.voice_barge_threshold = float(_optional("CORE_VOICE_BARGE_THRESHOLD", "0.8"))
-        self.laya_end_of_turn = _optional("CORE_LAYA_END_OF_TURN", "shadow")
-        self.laya_barge_in = _optional("CORE_LAYA_BARGE_IN", "shadow")
+        # ── Voice (voice/pipeline.py) ───────────────────────────────────────
+        # Silence before Smart Turn is asked whether the person has finished,
+        # and how long it waits when it says they haven't.
+        self.voice_vad_stop_ms = int(_optional("CORE_VOICE_VAD_STOP_MS", "200"))
+        self.voice_incomplete_wait_ms = int(_optional("CORE_VOICE_INCOMPLETE_WAIT_MS", "2000"))
+        # Speech over an answer stops it at this many words (a short "mm-hmm"
+        # never does), or after this long talking without a pause.
+        self.voice_interrupt_min_words = int(_optional("CORE_VOICE_INTERRUPT_MIN_WORDS", "3"))
+        self.voice_interrupt_after_ms = int(_optional("CORE_VOICE_INTERRUPT_AFTER_MS", "1000"))
+        # Speaking again this soon after a turn ended carries the same turn on.
+        self.voice_continue_within_ms = int(_optional("CORE_VOICE_CONTINUE_WITHIN_MS", "2000"))
+        # ── Images ───────────────────────────────────────────────────────────
+        # A turn with an image attached is answered by this model instead of
+        # the chat model: same runtime, loaded when an image is attached.
+        self.vision_model = _optional("CORE_VISION_MODEL", "mlx-community/Qwen3.5-4B-MLX-4bit")
+        # Where attached images are kept, one folder per person. Local only,
+        # like everything else; deleting the chat deletes its images.
+        self.image_dir = Path(_optional("CORE_IMAGE_DIR", str(_ROOT_ENV.parent / "data" / "images")))
+        self.image_max_mb = int(_optional("CORE_IMAGE_MAX_MB", "20"))
         self.port = int(_optional("CORE_PORT", "8100"))
         self.cors_origins = [
             origin.strip()
