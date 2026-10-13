@@ -11,7 +11,7 @@
 import React, { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Composer } from "@/components/composer";
-import { createChat } from "@/lib/api";
+import { type ImageMeta, createChat } from "@/lib/api";
 import { useProjects } from "@/lib/project-context";
 
 export default function ChatHome() {
@@ -39,9 +39,9 @@ function Start() {
   const projectId = searchParams.get("project");
   const project = projects.find(p => p.id === projectId);
 
-  const start = async () => {
+  const start = async (images: ImageMeta[] = []) => {
     const content = value.trim();
-    if (!content) return;
+    if (!content && images.length === 0) return;
 
     setBusy(true);
     setError(null);
@@ -50,7 +50,10 @@ function Start() {
       // Carry the prompt to the thread rather than sending it here — the reply
       // takes a couple of seconds and it should arrive on the page you are
       // reading, not the one you are leaving.
-      router.push(`/c/${chat.id}?q=${encodeURIComponent(content)}${web ? "&web=1" : ""}`);
+      // Images go by id: they are uploaded already.
+      const ids = images.map(i => i.id).join(",");
+      router.push(`/c/${chat.id}?q=${encodeURIComponent(content)}${web ? "&web=1" : ""}`
+                  + (ids ? `&images=${ids}` : ""));
     } catch {
       setBusy(false);
       setError("Couldn't reach the core service on :8100. Is it running?");
@@ -73,6 +76,7 @@ function Start() {
           value={value}
           onChange={setValue}
           onSubmit={start}
+          allowImages
           placeholder="Ask Nexus something…"
           busy={busy}
           autoFocus
