@@ -83,7 +83,8 @@ class ChatTurns:
     async def stream(self, handle: _Handle):
         handle.started = time.perf_counter()
         try:
-            async for piece in self.app.state.provider.chat_stream(handle.prepared.prompt, priority="live"):
+            async for piece in self.app.state.provider.chat_stream(
+                    handle.prepared.prompt, model=handle.prepared.model, priority="live"):
                 if piece and handle.first_token_ms is None:
                     handle.first_token_ms = round((time.perf_counter() - handle.prepared.started) * 1000)
                 yield piece

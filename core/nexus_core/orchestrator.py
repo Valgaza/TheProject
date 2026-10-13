@@ -28,9 +28,8 @@ Handler = Literal["general", "rag", "web", "vision", "speech"]
 class Attachment(TypedDict, total=False):
     """Something the user attached to a turn.
 
-    Nothing produces these yet — the composer's attach and mic buttons are inert
-    this milestone. The type exists so the handlers that consume attachments can
-    be written against a settled shape rather than inventing one each.
+    Images are the one kind produced so far: each image named in a message
+    becomes one (chat_service.prepare_turn), and routes the turn to vision.
     """
 
     kind: Literal["file", "image", "audio"]
@@ -104,6 +103,12 @@ async def select_route(
             handler="web",
             reason=f"the message asks to look something up online (decision model, p={web_intent_p:.2f})",
         )
+    elif images := sum(1 for a in attachments if a.get("kind") == "image"):
+        # The vision model answers; it is a different model, so this is a
+        # route, not context. (With the web asked for too, the route stays
+        # "web" -- the label that says words left the machine -- and the
+        # vision model still answers, because the image is there.)
+        route = Route(handler="vision", reason=f"{images} image{'s' if images > 1 else ''} attached")
     else:
         route = Route(handler="general", reason="no attachment requiring another pipeline")
     logger.info(

@@ -28,6 +28,7 @@ from .providers.base import Provider
 from .rag_client import RagClient, RagResult, RagSource
 from .web_client import WEB_TRIGGER, WebClient, WebSearch, accepts, offers_web
 from .clock import calendar_note, now_note
+from .images import ImageStore, StoredImage, caption, caption_note
 from .decisions import WEB_INTENT_QUESTIONS, DecisionsClient, log_entry
 
 logger = logging.getLogger(__name__)
@@ -202,9 +203,14 @@ def build_prompt(
     web: WebSearch | None = None,
     spoken: bool = False,
     now: datetime | None = None,
+    images: Sequence[str] = (),
 ) -> list[ProviderMessage]:
     """The system prompt, the conversation so far, then the message being
     answered with what was recalled and retrieved for it.
+
+    ``images`` are data URLs to show the vision model with the latest
+    message. Images on earlier messages appear as their captions, which is
+    all the chat model can take in (images.caption_note).
 
     The context travels with the latest message rather than above the
     transcript: it changes every turn, and anything that changes ends the
@@ -238,20 +244,54 @@ def build_prompt(
         context.insert(0, now_note(now))
         # And the counting done for it: weekdays and days-away for the dates
         # the recent conversation mentions, which the models get wrong alone.
-        context.insert(1, calendar_note([m.content for m in turns[-6:]], now))
+        context.insert(1, calendar_note([_with_image_notes(m) for m in turns[-6:]], now))
     if recent and web is None and not (rag_result is not None and rag_result.prompt):
         context.append(OFFER_NOTE)
+    if images:
+        context.append(IMAGE_NOTE)
     for message in turns[:-1] if latest is not None else turns:
-        prompt.append({"role": message.role, "content": message.content})
+        prompt.append({"role": message.role, "content": _with_image_notes(message)})
     if latest is None:
         # Nothing to attach it to (not a real turn); keep it next to the
         # system prompt.
         prompt[1:1] = [{"role": "system", "content": block} for block in context]
         return prompt
-    said = latest.content
+    said = (latest.content.strip() or IMAGE_ONLY_PROMPT) if images else _with_image_notes(latest)
     text = "\n\n".join(context) + f"\n\n{CONTEXT_DIVIDER}\n{said}" if context else said
-    prompt.append({"role": "user", "content": text})
+    if images:
+        prompt.append({"role": "user", "content": [
+            {"type": "text", "text": text},
+            *({"type": "image_url", "image_url": {"url": url}} for url in images),
+        ]})
+    else:
+        prompt.append({"role": "user", "content": text})
     return prompt
+
+
+# A question about when something is, or how long until it: worth reading an
+# image's dates before answering (prepare_turn).
+TIME_QUESTION = re.compile(
+    r"\b(when|how long|how many (days|weeks|months)|due|deadline|until|left|days?|weeks?|"
+    r"dates?|expir\w*|overdue|time)\b", re.IGNORECASE)
+
+# With images attached. Asked "what do these two show?" about a receipt and
+# a sign, the vision model priced the receipt in rupees and decided the person
+# was "visiting Kestrel Point today, and the receipt is from this visit".
+IMAGE_NOTE = (
+    "Images are attached. Say only what they show: read text and amounts "
+    "exactly as printed, add no currency, place or date that isn't visible, "
+    "and don't link images to each other or to the person unless they clearly do."
+)
+
+# What an image sent with no text is taken to ask.
+IMAGE_ONLY_PROMPT = "What's in this image?"
+
+
+def _with_image_notes(message: Message) -> str:
+    notes = caption_note(getattr(message, "meta", None) or {})
+    if not notes:
+        return message.content
+    return f"{message.content}\n{notes}".strip()
 
 
 @dataclass
@@ -273,6 +313,9 @@ class PreparedTurn:
     title_task: asyncio.Task | None
     timings: dict[str, int] = field(default_factory=dict)
     started: float = field(default_factory=time.perf_counter)
+    # The model that answers: None for the chat model, the vision model's id
+    # when the turn has images.
+    model: str | None = None
 
 
 async def _timed(timings: dict[str, int], key: str, coro):
@@ -353,6 +396,22 @@ def _earlier_user_messages(history: list[Message], limit: int = 3) -> list[str]:
     return said[:-1][-limit:]
 
 
+async def _images_just_shown(
+    session: AsyncSession, chat_id: uuid.UUID, user_id: uuid.UUID, store: ImageStore,
+) -> list[StoredImage]:
+    """The images on the previous message, if the last exchange was about
+    images: a question straight after one is usually about them too. Only one
+    turn on; after that the image is known by its caption."""
+    rows = (await session.execute(
+        select(Message).where(Message.chat_id == chat_id, Message.role != "system")
+        .order_by(Message.created_at.desc()).limit(2)
+    )).scalars().all()
+    if len(rows) != 2 or rows[0].role != "assistant" or rows[1].role != "user":
+        return []
+    found = (store.get(user_id, uuid.UUID(img["id"])) for img in (rows[1].meta or {}).get("images", []))
+    return [img for img in found if img is not None]
+
+
 async def question_offered_a_search(session: AsyncSession, chat_id: uuid.UUID) -> str | None:
     """If the chat's last answer offered to check online, the question it
     was answering; otherwise None."""
@@ -422,13 +481,25 @@ async def prepare_turn(
     laya_web_intent_above: float = 0.9,
     spoken: bool = False,
     retrieval: Retrieval | None = None,
+    images: Sequence[StoredImage] = (),
+    image_store: ImageStore | None = None,
+    vision_model: str | None = None,
 ) -> PreparedTurn:
     """Store the user message and gather everything the answer needs.
 
     ``retrieval``, if given and for this same text, supplies memory and
     documents already fetched (see Retrieval); otherwise they are fetched here.
+
+    ``images`` (already checked to be this person's) make it a vision turn:
+    the vision model answers, looking at them. So does a message straight
+    after one ("what does the sign say?"), which sees the same images again.
     """
     turn_started = time.perf_counter()
+    images = list(images)
+    carried = False
+    if not images and image_store is not None and vision_model:
+        images = await _images_just_shown(session, chat.id, user_id, image_store)
+        carried = bool(images)
     # Wall-clock per stage, in ms, stored on the answer as meta.timings. Every
     # latency change in the milestone is judged against these numbers.
     timings: dict[str, int] = {}
@@ -456,6 +527,8 @@ async def prepare_turn(
         # for: it runs alongside retrieval and is logged once that is done.
         shadow_intent = asyncio.create_task(decisions.decide({"message": content}, WEB_INTENT_QUESTIONS))
 
+    attachments = (*attachments, *({"kind": "image", "uri": f"/images/{img.id}", "mime_type": img.mime_type,
+                                    "name": img.name} for img in images))
     route = await select_route(
         content=content, attachments=attachments, rag=rag, use_web=use_web,
         accepted_web_offer=offered_question is not None,
@@ -463,7 +536,26 @@ async def prepare_turn(
         web_intent_above=laya_web_intent_above,
     )
 
-    user_message = Message(chat_id=chat.id, role="user", content=content, meta={"route": route.handler})
+    if carried and route.handler == "vision":
+        route = Route(handler="vision", reason="a follow-up about the image just shown")
+    user_meta: dict = {"route": route.handler}
+    if images and not carried:
+        user_meta["images"] = [img.meta() for img in images]
+        if TIME_QUESTION.search(content) and image_store is not None and vision_model:
+            # A question about when, in an image: read its text first, so the
+            # dates in it are counted here (clock.calendar_note) rather than
+            # by the vision model, which miscounts (39, 49, 50 and "10" days
+            # for a 40-day wait). The caption is the one written after the
+            # answer anyway, just earlier.
+            stage = time.perf_counter()
+            for meta, img in zip(user_meta["images"], images):
+                try:
+                    meta["caption"] = await caption(provider, vision_model,
+                                                    await asyncio.to_thread(image_store.data_url, user_id, img))
+                except Exception:
+                    logger.exception("reading an image ahead of its answer failed")
+            timings["image_read_ms"] = _ms_since(stage)
+    user_message = Message(chat_id=chat.id, role="user", content=content, meta=user_meta)
     session.add(user_message)
     await session.flush()
 
@@ -482,7 +574,9 @@ async def prepare_turn(
     # Kicked off here, not awaited until after the answer, so a good title
     # costs nothing in wall-clock time: it runs alongside generation.
     title_task = (
-        asyncio.create_task(chat_title.generate(provider, user_message=content, model=title_model))
+        asyncio.create_task(chat_title.generate(
+            provider, user_message=(content.strip() or f"An image: {images[0].name}") if images else content,
+            model=title_model))
         if chat.title == DEFAULT_CHAT_TITLE
         else None
     )
@@ -507,8 +601,12 @@ async def prepare_turn(
         retrieval.discard()
         retrieval = None
     if retrieval is None:
-        retrieval = start_retrieval(content=content, chat=chat, user_id=user_id, memory=memory,
-                                    rag=rag, rag_min_score=rag_min_score)
+        # An image sent with no words has nothing to look up memory or
+        # documents with.
+        said = bool(content.strip())
+        retrieval = start_retrieval(content=content, chat=chat, user_id=user_id,
+                                    memory=memory if said else None, rag=rag if said else None,
+                                    rag_min_score=rag_min_score)
     else:
         timings["prefetched"] = 1
 
@@ -537,7 +635,7 @@ async def prepare_turn(
     # label a person can act on. A web turn keeps its label even when
     # documents also helped: it is the one route that says words left the
     # machine.
-    if rag_result is not None and route.handler != "web":
+    if rag_result is not None and route.handler not in ("web", "vision"):
         n = len(rag_result.sources)
         route = Route(
             handler="rag",
@@ -545,11 +643,14 @@ async def prepare_turn(
                    f"(best {rag_result.best_score:.2f})",
         )
 
-    prompt = build_prompt(history, facts, rag_result, web_search, spoken=spoken)
+    urls = [await asyncio.to_thread(image_store.data_url, user_id, img) for img in images] \
+        if images and image_store is not None else []
+    prompt = build_prompt(history, facts, rag_result, web_search, spoken=spoken, images=urls)
     return PreparedTurn(
         chat=chat, content=content, user_id=user_id, route=route, user_message=user_message,
         history=history, facts=facts, rag_result=rag_result, web_search=web_search,
         prompt=prompt, title_task=title_task, timings=timings, started=turn_started,
+        model=vision_model if urls else None,
     )
 
 
@@ -663,7 +764,7 @@ async def generate_turn(session: AsyncSession, *, provider: Provider, **kwargs) 
     error: str | None = None
     try:
         # "live": the one call in a turn that someone is watching.
-        answer = await provider.chat(prepared.prompt, priority="live")
+        answer = await provider.chat(prepared.prompt, model=prepared.model, priority="live")
     except Exception as exc:
         logger.exception("Generation failed for chat=%s", prepared.chat.id)
         error = f"{exc.__class__.__name__}: {exc}"
@@ -698,7 +799,7 @@ async def stream_turn(session: AsyncSession, *, provider: Provider, **kwargs) ->
     error: str | None = None
     interrupted = False
     try:
-        async for piece in provider.chat_stream(prepared.prompt, priority="live"):
+        async for piece in provider.chat_stream(prepared.prompt, model=prepared.model, priority="live"):
             if not piece:
                 continue
             if first_token_ms is None:

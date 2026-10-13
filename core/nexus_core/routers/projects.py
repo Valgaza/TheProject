@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import current_user_id as _current_user_id
 from ..db import session_dependency
+from ..images import delete_chat_images
 from ..models import Chat, Project
 from ..schemas import ChatCreate, ChatOut, ProjectCreate, ProjectOut, ProjectUpdate
 
@@ -105,7 +106,10 @@ async def delete_project(
     isn't touched by this at all, and its group_ids are already namespaced
     by project_id, not implicitly renumbered if this project_id is reused
     (it never will be -- ids aren't reused)."""
-    project = await _get_project(session, project_id, _current_user_id(request))
+    user_id = _current_user_id(request)
+    project = await _get_project(session, project_id, user_id)
+    chat_ids = (await session.execute(select(Chat.id).where(Chat.project_id == project.id))).scalars().all()
+    await delete_chat_images(request.app, session, user_id, list(chat_ids))
     await session.delete(project)
 
 

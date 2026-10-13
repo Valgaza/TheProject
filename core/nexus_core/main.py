@@ -26,12 +26,14 @@ from .rag_client import RagClient
 from .web_client import WebClient
 from .write_queue import Activity, WriteQueue
 from .decisions import DecisionsClient, runtime_root
+from .images import ImageStore
 from .routers.voice_rtc import close_voice
 from .routers import (
     auth_router,
     chats_router,
     documents_router,
     graph_router,
+    images_router,
     maintenance_router,
     projects_router,
     voice_rtc_router,
@@ -73,6 +75,7 @@ async def lifespan(app: FastAPI):
     app.state.rag = RagClient(http, settings.rag_service_url)
     app.state.http = http
     app.state.web = WebClient(http, settings.websearch_url)
+    app.state.images = ImageStore(settings.image_dir)
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)
 
@@ -169,6 +172,7 @@ app.include_router(projects_router)
 app.include_router(chats_router)
 app.include_router(documents_router)
 app.include_router(graph_router)
+app.include_router(images_router)
 app.include_router(voice_rtc_router)
 app.include_router(maintenance_router)
 

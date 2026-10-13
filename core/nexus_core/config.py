@@ -141,6 +141,14 @@ class Settings:
         self.voice_interrupt_after_ms = int(_optional("CORE_VOICE_INTERRUPT_AFTER_MS", "1000"))
         # Speaking again this soon after a turn ended carries the same turn on.
         self.voice_continue_within_ms = int(_optional("CORE_VOICE_CONTINUE_WITHIN_MS", "2000"))
+        # ── Images ───────────────────────────────────────────────────────────
+        # A turn with an image attached is answered by this model instead of
+        # the chat model: same runtime, loaded when an image is attached.
+        self.vision_model = _optional("CORE_VISION_MODEL", "mlx-community/Qwen3.5-4B-MLX-4bit")
+        # Where attached images are kept, one folder per person. Local only,
+        # like everything else; deleting the chat deletes its images.
+        self.image_dir = Path(_optional("CORE_IMAGE_DIR", str(_ROOT_ENV.parent / "data" / "images")))
+        self.image_max_mb = int(_optional("CORE_IMAGE_MAX_MB", "20"))
         self.port = int(_optional("CORE_PORT", "8100"))
         self.cors_origins = [
             origin.strip()

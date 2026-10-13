@@ -86,8 +86,11 @@ async def test_every_turn_knows_the_date_and_time():
             self.role, self.content, self.meta = role, content, {}
 
     at = datetime(2026, 10, 12, 9, 30, tzinfo=timezone.utc)
-    text = build_prompt([Row("user", "When is it due?")], now=at)[-1]["content"]
-    assert "Monday, 12 October 2026" in text and "real present" in text
+    plain = build_prompt([Row("user", "When is it due?")], now=at)[-1]["content"]
+    with_image = build_prompt([Row("user", "When is it due?")], now=at,
+                              images=["data:image/png;base64,AA=="])[-1]["content"][0]["text"]
+    for text in (plain, with_image):
+        assert "Monday, 12 October 2026" in text and "real present" in text
 
 
 async def test_chats_do_not_leak_into_each_other(db_client, provider):
