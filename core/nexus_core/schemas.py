@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 Role = Literal["user", "assistant", "system"]
 
@@ -99,11 +99,20 @@ class ChatUpdate(BaseModel):
 
 
 class MessageCreate(BaseModel):
-    content: str = Field(min_length=1)
+    content: str = ""
     role: Role = "user"
     # The composer's web button. Only ever set by the person: web search is
     # the one handler that sends text off the machine.
     use_web: bool = False
+    # Images uploaded with POST /images. A message with one is answered by
+    # the vision model, and may have no text at all.
+    images: list[uuid.UUID] = Field(default_factory=list, max_length=4)
+
+    @model_validator(mode="after")
+    def _something_to_say(self) -> "MessageCreate":
+        if not self.content.strip() and not self.images:
+            raise ValueError("a message needs text or an image")
+        return self
 
 
 class MessageOut(BaseModel):

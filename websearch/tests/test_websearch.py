@@ -14,7 +14,7 @@ import pytest
 
 from nexus_websearch.config import Settings
 from nexus_websearch.main import SearchRequest, Searcher, app
-from nexus_websearch.redaction import strip_identifiers
+from nexus_websearch.redaction import rewrite_messages, strip_identifiers
 
 DOCTOR = "search the internet for Priya Nair's stage 3 lymphoma options, MRN 00482913"
 
@@ -85,6 +85,19 @@ def test_ordinary_numbers_in_topics_survive():
     query, removed = strip_identifiers("COVID-19 guidance 2024 for GPT-4", [])
     assert query == "COVID-19 guidance 2024 for GPT-4"
     assert removed == []
+
+
+def test_the_rewrite_sees_earlier_messages_and_today_s_date():
+    from datetime import date
+
+    system, user = rewrite_messages(
+        "Check it online and get me this year's results.",
+        ["hi", "What happened at the latest Singapore Grand Prix?"], date(2026, 10, 12))
+    assert "12 October 2026" in system["content"]
+    assert user["content"].endswith("Message: Check it online and get me this year's results.")
+    assert "- What happened at the latest Singapore Grand Prix?" in user["content"]
+    # On its own, a message goes as it always did.
+    assert rewrite_messages("raft", [], date(2026, 10, 12))[1]["content"] == "raft"
 
 
 # ── A search ─────────────────────────────────────────────────────────────────
