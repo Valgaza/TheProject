@@ -144,6 +144,7 @@ else:
 | `CORE_GATE_MODEL` | same |
 | `MEMORY_EXTRACTION_MODEL` | same |
 | `MEMORY_EMBEDDING_MODEL` | `mlx-community/embeddinggemma-300m-4bit` (768-d) |
+| `CORE_VISION_MODEL` | `mlx-community/Qwen3.5-4B-MLX-4bit`, only for turns with an image (see Images) |
 
 The chat model is chosen by benchmark (`scripts/bench.py` for latency,
 `scripts/extraction_check.py` for graph quality, `tests/test_scenarios.py` for
@@ -364,6 +365,44 @@ Troubleshooting:
   docs/benchmarks/<date>-voice` drives the WebRTC endpoint like a browser and
   reports end-of-speech to first audio, transcription accuracy, interruption
   time, the hesitant / "mm-hmm" / spoken-web checks, and memory.
+
+## Images
+
+Images attached in a chat are answered by the vision model, not the chat
+model (`core/nexus_core/images.py`, `runtime/nexus_runtime/mlx_backend.py`
+`VisionJob`).
+
+- `POST /images` stores the upload under `CORE_IMAGE_DIR/<user id>/`,
+  re-encoded (so no EXIF: no GPS, no camera details) and no larger than 2048
+  px. It also asks the runtime to load the vision model, so it is ready by
+  the time the message is sent. `GET /images/{id}` serves it to its owner only.
+- A message names its images by id (`images` in the message body, up to 4),
+  and routes to `vision`. Core sends them to the runtime inline, as data URLs
+  in OpenAI's `image_url` parts; the runtime never fetches a URL. It shrinks
+  each to `RUNTIME_VISION_MAX_SIDE` (1280) before the model sees it.
+- The message straight after an image turn sees the same images again. After
+  that the image is known by its caption: the vision model writes one onto the
+  message (`meta.images[].caption`) after the answer, at interactive priority,
+  and the chat model reads it in the transcript. The caption itself is not
+  given to memory, but the turn goes through the write gate like any other:
+  what was said about the image, and the answer about it, can be remembered.
+- Deleting a chat or project deletes its image files.
+- The vision slot has the `session` lifetime: loaded on first use (or the
+  upload's warm-up), unloaded after `RUNTIME_SESSION_IDLE_SECONDS`. About
+  2.9 GB of weights.
+- A question about when ("how long until it's due?", matched by
+  `TIME_QUESTION` in `chat_service.py`) has its images read first: the
+  caption is written before the answer, and `clock.calendar_note` counts the
+  dates in it, because the vision model miscounts days on its own. About a
+  second more on those turns.
+- Every turn carries the date and time, and the dates in the recent
+  conversation counted out (`core/nexus_core/clock.py`).
+- HEIC photos are refused with a message saying to export as JPEG.
+- The model is never downloaded on first use (that would hold the GPU thread
+  for the whole download): fetch it with `scripts/fetch_voice_assets.py`.
+  Missing, an image turn answers that it couldn't reach the model.
+
+Check it: `curl -s localhost:8003/health | jq '.models[] | select(.name=="vision")'`.
 
 ## Documents and their tiers
 

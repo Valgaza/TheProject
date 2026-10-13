@@ -8,10 +8,9 @@ conversations.
 You never pick a pipeline. You type, or attach a document, or speak, and the
 system works out what to do with it.
 
-Four kinds of input are planned: documents, images (OCR and vision),
-conversational speech, and general chat. General chat, document Q&A, the memory
-layer, opt-in web search and hands-free voice are built and run entirely on
-local models. Vision is being developed separately on `feature/vision-v1`.
+Four kinds of input: documents, images, conversational speech, and general
+chat. All four are built, along with the memory layer and opt-in web search,
+and run entirely on local models.
 
 ## How it fits together
 
@@ -131,6 +130,16 @@ finished sentence from a pause. Talk over it and it stops, keeping only what
 you heard; "mm-hmm" doesn't stop it. Ask it to look something up and it says
 so first, then searches. Voice turns are ordinary messages, with the same
 memory, documents and web.
+
+### Looking at images
+
+Attach, paste or drop an image into the composer and ask about it: a photo, a
+screenshot, a chart, a receipt. A separate vision model (Qwen3.5-4B) answers
+that turn, with the same memory and documents as any other; it loads when the
+image is attached and unloads when idle. The question straight after sees the
+image again, and later turns know it by a caption the vision model writes, so
+"what was the total on that receipt?" works by voice too. Images stay on the
+machine, stripped of location data, and go when their chat is deleted.
 
 ### Decisions that do not need an LLM
 
