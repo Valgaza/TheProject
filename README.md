@@ -268,3 +268,4 @@ personal fact following you between them, and chit-chat writing nothing.
   is its own service.
 - `docs/history/CHECKPOINT_0*.md`: records of earlier states, kept for the
   reasoning rather than the instructions.
+.
